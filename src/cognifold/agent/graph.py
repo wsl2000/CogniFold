@@ -359,13 +359,20 @@ def _call_openai_node(state: AgentState) -> dict[str, Any]:
     create_kwargs: dict[str, Any] = {
         "model": model_name,
         "messages": openai_messages,
-        "temperature": config.temperature,
     }
 
-    # Handle o1/o3 models that use max_completion_tokens
-    if model_name.startswith("o1") or model_name.startswith("o3") or "gpt-5" in model_name:
-        create_kwargs["max_completion_tokens"] = config.max_tokens
+    # Reasoning models (o1/o3/gpt-5) reject custom temperature and use
+    # max_completion_tokens. Everything else takes temperature + max_tokens.
+    is_reasoning_model = (
+        model_name.startswith("o1") or model_name.startswith("o3") or "gpt-5" in model_name
+    )
+    if is_reasoning_model:
+        # High reasoning effort + 24K budget so thinking has room and the
+        # visible reply (tool call / JSON) still lands.
+        create_kwargs["max_completion_tokens"] = max(config.max_tokens, 24576)
+        create_kwargs["reasoning_effort"] = "high"
     else:
+        create_kwargs["temperature"] = config.temperature
         create_kwargs["max_tokens"] = config.max_tokens
 
     if tools:

@@ -1,0 +1,169 @@
+profiles:
+  longmemeval:
+    domain: "longmemeval"
+    model:
+      name: "openai:gpt-4o-mini"
+      temperature: 0.0
+      max_tokens: 4096
+      max_exploration_steps: 0
+    embedding:
+      model: "openai:text-embedding-3-small"
+    guidelines:
+      concept:
+        - "Extract EVERY factual detail about the user (personal info, preferences, history)"
+        - "Capture specific entities (names, places, organizations, dates)"
+        - "Record preferences (likes, dislikes, habits, routines)"
+        - "Track contradictions or updates to previous facts"
+        - "Note relationships and people the user mentions"
+        - "Create dense cross-session links between related user facts"
+        - "Extract temporal anchors for life events (graduation, job changes, moves)"
+        - "Track preference CHANGES over time — if user's taste evolves, UPDATE the concept"
+      time:
+        - "Record specific dates mentioned (birthdays, events, deadlines)"
+        - "Record relative times if anchored to known dates"
+        - "Track temporal sequences of events in user's life"
+    features:
+      enable_time_nodes: true
+      enable_action_nodes: false
+    templates:
+      system: |
+        You are an expert memory system extracting factual information from chat history.
+        Your goal is to build a comprehensive knowledge graph about the user.
+
+        Domain: {domain_description}
+
+        EXTRACT every piece of information the user reveals:
+
+        1. PROFILE:
+           - Name, age, birthday
+           - Job, education, career history
+           - Location, hometown, places lived
+           - Family members and relationships
+
+        2. PREFERENCES:
+           - Food, drinks, dietary preferences
+           - Hobbies, interests, activities
+           - Music, movies, entertainment
+           - Habits, routines, lifestyle choices
+
+        3. HISTORY:
+           - Past events and experiences
+           - Achievements and milestones
+           - Decisions made, plans discussed
+
+        4. RELATIONSHIPS:
+           - People mentioned (friends, family, colleagues)
+           - Organizations, companies, institutions
+           - Pets, possessions, important objects
+
+        Node types:
+        - EVENT: {event_type_desc}
+        - CONCEPT: {concept_type_desc}
+        - TIME: {time_type_desc}
+
+        Guidelines:
+        {concept_guidelines}
+
+        Output a JSON UpdatePlan to update the graph.
+
+      user: |
+        Process this chat message and extract all factual information about the user.
+
+        Event:
+        {event_details}
+
+        Existing memory (context):
+        {context_window}
+
+        Instructions:
+        1. Extract every new fact about the user
+        2. Update existing concepts if new info refines or contradicts them
+        3. Create connections between related concepts
+        4. Add TIME nodes for specific dates mentioned
+
+        Produce an UpdatePlan.
+
+      batch_extraction: |
+        Analyze this chat session and extract COMPOSITE FACTS — each as a SINGLE concept node.
+
+        Session:
+        {session_text}
+
+        CRITICAL RULE — never fragment a co-mentioned fact.
+        If the user says "I redeemed a $5 coupon on coffee creamer at Target last Sunday",
+        that is ONE concept that must contain ALL of:
+          WHO   = the user
+          WHAT  = redeemed a $5 coupon on coffee creamer
+          WHERE = Target
+          WHEN  = last Sunday
+        Do NOT split it into "user uses coupons" + "Target is a store" + "Sunday morning".
+        A concept that drops the WHERE / WHEN / object is a broken concept — reject that
+        decomposition pattern.
+
+        Each extracted concept must:
+          - Be self-contained: the TITLE captures the full fact in one line.
+            BAD title:  "Coupon usage"
+            GOOD title: "User redeemed $5 coupon on coffee creamer at Target last Sunday"
+          - Preserve every co-mentioned attribute in the DESCRIPTION
+            (entity + action + object + place + time + reason).
+          - Quote the exact source phrase when possible.
+
+        Extract concepts that cover (composite, not categorical):
+          - Profile / preferences / habits — including the trigger or context if stated.
+          - Specific events / actions / decisions — with where + when when they appear.
+          - Stated relationships / mentions — with the role or context.
+
+        Return strict JSON. Do not infer; only encode facts explicitly stated.
+        {{
+          "concepts": [
+            {{
+              "title": "self-contained one-line fact (WHO + WHAT + WHERE + WHEN if all stated)",
+              "description": "detailed factual description preserving all co-mentioned attributes",
+              "strength": 0.5-1.0,
+              "type": "user_fact|preference|event|relationship|temporal|entity"
+            }}
+          ]
+        }}
+
+      qa_system: |
+        You are answering questions about a user based on their chat history memory.
+
+        IMPORTANT RULES:
+        - Answer based ONLY on the provided memory context
+        - If the answer is not in the context, say "I don't know" or "Not mentioned"
+        - Be specific and accurate
+        - Do not make up or infer information not explicitly stated
+        - Keep answers concise
+
+      qa_answer: |
+        Answer the question based on the user's memory.
+
+        Question: {question}
+
+        Memory Context:
+        {context}
+
+        Give a concise, specific answer (1-2 sentences). Commit to your best inference from the context — when ANY relevant fact appears (even tangentially), use it to construct a specific answer. Only fall back to "Unknown" when the context is completely empty of any related signal.
+
+        Answer:
+
+      evaluate: |
+        Evaluate if the hypothesis answer matches the ground truth.
+
+        Question: {question}
+        Ground Truth: {ground_truth}
+        Hypothesis: {hypothesis}
+
+        Evaluation criteria:
+        1. Is the hypothesis semantically equivalent to the ground truth?
+        2. Does it contain the key information?
+        3. Are there factual errors?
+
+        Reply with one of:
+        - CORRECT: The hypothesis matches the ground truth semantically
+        - PARTIAL: The hypothesis is partially correct but incomplete or has minor errors
+        - INCORRECT: The hypothesis is wrong or contradicts the ground truth
+
+        Then provide a brief explanation.
+
+        Evaluation:

@@ -411,16 +411,33 @@ class BatchAgentProcessor:
         client = OpenAI(api_key=get_api_key("OPENAI_API_KEY"))
         actual_model = model_name.replace("openai:", "")
 
-        response = client.chat.completions.create(
-            model=actual_model,
-            messages=[
+        # Reasoning models (o1/o3/gpt-5 family) reject custom temperature and
+        # use `max_completion_tokens` instead of `max_tokens`.
+        is_reasoning_model = (
+            actual_model.startswith("o1")
+            or actual_model.startswith("o3")
+            or "gpt-5" in actual_model
+        )
+        kwargs: dict = {
+            "model": actual_model,
+            "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            temperature=self._config.temperature,
-            max_tokens=self._config.max_tokens,
-            response_format={"type": "json_object"},
-        )
+            "response_format": {"type": "json_object"},
+        }
+        if is_reasoning_model:
+            # gpt-5 / o1 / o3 reason internally before producing visible
+            # output. Use high effort for extraction quality (LongMemEval
+            # demands precise concept capture) and give thinking + JSON
+            # response a 24K headroom.
+            kwargs["max_completion_tokens"] = max(self._config.max_tokens, 24576)
+            kwargs["reasoning_effort"] = "high"
+        else:
+            kwargs["temperature"] = self._config.temperature
+            kwargs["max_tokens"] = self._config.max_tokens
+
+        response = client.chat.completions.create(**kwargs)
 
         content = response.choices[0].message.content
         if content:
