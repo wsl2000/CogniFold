@@ -5,6 +5,7 @@ It downloads the dataset, ingests chat history into the memory graph, and answer
 """
 
 import argparse
+import dataclasses
 import json
 import logging
 import os
@@ -349,7 +350,51 @@ Answer:"""
         "answer — never refuse."
     )
 
-    return call_llm(prompt, config)
+    answer = call_llm(prompt, config)
+
+    # Reader sanity check — reasoning models (gpt-5) occasionally exhaust
+    # max_completion_tokens on internal thinking and return a junk fragment
+    # (empty, single-word, or a literal token copied from the context like
+    # "User message" / "Assistant message"). Detect that and fall back to a
+    # deterministic non-reasoning model so the question doesn't waste the
+    # whole entry.
+    if _is_junk_reader_output(answer, context):
+        logger.warning(
+            "Reader returned junk output (%r) for question %r — retrying with gpt-4o-mini fallback",
+            answer[:60], question[:80],
+        )
+        fallback_config = dataclasses.replace(
+            config, model_name="openai:gpt-4o-mini", max_tokens=1024
+        )
+        answer = call_llm(prompt, fallback_config)
+
+    return answer
+
+
+# Boilerplate strings that frequently appear in the retrieved context as
+# structural markers (edge labels, time-anchor titles). If the reader's reply
+# is literally one of these — or extremely short — it's not an answer.
+_JUNK_OUTPUTS = frozenset({
+    "user message", "assistant message", "user", "assistant",
+    "answer", "answer:", "unknown", "n/a", "none", "null", "",
+})
+
+
+def _is_junk_reader_output(answer: str, context: str) -> bool:
+    """Detect garbage reader output (empty / boilerplate / context fragment)."""
+    a = (answer or "").strip()
+    if not a:
+        return True
+    a_lower = a.lower().rstrip(".:,;!?")
+    if a_lower in _JUNK_OUTPUTS:
+        return True
+    # Very short answers that are *also* substrings of structural context
+    # markers are almost certainly token-leak from a truncated reasoning reply.
+    if len(a) <= 30 and any(
+        marker in context for marker in (f"related_to: {a}", f"to: {a};", f"to: {a}\n")
+    ):
+        return True
+    return False
 
 
 def evaluate_answer(
