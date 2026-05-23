@@ -97,5 +97,4 @@ benchmarks/*/results/
 benchmarks/*/*.log
 memory/
 papers/research_mindset_v0.md
-my_prompt.md
 papers/current_writing_guide.md

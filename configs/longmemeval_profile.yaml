@@ -108,10 +108,89 @@ profiles:
             (entity + action + object + place + time + reason).
           - Quote the exact source phrase when possible.
 
+        ============================================================
+        MANDATORY ANCHOR RULES — apply unconditionally, no exceptions.
+        These exist because downstream BM25 retrieval can only find a
+        concept when the topic keyword is literally in its title/description.
+        ============================================================
+
+        (1) MONEY ANCHOR — every "$N" or "N dollars" mention spawns its own
+            concept, AND the title MUST include the topic category keyword.
+            USER: "I bought a Bell Zephyr helmet for $120 from the local bike shop"
+            ✓ {{"title": "User paid $120 for Bell Zephyr bike helmet at local bike shop",
+                "description": "$120 bike-related expense — Bell Zephyr helmet from local bike shop"}}
+            ✗ {{"title": "User bought a Bell Zephyr helmet for $120"}}  ← MISSING 'bike' keyword
+            (If user buys a bike helmet, include 'bike'; if they buy a yoga mat, include
+             'yoga'; if a kitchen appliance, include 'kitchen'/'cooking'.)
+
+        (2) DATED LIFE-EVENT ANCHOR — every "I started / began / finished /
+            completed / got / recovered from / signed up for / attended"
+            spawns its own concept WITH the explicit start-or-end verb in
+            the title.
+            USER: "I started taking ukulele lessons today" (session date = 2023-04-05)
+            ✓ {{"title": "User started taking ukulele lessons on 2023-04-05",
+                "description": "Date-anchored: user began ukulele lessons today (2023-04-05)"}}
+            ✗ {{"title": "User is learning ukulele"}}  ← drops the start-date anchor
+
+        (3) NUMBERED LIST RECALL — when the ASSISTANT emits a numbered
+            list (1. X / 2. Y / …), DO NOT collapse to "assistant gave list".
+            Preserve EVERY item with its index in the description.
+            ASSISTANT: "Here are 100 prompt parameters: 1. Format 2. Length 3. Tone ..."
+            ✓ {{"title": "Assistant listed 100 prompt parameters",
+                "description": "Full list: 1. Format, 2. Length, 3. Tone, ..., 27. Sound effects, ..."}}
+            ✗ {{"title": "Assistant provided a list of prompt parameters"}} ← loses each item
+
+        (4) NAMED-ENTITY VERBATIM — preserve URLs, song/book titles,
+            people names, brand names EXACTLY in the title and description.
+            USER recalling: "you mentioned the website Mindful.org"
+            ✓ {{"title": "Assistant recommended Mindful.org for guided meditations"}}
+            ✗ {{"title": "Assistant recommended a mindfulness website"}}  ← name lost
+
+        (5) ENUMERABLE OWNED ITEMS — when user mentions distinct entities
+            of the same TYPE (multiple tanks, multiple fish, multiple
+            projects), create ONE concept PER entity (not one rolled-up
+            concept). Each must include the type keyword and any
+            distinguishing attribute (size, scale, name, color).
+            USER: "I have a 20-gallon community tank and a 1-gallon tank for my friend's kid, plus my new planted nano tank."
+            ✓ Three concepts:
+              - "User owns 20-gallon community tank (Amazonia)"
+              - "User set up 1-gallon tank for friend's kid"
+              - "User owns planted nano tank"
+            ✗ One concept "User has multiple aquarium tanks"  ← can't be counted
+
+        (6) DATED TRANSACTION / TRANSFER ANCHOR — every "I bought / ordered
+            / received / sold / shipped / arrived / met / saw" with a
+            specific entity spawns its own concept WITH the date and a
+            transactional verb so downstream date-diff resolvers can match.
+            USER: "I ordered the new tennis racket last Friday and it arrived this morning."
+            ✓ Two concepts:
+              - "User ordered new tennis racket on [last Friday's date]"
+              - "User received new tennis racket on [today's date]"
+            ✗ One concept "User got a new tennis racket"  ← no order vs receive separation
+
+        (7) AGE / LIFE-MILESTONE ANCHOR — when user states "I was N (years
+            old) when EVENT", preserve N + EVENT as a dedicated concept;
+            don't conflate with other age mentions in the session.
+            USER: "My grandma gave me the silver necklace when I was 18."
+            ✓ {{"title": "User was 18 years old when grandma gave them the silver necklace",
+                "description": "Age anchor: 18 at the time grandma gifted silver necklace"}}
+            ✗ {{"title": "User received silver necklace from grandma"}}  ← age lost
+
+        (8) USER PREFERENCE / PLAN PRESERVATION — when user says "I'm
+            planning X" / "I want Y" / "I prefer Z" / "I've been doing W",
+            preserve the user's VERBATIM intent so the reader can build
+            recommendations on top of it (instead of giving generic tips).
+            USER: "I'm planning chocolate chip cookies for the party"
+            ✓ "User is planning to bake chocolate chip cookies for an upcoming party"
+            ✗ "User likes cookies"  ← drops the specific plan + context
+
+        ============================================================
+
         Extract concepts that cover (composite, not categorical):
           - Profile / preferences / habits — including the trigger or context if stated.
           - Specific events / actions / decisions — with where + when when they appear.
           - Stated relationships / mentions — with the role or context.
+          - PLUS every fact matching anchor rules (1)-(5) above.
 
         Return strict JSON. Do not infer; only encode facts explicitly stated.
         {{
