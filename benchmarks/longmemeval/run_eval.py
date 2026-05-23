@@ -312,6 +312,91 @@ def build_recency_block(graph: ConceptGraph, question: str, max_items: int = 8) 
     return "\n".join(lines) + "\n"
 
 
+# Aggregation context expansion (Round 3): for "how many X have I" /
+# "how much money on X" questions, retrieval often misses the relevant
+# distinct entities or $-bearing concepts (BM25 fills top-k with
+# near-duplicate noisy concepts). Scan the FULL graph for topic-matched
+# concepts and inject them as an additional context block. Crucially,
+# DO NOT compute or emit a number — let the LLM reader (gpt-5-mini high)
+# do the actual counting/summing with the expanded context.
+_AGG_COUNT_TRIGGER = re.compile(
+    r"\bhow\s+many\s+(?!\s*(?:hours?|minutes?|seconds?|days?|weeks?|months?|years?)\b)"
+    r"\w+.*\b(?:have\s+i|i\s+(?:have|own|bought|worked|attended|read|watched|tried|made|led|leading))",
+    re.IGNORECASE,
+)
+_AGG_SUM_TRIGGER = re.compile(
+    r"\b(?:how\s+much|total|sum)\b"
+    r"(?!\s*(?:hours?|minutes?|seconds?|days?|weeks?|months?|years?)\b)"
+    r".*\b(?:money|dollars?|usd|expense|expenses?|cost|costs?|"
+    r"\$\s*\d|spent\s+on\s+\w+|paid\s+for\s+\w+)\b",
+    re.IGNORECASE,
+)
+_DOLLAR_RE = re.compile(r"\$\s*\d|\d+\s*(?:dollars|usd)\b", re.IGNORECASE)
+
+
+def build_aggregation_block(
+    graph: ConceptGraph, question: str, max_extra: int = 25
+) -> str:
+    """Surface ALL topic-matched concepts across the full graph (not just
+    BM25 top-k) for aggregation questions. Reader gets expanded context;
+    no number is asserted — the reader still owns the count/sum decision.
+    """
+    is_count = bool(_AGG_COUNT_TRIGGER.search(question))
+    is_sum = bool(_AGG_SUM_TRIGGER.search(question))
+    if not (is_count or is_sum):
+        return ""
+
+    sw = _stopwords()
+    topic_tokens = {
+        t for t in re.findall(r"[a-zA-Z]+", question.lower())
+        if t not in sw and len(t) >= 3 and t not in {
+            "how", "many", "much", "total", "sum", "have", "spent", "spend",
+            "paid", "cost", "money", "expense", "dollars",
+        }
+    }
+    if not topic_tokens:
+        return ""
+
+    matches: list[tuple[float, str, str, str]] = []  # (score, title, desc, date)
+    for n in graph.get_all_nodes():
+        if n.type != NodeType.CONCEPT:
+            continue
+        title = (n.data.get("title", "") or "").strip()
+        desc = (n.data.get("description", "") or "").strip()
+        text = f"{title} {desc}".lower()
+        text_tokens = set(re.findall(r"[a-zA-Z]+", text))
+        overlap = len(topic_tokens & text_tokens)
+        if overlap == 0:
+            continue
+        if overlap / max(1, len(topic_tokens)) < 0.20:
+            continue
+        # For SUM, only concepts carrying a $ amount help — drop the rest.
+        if is_sum and not _DOLLAR_RE.search(text):
+            continue
+        date_str = (n.data.get("date") or "").strip()
+        matches.append((overlap / len(topic_tokens), title, desc[:240], date_str))
+
+    if not matches:
+        return ""
+
+    matches.sort(key=lambda x: -x[0])
+    extra = matches[:max_extra]
+
+    label = "money-bearing concepts (each carries a $ amount)" if is_sum else "topic-matched concepts"
+    header = (
+        f"## AGGREGATION CANDIDATES — {label} from the full graph "
+        "(BM25 retrieval often misses items spread across sessions; use this "
+        "list to enumerate distinct entities / sum every $ amount)"
+    )
+    lines = [header]
+    for _, title, desc, date in extra:
+        if title:
+            lines.append(f"- {title}")
+        if desc:
+            lines.append(f"  {desc}")
+    return "\n".join(lines) + "\n"
+
+
 def generate_answer(
     question: str, context: str, config: AgentConfig, qa_template: str | None = None
 ) -> str:
@@ -618,7 +703,10 @@ def run_benchmark(args: argparse.Namespace) -> None:
     # Setup paths
     base_dir = Path(__file__).parent
     data_path = download_data(base_dir / "data")
-    output_dir = base_dir / "output"
+    # `--output-dir` lets parallel batch runs write to separate dirs so they
+    # don't trample each other's hypothesis.jsonl. Default = single-process
+    # legacy location.
+    output_dir = Path(args.output_dir) if args.output_dir else (base_dir / "output")
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / "hypothesis.jsonl"
     metrics_path = output_dir / "metrics.json"
@@ -695,6 +783,16 @@ def run_benchmark(args: argparse.Namespace) -> None:
             f"Stratified sampling: {args.stratified} per question_type "
             f"({len(by_type)} types, {len(data)} total)"
         )
+
+    # --question-ids takes precedence: filter to ONLY those qids.
+    if args.question_ids:
+        wanted = {q.strip() for q in args.question_ids.split(",") if q.strip()}
+        data = [ex for ex in data if ex.get("question_id") in wanted]
+        logger.info(f"Filtering to {len(data)} specific question_ids")
+
+    if args.offset:
+        data = data[args.offset:]
+        logger.info(f"Offset: skipping first {args.offset} examples (remaining {len(data)})")
 
     if args.limit:
         data = data[: args.limit]
@@ -827,6 +925,14 @@ def run_benchmark(args: argparse.Namespace) -> None:
         if recency_block:
             context_text = recency_block + "\n" + context_text
 
+        # Aggregation context expansion (Round 3): for "how many X have I" /
+        # "how much money on X" questions, scan the full graph for every
+        # topic-matched concept (and require $-bearing for SUM). Reader sees
+        # the expanded list and does the actual count/sum itself.
+        aggregation_block = build_aggregation_block(graph, question)
+        if aggregation_block:
+            context_text = aggregation_block + "\n" + context_text
+
         # Symbolic deterministic resolver (ToMi-style): pattern-match the
         # question against the dated graph and compute an exact answer string.
         # If matched, we both inject the answer as a SYMBOLIC_ANSWER block
@@ -929,6 +1035,27 @@ def run_benchmark(args: argparse.Namespace) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run LongMemEval benchmark")
     parser.add_argument("--limit", type=int, help="Limit number of examples to run")
+    parser.add_argument(
+        "--offset",
+        type=int,
+        default=0,
+        help="Skip the first N examples (applied AFTER --stratified, BEFORE --limit). "
+        "Pair with --output-dir + --limit to partition the data for parallel runs.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=None,
+        help="Override output directory (default: benchmarks/longmemeval/output/). "
+        "Each parallel batch should point to its own dir to avoid hypothesis.jsonl collisions.",
+    )
+    parser.add_argument(
+        "--question-ids",
+        type=str,
+        default=None,
+        help="Process only specific question_ids (comma-separated). Overrides "
+        "--stratified/--limit/--offset filtering.",
+    )
     parser.add_argument(
         "--stratified",
         type=int,
