@@ -100,6 +100,7 @@ class LongMemEvalSymbolicResolver:
         its session date from the `date` data field we wrote in
         process_session_batch()."""
         out: list[_Concept] = []
+        date_re = r"^\s*\[\d{4}-\d{2}-\d{2}\]\s*"
         for n in self.graph.get_all_nodes():
             if n.type not in (NodeType.CONCEPT, NodeType.EVENT):
                 continue
@@ -110,13 +111,22 @@ class LongMemEvalSymbolicResolver:
                     dt = datetime.fromisoformat(date_str.replace("Z", ""))
                 except Exception:
                     pass
-            title = n.data.get("title", "")
+            title = n.data.get("title", "") or ""
             desc = n.data.get("description") or n.data.get("content") or ""
             # Strip the [YYYY-MM-DD] prefix we added in process_session_batch
             # (now lives on the title; old runs may have it on the description).
-            date_re = r"^\s*\[\d{4}-\d{2}-\d{2}\]\s*"
             title_stripped = re.sub(date_re, "", title)
             desc_stripped = re.sub(date_re, "", desc)
+            # EVENT nodes carry boilerplate titles like "User message" /
+            # "Assistant message". If we let those flow into `first.title` for
+            # bypass resolvers (which_first, latest_value), the reader receives
+            # "User message" as the deterministic answer. Replace boilerplate
+            # titles with a content snippet so the resolver still emits useful
+            # text when an EVENT wins the phrase-score tie-break.
+            if title_stripped.strip().lower() in {"user message", "assistant message", "user", "assistant"}:
+                snippet = desc_stripped.strip().split("\n", 1)[0][:120]
+                if snippet:
+                    title_stripped = snippet
             out.append(_Concept(
                 node_id=n.id, title=title_stripped, description=desc_stripped, date=dt,
                 raw_text=f"{title_stripped} {desc_stripped}",
@@ -168,7 +178,10 @@ class LongMemEvalSymbolicResolver:
             s = _phrase_score(phrase, c.raw_text)
             if s >= min_score:
                 scored.append((s, c))
-        scored.sort(key=lambda x: (-x[0], x[1].date or datetime.min))
+        # Sort by (-score, is_event, date) — on tied scores, prefer CONCEPT
+        # over EVENT (EVENT carries raw-turn noise; CONCEPT is LLM-distilled),
+        # then earliest date.
+        scored.sort(key=lambda x: (-x[0], x[1].node_id.startswith("evt-"), x[1].date or datetime.min))
         return scored[:k]
 
     def _best_concept(self, phrase: str) -> _Concept | None:
