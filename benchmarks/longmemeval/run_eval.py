@@ -312,91 +312,6 @@ def build_recency_block(graph: ConceptGraph, question: str, max_items: int = 8) 
     return "\n".join(lines) + "\n"
 
 
-# Aggregation context expansion (Round 3): for "how many X have I" /
-# "how much money on X" questions, retrieval often misses the relevant
-# distinct entities or $-bearing concepts (BM25 fills top-k with
-# near-duplicate noisy concepts). Scan the FULL graph for topic-matched
-# concepts and inject them as an additional context block. Crucially,
-# DO NOT compute or emit a number — let the LLM reader (gpt-5-mini high)
-# do the actual counting/summing with the expanded context.
-_AGG_COUNT_TRIGGER = re.compile(
-    r"\bhow\s+many\s+(?!\s*(?:hours?|minutes?|seconds?|days?|weeks?|months?|years?)\b)"
-    r"\w+.*\b(?:have\s+i|i\s+(?:have|own|bought|worked|attended|read|watched|tried|made|led|leading))",
-    re.IGNORECASE,
-)
-_AGG_SUM_TRIGGER = re.compile(
-    r"\b(?:how\s+much|total|sum)\b"
-    r"(?!\s*(?:hours?|minutes?|seconds?|days?|weeks?|months?|years?)\b)"
-    r".*\b(?:money|dollars?|usd|expense|expenses?|cost|costs?|"
-    r"\$\s*\d|spent\s+on\s+\w+|paid\s+for\s+\w+)\b",
-    re.IGNORECASE,
-)
-_DOLLAR_RE = re.compile(r"\$\s*\d|\d+\s*(?:dollars|usd)\b", re.IGNORECASE)
-
-
-def build_aggregation_block(
-    graph: ConceptGraph, question: str, max_extra: int = 25
-) -> str:
-    """Surface ALL topic-matched concepts across the full graph (not just
-    BM25 top-k) for aggregation questions. Reader gets expanded context;
-    no number is asserted — the reader still owns the count/sum decision.
-    """
-    is_count = bool(_AGG_COUNT_TRIGGER.search(question))
-    is_sum = bool(_AGG_SUM_TRIGGER.search(question))
-    if not (is_count or is_sum):
-        return ""
-
-    sw = _stopwords()
-    topic_tokens = {
-        t for t in re.findall(r"[a-zA-Z]+", question.lower())
-        if t not in sw and len(t) >= 3 and t not in {
-            "how", "many", "much", "total", "sum", "have", "spent", "spend",
-            "paid", "cost", "money", "expense", "dollars",
-        }
-    }
-    if not topic_tokens:
-        return ""
-
-    matches: list[tuple[float, str, str, str]] = []  # (score, title, desc, date)
-    for n in graph.get_all_nodes():
-        if n.type != NodeType.CONCEPT:
-            continue
-        title = (n.data.get("title", "") or "").strip()
-        desc = (n.data.get("description", "") or "").strip()
-        text = f"{title} {desc}".lower()
-        text_tokens = set(re.findall(r"[a-zA-Z]+", text))
-        overlap = len(topic_tokens & text_tokens)
-        if overlap == 0:
-            continue
-        if overlap / max(1, len(topic_tokens)) < 0.20:
-            continue
-        # For SUM, only concepts carrying a $ amount help — drop the rest.
-        if is_sum and not _DOLLAR_RE.search(text):
-            continue
-        date_str = (n.data.get("date") or "").strip()
-        matches.append((overlap / len(topic_tokens), title, desc[:240], date_str))
-
-    if not matches:
-        return ""
-
-    matches.sort(key=lambda x: -x[0])
-    extra = matches[:max_extra]
-
-    label = "money-bearing concepts (each carries a $ amount)" if is_sum else "topic-matched concepts"
-    header = (
-        f"## AGGREGATION CANDIDATES — {label} from the full graph "
-        "(BM25 retrieval often misses items spread across sessions; use this "
-        "list to enumerate distinct entities / sum every $ amount)"
-    )
-    lines = [header]
-    for _, title, desc, date in extra:
-        if title:
-            lines.append(f"- {title}")
-        if desc:
-            lines.append(f"  {desc}")
-    return "\n".join(lines) + "\n"
-
-
 def generate_answer(
     question: str, context: str, config: AgentConfig, qa_template: str | None = None
 ) -> str:
@@ -452,7 +367,6 @@ Answer:"""
             config, model_name="openai:gpt-4o-mini", max_tokens=1024
         )
         answer = call_llm(prompt, fallback_config)
-
     return answer
 
 
@@ -480,6 +394,11 @@ def _is_junk_reader_output(answer: str, context: str) -> bool:
     ):
         return True
     return False
+
+
+# Round 7 R7-1 (no-memory reader fallback) and R7-D (regex anchor pass over
+# raw session text) were tested and reverted — both 0 net fix, see history.md
+# for the post-mortem.
 
 
 def evaluate_answer(
@@ -900,11 +819,30 @@ def run_benchmark(args: argparse.Namespace) -> None:
                             logger.error(f"Error processing event {event.event_id}: {e}")
 
         # 3. Answer Question
+        # R9-A: dynamic max_nodes — aggregation questions ("how many X have I",
+        # "how much money spent on X") need to see ALL relevant entity
+        # concepts to count/sum correctly. With max_nodes=20, multi-entity
+        # questions chronically under-count. Bump to 50 for these only;
+        # single-fact questions stay at 20 to avoid context dilution.
+        _qa_agg_count = re.search(
+            r"\bhow\s+many\s+(?!(?:hours?|minutes?|seconds?|days?|weeks?|months?|years?)\b)"
+            r"\w+.*\b(?:have\s+i|i\s+(?:have|own|bought|worked|attended|read|"
+            r"watched|tried|made|led|leading|did|spent|spend|visited|saw|met))",
+            question, re.IGNORECASE,
+        )
+        _qa_agg_sum = re.search(
+            r"\b(?:how\s+much|total|sum)\b(?!\s*(?:hours?|minutes?|seconds?|days?|"
+            r"weeks?|months?|years?)\b).*\b(?:money|dollars?|expense|expenses?|"
+            r"cost|costs?|\$\s*\d|spent\s+on)\b",
+            question, re.IGNORECASE,
+        )
+        _query_max_nodes = 50 if (_qa_agg_count or _qa_agg_sum) else None
         _query_start = time.time()
         query_result = query_agent.query_for_qa(
             question=question,
             domain="longmemeval",
             query_mode=args.query_mode,
+            max_nodes=_query_max_nodes,
         )
         context_text = query_result.context
 
@@ -924,14 +862,6 @@ def run_benchmark(args: argparse.Namespace) -> None:
         recency_block = build_recency_block(graph, question)
         if recency_block:
             context_text = recency_block + "\n" + context_text
-
-        # Aggregation context expansion (Round 3): for "how many X have I" /
-        # "how much money on X" questions, scan the full graph for every
-        # topic-matched concept (and require $-bearing for SUM). Reader sees
-        # the expanded list and does the actual count/sum itself.
-        aggregation_block = build_aggregation_block(graph, question)
-        if aggregation_block:
-            context_text = aggregation_block + "\n" + context_text
 
         # Symbolic deterministic resolver (ToMi-style): pattern-match the
         # question against the dated graph and compute an exact answer string.

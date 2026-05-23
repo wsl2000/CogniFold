@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 import time
 from datetime import datetime
@@ -116,6 +115,83 @@ def _dedup_near_duplicates(
         if not is_dup:
             kept.append((n, toks))
     return [n for n, _ in kept]
+
+
+def _semantic_merge_duplicates(
+    nodes: list[Any],
+    embedder: Any,
+    graph: Any,
+    threshold: float = 0.85,
+) -> list[Any]:
+    """Round 7 semantic merge: collapse co-referent concepts that token-level
+    dedup misses.
+
+    Walks the ranked list, keeps the highest-ranked node in each cluster.
+    Two nodes are co-referent when their embedding cosine ≥ `threshold`.
+    Embeddings come from the existing NodeEmbedder cache (no new API calls
+    when the hybrid retrieval path warmed them earlier).
+
+    Distinguishes:
+    - **Under-count survivors** (e.g. "Bell Zephyr helmet $120" vs "Saris
+      bike rack $40"): different entities → low cosine → both kept.
+    - **Over-count duplicates** (e.g. "Marketing Research class data
+      analysis project" vs "high-priority work project" pointing at the
+      same job): semantically similar → high cosine → merge to one.
+
+    A no-op when `embedder` is None (LEGACY/BM25 mode).
+    """
+    if not nodes or embedder is None or len(nodes) < 2:
+        return nodes
+    try:
+        import numpy as np
+    except ImportError:
+        return nodes
+    # Resolve node objects from the graph for embedding (NodeSummary holds
+    # the id; NodeEmbedder.embed_node takes a Node).
+    resolved: list[tuple[Any, Any]] = []  # (summary, full Node)
+    for s in nodes:
+        nid = getattr(s, "id", None) or getattr(s, "node_id", None)
+        if not nid:
+            resolved.append((s, None))
+            continue
+        full = graph.get_node_or_none(nid) if hasattr(graph, "get_node_or_none") else None
+        resolved.append((s, full))
+    embeddings: list[Any] = []
+    for s, full in resolved:
+        if full is None:
+            embeddings.append(None)
+            continue
+        try:
+            embeddings.append(embedder.embed_node(full))
+        except Exception:
+            embeddings.append(None)
+
+    def _cos(a: Any, b: Any) -> float:
+        if a is None or b is None:
+            return 0.0
+        na = float(np.linalg.norm(a))
+        nb = float(np.linalg.norm(b))
+        if na == 0 or nb == 0:
+            return 0.0
+        return float(np.dot(a, b) / (na * nb))
+
+    kept_indices: list[int] = []
+    for i in range(len(nodes)):
+        emb_i = embeddings[i]
+        if emb_i is None:
+            kept_indices.append(i)
+            continue
+        is_dup = False
+        for j in kept_indices:
+            emb_j = embeddings[j]
+            if emb_j is None:
+                continue
+            if _cos(emb_i, emb_j) >= threshold:
+                is_dup = True
+                break
+        if not is_dup:
+            kept_indices.append(i)
+    return [nodes[i] for i in kept_indices]
 
 
 class MemoryQueryAgent:
@@ -859,57 +935,25 @@ class MemoryQueryAgent:
             if n.node_type not in ("event", "concept", "intent", "fact")
         ]
 
-        # Iter6 v2: bucketed cross-encoder reranking. Events and concepts are
-        # reranked SEPARATELY against the question (BAAI/bge-reranker-v2-m3),
-        # each bucket keeps its own top-k, and the buckets are concatenated.
-        # Bucketing prevents events from crowding out abstraction-level
-        # concepts in the final cap (Cat 3 / open-domain inference depends on
-        # concepts surviving the cutoff).
-        # Enabled per-profile via `qa_rerank: true` or env CF_RERANK_ENABLED.
-        rerank_enabled = (
-            os.environ.get("CF_RERANK_ENABLED", "0") == "1"
-            or bool(getattr(self.config, "qa_rerank", False))
-        )
-        if rerank_enabled:
-            try:
-                from cognifold.retrieval.cross_encoder_rerank import (
-                    rerank_nodes as _rerank_nodes,
-                )
-
-                event_top_k = int(
-                    os.environ.get("CF_RERANK_EVENT_TOPK", "")
-                    or getattr(self.config, "qa_rerank_event_topk", 0)
-                    or 15
-                )
-                concept_top_k = int(
-                    os.environ.get("CF_RERANK_CONCEPT_TOPK", "")
-                    or getattr(self.config, "qa_rerank_concept_topk", 0)
-                    or 15
-                )
-
-                all_events = base_events + event_summaries
-                if len(all_events) >= 2:
-                    all_events = _rerank_nodes(
-                        question, all_events, top_k=event_top_k
-                    )
-                if len(base_concepts) >= 2:
-                    base_concepts = _rerank_nodes(
-                        question, base_concepts, top_k=concept_top_k
-                    )
-                merged = all_events + base_concepts + base_other
-            except Exception as exc:
-                logger.warning(f"Cross-encoder rerank skipped: {exc}")
-                merged = base_events + event_summaries + base_concepts + base_other
-        else:
-            merged = base_events + event_summaries + base_concepts + base_other
+        merged = base_events + event_summaries + base_concepts + base_other
         # MMR-style dedup (Round 4 fix): when BM25/hybrid retrieval surfaces
         # near-duplicate concepts (e.g. five "user clocked 347 miles on bike"
         # variants from the same session), the duplicates crowd out
-        # specific-entity concepts ($120 helmet, F-15 Eagle kit, …). Walk
-        # the ranked list and skip any node whose content-token containment
-        # with an already-selected node ≥0.85, letting lower-ranked unique
-        # concepts ride in instead.
+        # specific-entity concepts ($120 helmet, F-15 Eagle kit, …) that
+        # would actually answer the question. Walk the ranked list and skip
+        # any node whose title+description token overlap with an
+        # already-selected node ≥0.85, letting lower-ranked unique concepts
+        # ride in instead.
         merged = _dedup_near_duplicates(merged, threshold=0.85)
+        # Round 7 semantic merge: token dedup misses deep co-references
+        # ("Marketing Research class data analysis project" ≈ "high-priority
+        # work project" → same job, different descriptions). Embedding
+        # cosine ≥0.85 collapses these clusters while distinct entities
+        # (helmet vs chain vs lights) stay separate. Reuses NodeEmbedder
+        # cache populated by hybrid retrieval — no extra API calls.
+        merged = _semantic_merge_duplicates(
+            merged, self._embedder, self.graph, threshold=0.85
+        )
         # Cap total nodes to config.max_nodes
         merged = merged[: self.config.max_nodes]
 
@@ -959,8 +1003,12 @@ class MemoryQueryAgent:
         query_type = QueryType.TEMPORAL if is_temporal else QueryType.HYBRID
 
         # LongMemEval graphs have 150-400 concept nodes; use wider context
+        # R9-A: caller may pass max_nodes=N to widen further for aggregation
+        # questions ("how many X have I…", "how much $ spent on Y"). Honor
+        # it via the temp config so the post-merge cap at line 958 also lifts.
+        effective_max_nodes = kwargs.pop("max_nodes", None) or 40
         original_config = self.config
-        self.config = dataclasses.replace(original_config, max_nodes=40)
+        self.config = dataclasses.replace(original_config, max_nodes=effective_max_nodes)
 
         try:
             return self.query(

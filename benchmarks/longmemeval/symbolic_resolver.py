@@ -185,8 +185,18 @@ class LongMemEvalSymbolicResolver:
         return scored[:k]
 
     def _best_concept(self, phrase: str) -> _Concept | None:
-        hits = self._topk_dated(phrase, k=1)
-        return hits[0][1] if hits else None
+        # R9-D: require an unambiguous top match. When two events match the
+        # phrase nearly equally ("met Emma" surfaces 4 distinct Emma sessions),
+        # picking the highest BM25 hit silently injects the wrong date into
+        # date_diff resolvers. If top1 - top2 < 0.20, fall through to None
+        # and let the LLM reader make the call. Conservative: only blocks
+        # genuinely ambiguous cases; clear winners (top1 score ≫ top2) pass.
+        hits = self._topk_dated(phrase, k=2)
+        if not hits:
+            return None
+        if len(hits) >= 2 and (hits[0][0] - hits[1][0]) < 0.20:
+            return None
+        return hits[0][1]
 
     # ----------------------- pattern resolvers ----------------------------
 
