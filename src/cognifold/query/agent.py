@@ -43,6 +43,81 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+_DEDUP_TOKEN_RE = re.compile(r"[a-zA-Z0-9]+")
+
+# Closed-class words to drop before similarity scoring — they're shared
+# across virtually every concept and inflate Jaccard. Content tokens
+# (numbers, names, nouns) drive duplicate detection.
+_DEDUP_STOPWORDS = frozenset({
+    "a", "about", "above", "across", "after", "again", "against", "all", "also",
+    "an", "and", "any", "are", "as", "at", "be", "been", "before", "being",
+    "below", "between", "both", "but", "by", "can", "could", "did", "do", "does",
+    "doing", "down", "during", "each", "few", "for", "from", "further", "had",
+    "has", "have", "having", "he", "her", "here", "hers", "herself", "him",
+    "himself", "his", "how", "i", "if", "in", "into", "is", "it", "its", "itself",
+    "just", "me", "more", "most", "my", "myself", "no", "nor", "not", "now",
+    "of", "off", "on", "once", "only", "or", "other", "our", "ours", "ourselves",
+    "out", "over", "own", "same", "she", "should", "so", "some", "such", "than",
+    "that", "the", "their", "theirs", "them", "themselves", "then", "there",
+    "these", "they", "this", "those", "through", "to", "too", "under", "until",
+    "up", "very", "was", "we", "were", "what", "when", "where", "which", "while",
+    "who", "whom", "why", "will", "with", "you", "your", "yours", "yourself",
+    "yourselves", "user", "mentioned", "noted", "stated", "said", "says", "also",
+})
+
+
+def _node_text_tokens(n: Any) -> set[str]:
+    """Tokenize a node's title + description, stripping stopwords. Result is the
+    content-token set used for near-duplicate scoring."""
+    title = getattr(n, "title", "") or ""
+    desc = getattr(n, "description", "") or ""
+    text = f"{title} {desc}".lower()
+    return {
+        t for t in _DEDUP_TOKEN_RE.findall(text)
+        if t not in _DEDUP_STOPWORDS and len(t) >= 2
+    }
+
+
+def _dedup_near_duplicates(
+    nodes: list[Any],
+    threshold: float = 0.6,
+    min_tokens: int = 4,
+) -> list[Any]:
+    """Greedy MMR-style dedup over a ranked node list.
+
+    Keeps the highest-ranked node in each near-duplicate cluster. A
+    candidate is considered a duplicate of an already-selected node when
+    the **containment** of its content tokens in the prior's set
+    ≥ `threshold` (i.e. `|A ∩ B| / min(|A|,|B|)`). Containment is more
+    forgiving than Jaccard for near-paraphrases that share the salient
+    nouns/numbers but reword the boilerplate.
+
+    Nodes with very few content tokens (< min_tokens) bypass the check —
+    short titles aren't reliably distinguishable, and we don't want to
+    spuriously drop e.g. time anchors with sparse text.
+    """
+    if not nodes:
+        return nodes
+    kept: list[tuple[Any, set[str]]] = []
+    for n in nodes:
+        toks = _node_text_tokens(n)
+        if len(toks) < min_tokens:
+            kept.append((n, toks))
+            continue
+        is_dup = False
+        for _, prev_toks in kept:
+            if not prev_toks or len(prev_toks) < min_tokens:
+                continue
+            inter = len(toks & prev_toks)
+            denom = min(len(toks), len(prev_toks))
+            if denom and inter / denom >= threshold:
+                is_dup = True
+                break
+        if not is_dup:
+            kept.append((n, toks))
+    return [n for n, _ in kept]
+
+
 class MemoryQueryAgent:
     """Agent for querying the memory system.
 
@@ -827,6 +902,14 @@ class MemoryQueryAgent:
                 merged = base_events + event_summaries + base_concepts + base_other
         else:
             merged = base_events + event_summaries + base_concepts + base_other
+        # MMR-style dedup (Round 4 fix): when BM25/hybrid retrieval surfaces
+        # near-duplicate concepts (e.g. five "user clocked 347 miles on bike"
+        # variants from the same session), the duplicates crowd out
+        # specific-entity concepts ($120 helmet, F-15 Eagle kit, …). Walk
+        # the ranked list and skip any node whose content-token containment
+        # with an already-selected node ≥0.85, letting lower-ranked unique
+        # concepts ride in instead.
+        merged = _dedup_near_duplicates(merged, threshold=0.85)
         # Cap total nodes to config.max_nodes
         merged = merged[: self.config.max_nodes]
 
