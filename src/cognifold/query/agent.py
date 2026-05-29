@@ -546,16 +546,30 @@ class MemoryQueryAgent:
 
                 scored_nodes = [ns for ns in scored_nodes if ns.node_type == NodeType.EVENT.value]
 
-        # Step 3.5: 1-hop neighbor expansion (adds graph-connected context)
+        # Step 3.5: 1-hop neighbor expansion (adds graph-connected context).
+        # When rerank is on AND pre_rerank_pool is set, keep a larger pool of
+        # candidates so the rerank step has more to choose from. Rerank
+        # itself trims back to max_nodes at step 4.
+        rerank_enabled = should_rerank or config.use_llm_rerank_batched
+        if rerank_enabled and config.pre_rerank_pool > config.max_nodes:
+            pre_rerank_cap = config.pre_rerank_pool
+        else:
+            pre_rerank_cap = config.max_nodes
         if scored_nodes and self.graph.edge_count > 0:
             scored_nodes = self._expand_with_neighbors(scored_nodes)
-            scored_nodes = scored_nodes[: config.max_nodes]
+            scored_nodes = scored_nodes[:pre_rerank_cap]
 
         # Step 4: Optional LLM re-ranking
-        if should_rerank and scored_nodes:
+        if scored_nodes and rerank_enabled:
             try:
-                scored_nodes = self.rerank_with_llm(query, scored_nodes, config.max_nodes)
-                query_metadata["reranked"] = True
+                if config.use_llm_rerank_batched:
+                    scored_nodes = self.rerank_with_llm_batched(
+                        query, scored_nodes, config.max_nodes,
+                    )
+                    query_metadata["reranked"] = "batched"
+                else:
+                    scored_nodes = self.rerank_with_llm(query, scored_nodes, config.max_nodes)
+                    query_metadata["reranked"] = "per_doc"
             except Exception as e:
                 logger.debug(f"LLM re-ranking failed: {e}")
                 query_metadata["reranked"] = False
@@ -1007,8 +1021,15 @@ class MemoryQueryAgent:
         # questions ("how many X have I…", "how much $ spent on Y"). Honor
         # it via the temp config so the post-merge cap at line 958 also lifts.
         effective_max_nodes = kwargs.pop("max_nodes", None) or 40
+        # Per-question rerank pool override (used by run_eval.py to bump
+        # the pre-rerank candidate set on aggregation questions when
+        # --llm-rerank is on).
+        pre_rerank_pool_override = kwargs.pop("pre_rerank_pool", None)
         original_config = self.config
-        self.config = dataclasses.replace(original_config, max_nodes=effective_max_nodes)
+        replace_kwargs: dict[str, Any] = {"max_nodes": effective_max_nodes}
+        if pre_rerank_pool_override is not None:
+            replace_kwargs["pre_rerank_pool"] = pre_rerank_pool_override
+        self.config = dataclasses.replace(original_config, **replace_kwargs)
 
         try:
             return self.query(
@@ -1672,3 +1693,129 @@ class MemoryQueryAgent:
 
         lang_prompt: str | None = getattr(self, "_language_system_prompt", None)
         return call_llm(prompt, system_prompt=lang_prompt)
+
+    def _call_llm_with(
+        self,
+        prompt: str,
+        *,
+        model: str,
+        reasoning_effort: str | None = None,
+        max_tokens: int = 4096,
+    ) -> str:
+        """Call LLM with an explicit model + reasoning_effort.
+
+        Used by the batched B-rerank path so the rerank step can run
+        on `openai:gpt-5` `reasoning_effort=low` even when the
+        writer/reader are different models.
+        """
+        from cognifold.query.llm import call_llm
+
+        lang_prompt: str | None = getattr(self, "_language_system_prompt", None)
+        return call_llm(
+            prompt,
+            system_prompt=lang_prompt,
+            model=model,
+            reasoning_effort=reasoning_effort,
+            max_tokens=max_tokens,
+        )
+
+    def rerank_with_llm_batched(
+        self,
+        query: str,
+        candidates: list[NodeSummary],
+        top_k: int | None = None,
+        *,
+        model: str | None = None,
+        reasoning_effort: str | None = None,
+    ) -> list[NodeSummary]:
+        """Re-rank candidates with ONE batched LLM call.
+
+        Per-doc rerank (rerank_with_llm) issues 50 LLM calls per question.
+        For gpt-5 that's ~$75 and 20+ hours on N=500. Batched mode presents
+        every candidate to the LLM in a single prompt and asks for a ranked
+        list of ids — one call per question.
+
+        Args:
+            query: The user question.
+            candidates: Retrieved candidate nodes (typically 30-100).
+            top_k: How many to return after rerank (default config.max_nodes).
+            model: Rerank model. Defaults to config.rerank_model
+                (`openai:gpt-5`).
+            reasoning_effort: Reasoning effort for the rerank call.
+                Defaults to config.rerank_reasoning_effort (`low`).
+
+        Returns:
+            Re-ranked list of NodeSummary truncated to top_k.
+        """
+        if not candidates:
+            return []
+        top_k = top_k or self.config.max_nodes
+        model = model or self.config.rerank_model
+        reasoning_effort = reasoning_effort or self.config.rerank_reasoning_effort
+
+        # Build a single prompt listing every candidate by index. Keep
+        # description short — for 50 candidates × 500 char desc + 500 char
+        # title we'd burn ~50k input tokens, which is fine for gpt-5 but
+        # wasteful. Truncate to a 240-char snapshot per candidate.
+        lines = []
+        for i, n in enumerate(candidates):
+            title = (n.title or "").strip().replace("\n", " ")[:120]
+            desc = (n.description or "").strip().replace("\n", " ")[:240]
+            lines.append(f"[{i}] {title}\n    {desc}")
+        catalog = "\n".join(lines)
+
+        prompt = (
+            "You are a relevance reranker. Given a question and a numbered "
+            "list of candidate memory items, return the indices of the top "
+            f"{top_k} items most relevant to answering the question.\n\n"
+            f"Question: {query}\n\n"
+            f"Candidates:\n{catalog}\n\n"
+            "Output a single JSON array of integers (the indices, most "
+            f"relevant first), exactly {top_k} entries. No prose, no "
+            "code fences. Example: [3, 0, 12, 7, ...]"
+        )
+
+        try:
+            response = self._call_llm_with(
+                prompt, model=model, reasoning_effort=reasoning_effort,
+                max_tokens=4096,
+            )
+        except Exception as e:
+            logger.debug(f"Batched LLM rerank failed: {e}")
+            return candidates[:top_k]
+
+        # Parse a JSON array of ints out of the response. Tolerant: strip
+        # code fences if the model added them.
+        text = response.strip()
+        if text.startswith("```"):
+            text = re.sub(r"^```(?:json)?\n?", "", text)
+            text = re.sub(r"\n?```$", "", text)
+        try:
+            import json as _json
+
+            ranked_ids = _json.loads(text)
+            if not isinstance(ranked_ids, list):
+                raise ValueError("response is not a list")
+            ranked_ids = [int(i) for i in ranked_ids if isinstance(i, (int, float))]
+        except Exception as e:
+            logger.debug(f"Failed to parse batched rerank response: {e!r} ({text[:200]!r})")
+            return candidates[:top_k]
+
+        # Build result preserving rerank order; drop out-of-range indices.
+        seen: set[int] = set()
+        out: list[NodeSummary] = []
+        for idx in ranked_ids:
+            if 0 <= idx < len(candidates) and idx not in seen:
+                seen.add(idx)
+                out.append(candidates[idx])
+                if len(out) >= top_k:
+                    break
+        # If the model returned too few (rare), fill with unseen by original
+        # order to guarantee top_k items downstream.
+        if len(out) < top_k:
+            for i, n in enumerate(candidates):
+                if i not in seen:
+                    out.append(n)
+                    if len(out) >= top_k:
+                        break
+        return out

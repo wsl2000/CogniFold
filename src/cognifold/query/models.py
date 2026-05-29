@@ -84,6 +84,20 @@ class QueryConfig:
     domain: str | None = None
     speaker_aware: bool = False
     use_llm_rerank: bool = False
+    # Batched B-rerank: single LLM call ranks all candidates jointly,
+    # rather than per-doc scoring. Required for gpt-5 reranker (per-doc
+    # would be 50× more calls). When True, agent uses rerank_with_llm_batched
+    # instead of rerank_with_llm. See my_prompt.md §1.2.
+    use_llm_rerank_batched: bool = False
+    rerank_model: str = "openai:gpt-5"
+    rerank_reasoning_effort: str = "low"
+    # When rerank is enabled, retrieval keeps the top `pre_rerank_pool`
+    # candidates (instead of just `max_nodes`) before reranking. The
+    # rerank step then trims back to `max_nodes`. Lets you fetch a large
+    # candidate pool — useful for aggregation questions where the
+    # relevant session can sit at rank 30-50 — without flooding the
+    # reader with low-quality items. 0 = disabled (use max_nodes).
+    pre_rerank_pool: int = 0
     use_query_expansion: bool = False
     retrieval_mode: RetrievalMode = RetrievalMode.HYBRID
     semantic_weight: float = 0.5

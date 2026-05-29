@@ -93,23 +93,30 @@ Three rerank paradigms exist; only one is right for this benchmark.
 
 **Why NOT per-doc B** (only batched B): per-doc rerank with gpt-5 = 50 LLM calls per question × 500 questions = 25000 calls ≈ $75 + 20+ hours. Batched B = 1 LLM call per question = 500 calls ≈ $3 + 30 min. **Always batched.**
 
-#### Code changes required to enable batched B-rerank
+#### Batched B-rerank is now wired (just pass the flag)
 
-The existing `rerank_with_llm` in `src/cognifold/query/agent.py:1563` is **per-doc** (50 calls). For batched mode + gpt-5-low rerank model, three changes:
+The infrastructure for batched B-rerank is landed on `iter`:
 
-1. **`src/cognifold/query/agent.py`** — add a new method:
-   ```python
-   def rerank_with_llm_batched(self, query, candidates, top_k):
-       """One LLM call: present all candidates with ids, ask for ranked ids."""
-       # build a single prompt enumerating (id, title, description) tuples
-       # ask: "Return the top {top_k} ids in JSON array, ranked by
-       # relevance to the question. JSON only."
-       # parse the array, return reordered NodeSummary list
-   ```
-2. **`src/cognifold/query/llm.py`** — add `model` and `reasoning_effort` kwargs to `call_llm` so the rerank step can use `openai:gpt-5` with `reasoning_effort=low` while writer/reader use their own models.
-3. **`benchmarks/longmemeval/run_eval.py`** — add a `--llm-rerank` CLI flag that sets `query_config.use_llm_rerank = True`, plus a `--rerank-model` flag (default `openai:gpt-5`).
+- `MemoryQueryAgent.rerank_with_llm_batched()` — one LLM call ranks
+  every candidate jointly, returns top-K indices.
+- `call_llm()` accepts `model=` and `reasoning_effort=` so the rerank
+  step uses `openai:gpt-5` `reasoning_effort=low` while writer/reader
+  use their own models.
+- `QueryConfig` exposes `use_llm_rerank_batched`, `rerank_model`,
+  `rerank_reasoning_effort`, `pre_rerank_pool`.
+- `run_eval.py` exposes `--llm-rerank`, `--rerank-model`,
+  `--rerank-reasoning-effort`, `--rerank-pool`. On aggregation
+  questions (R9-A heuristic), the runner auto-bumps `pre_rerank_pool`
+  to `max(--rerank-pool, 100)` so the relevant session can sit at
+  rank 30-50 and still survive into the reranker's view.
 
-**Don't enable the *existing* `use_llm_rerank=True`** — it routes through per-doc mode at hardcoded gpt-4o-mini (`src/cognifold/query/llm.py:95`). That mode is too slow + uses a too-weak rerank model + still ranks one-at-a-time which loses the cross-doc relevance comparison.
+Use the §2.3 command — it now runs as-is, no source edits needed.
+
+**Don't enable the *existing* `use_llm_rerank=True`** — that flag
+routes through the legacy per-doc path at hardcoded gpt-4o-mini
+(`src/cognifold/query/llm.py:95`). 50× more LLM calls and a weaker
+rerank model. The new `--llm-rerank` CLI flag binds to the batched
+path; use it.
 
 ---
 
@@ -216,7 +223,7 @@ Final artifacts: `benchmarks/longmemeval/output/{hypothesis.jsonl,
 metrics.json, wrong_cases.json}`. Re-running the same command is a no-op
 when complete (resume).
 
-### 2.3 Post-code-change command (after §1.2 batched B-rerank lands)
+### 2.3 Full §1 stack with batched B-rerank (recommended)
 
 ```bash
 PYTHONPATH=src .venv/bin/python -u -m benchmarks.longmemeval.run_eval \
@@ -226,12 +233,15 @@ PYTHONPATH=src .venv/bin/python -u -m benchmarks.longmemeval.run_eval \
     --embedding openai:text-embedding-3-large \
     --symbolic-resolver --symbolic-temporal --symbolic-bypass \
     --llm-rerank --rerank-model openai:gpt-5 \
-    --batch-mode \
+    --rerank-reasoning-effort low --rerank-pool 100 \
+    --batch-mode --llm-eval \
     --stratified 133 --limit 500 \
     --resume
 ```
 
 Projected ceiling: **~96-97% J-Score** on full N=500 (Mastra SOTA is 94.87%). Cost ≈ $40-80; wall-clock adds ~30 min total (one batched gpt-5-low call per question).
+
+`--rerank-pool 100` tells retrieval to keep the top 100 candidates before rerank; rerank then trims to `max_nodes` (20-50 depending on aggregation detection). Drop to `--rerank-pool 50` if your gpt-5 TPM cap forces it.
 
 ---
 
@@ -724,9 +734,10 @@ grep -q "Using writer model: openai:gpt-5\b"                    "$LOG" || { echo
 grep -q "Using model: openai:gpt-5\b"                           "$LOG" || { echo "READER != openai:gpt-5"; fail=1; }
 grep -q "Using embedding: openai:text-embedding-3-large\b"      "$LOG" || { echo "EMBEDDING != text-embedding-3-large"; fail=1; }
 grep -q "Stratified sampling: 133 .* × 6"                       "$LOG" || { echo "STRATIFIED != 133 × 6 types"; fail=1; }
+grep -q "Batched B-rerank: enabled (model=openai:gpt-5"         "$LOG" || { echo "RERANK != openai:gpt-5 batched"; fail=1; }
 
 [ "$fail" -eq 0 ] || { echo "ABORT: config drift detected — result is NOT comparable to SOTA"; exit 1; }
-echo "OK: all 5 model/config gates passed"
+echo "OK: all 6 model/config gates passed"
 ```
 
 Wire this block into §7.2's loop **between step (1) and step (2)** —

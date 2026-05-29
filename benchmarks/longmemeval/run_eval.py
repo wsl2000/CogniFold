@@ -686,6 +686,14 @@ def run_benchmark(args: argparse.Namespace) -> None:
     logger.info(f"Using model: {config.model_name}")
     logger.info(f"Batch mode: {args.batch_mode}")
     logger.info(f"Evaluation mode: {'LLM' if args.llm_eval else 'skip'}")
+    if args.llm_rerank:
+        logger.info(
+            f"Batched B-rerank: enabled (model={args.rerank_model}, "
+            f"reasoning_effort={args.rerank_reasoning_effort}, "
+            f"pool={args.rerank_pool or 'max_nodes'})"
+        )
+    else:
+        logger.info("Batched B-rerank: disabled")
 
     if args.stratified:
         # Stratified sampling: take N per question_type for balanced coverage
@@ -769,6 +777,10 @@ def run_benchmark(args: argparse.Namespace) -> None:
             max_nodes=20,
             include_reasoning=True,
             retrieval_mode=retrieval_mode,
+            use_llm_rerank_batched=bool(args.llm_rerank),
+            rerank_model=args.rerank_model,
+            rerank_reasoning_effort=args.rerank_reasoning_effort,
+            pre_rerank_pool=args.rerank_pool if args.llm_rerank else 0,
         )
         query_agent = MemoryQueryAgent(graph, config=query_config, embedder=embedder)
 
@@ -837,12 +849,23 @@ def run_benchmark(args: argparse.Namespace) -> None:
             question, re.IGNORECASE,
         )
         _query_max_nodes = 50 if (_qa_agg_count or _qa_agg_sum) else None
+        # On aggregation questions, also boost the pre-rerank pool so the
+        # rerank step has a fuller session set to choose from. Only takes
+        # effect when --llm-rerank is on; otherwise the override is
+        # max_nodes-equivalent (rerank disabled ⇒ pool boost is moot).
+        if args.llm_rerank and (_qa_agg_count or _qa_agg_sum):
+            _query_pre_rerank_pool = max(args.rerank_pool, 100)
+        elif args.llm_rerank:
+            _query_pre_rerank_pool = args.rerank_pool
+        else:
+            _query_pre_rerank_pool = None
         _query_start = time.time()
         query_result = query_agent.query_for_qa(
             question=question,
             domain="longmemeval",
             query_mode=args.query_mode,
             max_nodes=_query_max_nodes,
+            pre_rerank_pool=_query_pre_rerank_pool,
         )
         context_text = query_result.context
 
@@ -1017,6 +1040,39 @@ if __name__ == "__main__":
         type=str,
         default=None,
         help="Override LLM model used for evaluation (default: same as --model). Pass openai:gpt-4o to match the canonical LongMemEval judge.",
+    )
+    parser.add_argument(
+        "--llm-rerank",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable batched B-rerank: one LLM call per question scores every "
+        "retrieved candidate jointly and returns ranked indices. See "
+        "my_prompt.md §1.2 — this is the canonical rerank path; the legacy "
+        "per-doc rerank is intentionally not exposed via CLI.",
+    )
+    parser.add_argument(
+        "--rerank-model",
+        type=str,
+        default="openai:gpt-5",
+        help="Rerank LLM. Default openai:gpt-5 (cheap with reasoning_effort=low).",
+    )
+    parser.add_argument(
+        "--rerank-reasoning-effort",
+        type=str,
+        default="low",
+        choices=["low", "medium", "high"],
+        help="Reasoning effort for rerank LLM. Default low — rerank is "
+        "scoring relevance, not full QA, so low effort is enough.",
+    )
+    parser.add_argument(
+        "--rerank-pool",
+        type=int,
+        default=0,
+        help="When --llm-rerank is on, retrieval keeps this many candidates "
+        "before reranking (rerank then trims to max_nodes). 0 = use "
+        "max_nodes (no pool expansion). On aggregation questions "
+        "(detected via the R9-A heuristic), the runner auto-bumps to "
+        "max(this, 100) so the relevant session is in the pool.",
     )
     parser.add_argument(
         "--resume",
