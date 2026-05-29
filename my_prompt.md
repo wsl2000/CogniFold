@@ -594,6 +594,12 @@ loop forever:
     # 500 parallel (depth=1) assumes a high-TPM gpt-5 key (≥12M TPM).
     # On a standard Tier-5 key drop to 50; see §2.2 table.
 
+    # (1b) Config gate — §8.1. Aborts the round if any model/embedding
+    #      silently fell back. A drift here makes the round's metric
+    #      incomparable, so we throw the result away rather than record
+    #      a polluted snapshot.
+    bash -c '<§8.1 gate block>' || halt("config drift; see §8.1")
+
     # (2) Compute metric
     metric = json.load(open("benchmarks/longmemeval/output/metrics.json"))
     correct = metric["correct"]    # int, 0..500
@@ -695,6 +701,50 @@ loop forever:
 - [ ] `git remote -v` shows origin = `https://github.com/OpenNorve/CogniFold.git` (HTTPS or SSH form both OK).
 - [ ] `git branch --show-current` returns **`iter`** — never run the loop on any other branch.
 - [ ] `git push origin iter --dry-run` succeeds without credential prompt AND reports `iter -> iter` (not main/other) — the loop pushes inline after each round.
+
+### 8.1 Runtime config fail-fast gate (MUST run before treating any result as valid)
+
+The §1 stack is enforceable only at runtime — the runner silently falls
+back to the reader model when `--judge-model` / `--writer-model` /
+`--embedding` are omitted, so a missing flag will *not* error and the
+resulting J-Score will be incomparable.
+
+**Before reporting any metric, every batch log must pass all 5 of these
+greps.** Failing any one ⇒ the run is invalid; discard the result, fix
+the launch command, re-run from scratch (not from `--resume`).
+
+```bash
+# Pick the freshest batch log from this round.
+LOG=$(ls -t logs/parallel_b*.log logs/longmemeval_*.log 2>/dev/null | head -1)
+[ -n "$LOG" ] || { echo "FATAL: no run log found"; exit 1; }
+
+fail=0
+grep -q "Using judge model: openai:gpt-4o\b"                    "$LOG" || { echo "JUDGE != openai:gpt-4o"; fail=1; }
+grep -q "Using writer model: openai:gpt-5\b"                    "$LOG" || { echo "WRITER != openai:gpt-5"; fail=1; }
+grep -q "Using model: openai:gpt-5\b"                           "$LOG" || { echo "READER != openai:gpt-5"; fail=1; }
+grep -q "Using embedding: openai:text-embedding-3-large\b"      "$LOG" || { echo "EMBEDDING != text-embedding-3-large"; fail=1; }
+grep -q "Stratified sampling: 133 .* × 6"                       "$LOG" || { echo "STRATIFIED != 133 × 6 types"; fail=1; }
+
+[ "$fail" -eq 0 ] || { echo "ABORT: config drift detected — result is NOT comparable to SOTA"; exit 1; }
+echo "OK: all 5 model/config gates passed"
+```
+
+Wire this block into §7.2's loop **between step (1) and step (2)** —
+before the metric is read, before the snapshot is taken, before the
+commit. A drift in any single line invalidates the entire round.
+
+Why each grep matters (do not relax any of these):
+
+| Gate | What goes wrong without it | Historical regression |
+|---|---|---|
+| `judge = openai:gpt-4o` | Silent fallback to reader model. Numbers become incomparable to Mastra/Hindsight. | The 2026-05 NVIDIA-route run hit 61.4% because judge defaulted to `gpt-5.4-mini`. |
+| `writer = openai:gpt-5` | Falls back to reader. With anything weaker than gpt-5 the extraction misses arithmetic facts and multi-session under-counts collapse to errors. | Same 61.4% run; multi-session error rate was 45%. |
+| `reader = openai:gpt-5` | The CLI flag is `--model`; if it's wrong, the §1 stack name is a lie. | Same. |
+| `embedding = text-embedding-3-large` | Defaults to `text-embedding-3-small` in the profile. Retrieval recall drops 3-5 pp; multi-session under-counts because the relevant session falls below top-K. | Standard default-trap; -3 to -5 pp on multi-session. |
+| `Stratified sampling: 133 × 6` | Without it, only 30 of each type are sampled (180 total) — denominator is wrong, score is incomparable. | Pre-2026-04 default truncated to subsets. |
+
+**Do not** bypass this gate by editing the greps to be lenient. The
+whole point is that one mismatched line ⇒ the run is thrown away.
 
 ---
 
