@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from cognifold.graph.store import ConceptGraph
@@ -139,8 +139,10 @@ class LongMemEvalSymbolicResolver:
             ("date_diff_between",  self._try_diff_between),
             ("which_first",        self._try_which_first),
             ("chronological_order", self._try_chronological_order),
+            ("rank_among",         self._try_rank_among),
             ("date_diff_ago",      self._try_diff_ago),
             ("date_diff_since",    self._try_diff_since),
+            ("relative_ago_recall", self._try_relative_ago_recall),
             ("latest_value",       self._try_latest_value),
             ("topic_recall",       self._try_topic_recall),
         ]:
@@ -234,9 +236,17 @@ class LongMemEvalSymbolicResolver:
         r"which\s+(?:event\s+)?happened\s+first(?:,)?\s+(.+?)\s+or\s+(.+?)(?:\?|$)",
         re.IGNORECASE,
     )
+    # Variant: "Which event did I {participate in|attend|do|join|...} first, X or Y?"
+    # — captures the same intent in active voice, very common in the dataset.
+    _WHICH_FIRST_V2_RE = re.compile(
+        r"which\s+(?:event\s+|activity\s+|trip\s+)?did\s+(?:i|we)\s+"
+        r"(?:participate\s+in|attend|do|join|complete|finish|go\s+to|visit)\s+first"
+        r"(?:,)?\s+(.+?)\s+or\s+(.+?)(?:\?|$)",
+        re.IGNORECASE,
+    )
 
     def _try_which_first(self, query: str) -> dict | None:
-        m = self._WHICH_FIRST_RE.search(query)
+        m = self._WHICH_FIRST_RE.search(query) or self._WHICH_FIRST_V2_RE.search(query)
         if not m:
             return None
         phrase_a = m.group(1).strip()
@@ -262,7 +272,16 @@ class LongMemEvalSymbolicResolver:
         }
 
     _ORDER_HEAD_RE = re.compile(
-        r"which\s+(?:two|three|four|five|2|3|4|5)\s+events\s+happened\s+in\s+(?:the\s+)?order\s+from\s+first\s+to\s+last\s*:?\s*",
+        r"(?:"
+        # Existing: "Which N events happened in the order from first to last:"
+        r"which\s+(?:two|three|four|five|six|seven|eight|nine|ten|2|3|4|5|6|7|8|9|10)\s+events\s+happened\s+in\s+(?:the\s+)?order\s+from\s+first\s+to\s+last\s*:?\s*"
+        r"|"
+        # Variant: "What is the order of the N events:" — colon required so we
+        # only fire on the explicit-list form (implicit-list forms like "What
+        # is the order of the three trips I took..." would mis-parse on
+        # comma-split and silently inject wrong events; leave those for LLM).
+        r"what\s+is\s+the\s+order\s+of\s+(?:the\s+)?(?:two|three|four|five|six|seven|eight|nine|ten|2|3|4|5|6|7|8|9|10)\s+\w+(?:\s+events)?\s*:\s*"
+        r")",
         re.IGNORECASE,
     )
 
@@ -295,6 +314,47 @@ class LongMemEvalSymbolicResolver:
             sentence = " → ".join(ordered_phrases)
         reasoning = "; ".join(
             f"'{p}' = {c.date.date()}" for p, c in resolved if c.date
+        )
+        return {"answer": sentence, "reasoning": reasoning, "bypass": True}
+
+    # "Who graduated first, second and third among Emma, Rachel and Alex?"
+    # Generalizes _try_chronological_order to a 3-entity ranking question with
+    # named subjects (people / things) instead of action phrases.
+    _RANK_AMONG_RE = re.compile(
+        r"who\s+(\w+(?:\s+\w+){0,2})\s+first(?:,)?\s+second(?:,)?\s+and\s+third\s+among\s+"
+        r"(.+?)(?:\?|$)",
+        re.IGNORECASE,
+    )
+
+    def _try_rank_among(self, query: str) -> dict | None:
+        m = self._RANK_AMONG_RE.search(query)
+        if not m:
+            return None
+        verb_phrase = m.group(1).strip()
+        names_blob = m.group(2).strip()
+        # Split "A, B and C" / "A, B, and C" / "A and B and C" into entity names
+        parts = re.split(r"\s*,\s*and\s+|\s+and\s+|\s*,\s*", names_blob)
+        parts = [p.strip().rstrip(".") for p in parts if p.strip()]
+        if len(parts) < 2:
+            return None
+        # Score each entity by combining the verb (e.g., "graduated") with the
+        # name so the matched concept is the person's verb-event (e.g. "Emma
+        # graduated"), not just any concept mentioning the name.
+        resolved: list[tuple[str, _Concept]] = []
+        for name in parts:
+            phrase = f"{name} {verb_phrase}"
+            c = self._best_concept(phrase)
+            if c is None or c.date is None:
+                return None
+            resolved.append((name, c))
+        resolved.sort(key=lambda x: x[1].date or datetime.min)
+        ordered = [name for name, _ in resolved]
+        if len(ordered) == 3:
+            sentence = f"{ordered[0]}, then {ordered[1]}, then {ordered[2]}."
+        else:
+            sentence = " → ".join(ordered)
+        reasoning = "; ".join(
+            f"{name} {verb_phrase} = {c.date.date()}" for name, c in resolved if c.date
         )
         return {"answer": sentence, "reasoning": reasoning, "bypass": True}
 
@@ -360,6 +420,100 @@ class LongMemEvalSymbolicResolver:
                 f"diff = {diff_days} days."
             ),
             "bypass": True,
+        }
+
+    # "Which book did I finish a week ago?" / "What charity event did I
+    # participate in a month ago?" / "What gardening activity did I do two
+    # weeks ago?" — relative-date recall. Compute target_date = question_date
+    # − N units, then find the best concept on that date whose text matches
+    # the topic phrase from the question. Bypass policy: only short-circuit
+    # the LLM when the top match is unambiguous on that date.
+    _RELATIVE_AGO_RE = re.compile(
+        r"\b(?:a|an|one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s+"
+        r"(day|days|week|weeks|month|months|year|years)\s+ago\b",
+        re.IGNORECASE,
+    )
+    _WORD_TO_INT = {
+        "a": 1, "an": 1, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+        "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+    }
+
+    def _try_relative_ago_recall(self, query: str) -> dict | None:
+        if self.question_date is None:
+            return None
+        # Skip the "how many ... ago" form — _try_diff_ago owns that.
+        if re.search(r"how\s+many\b", query, re.IGNORECASE):
+            return None
+        m = self._RELATIVE_AGO_RE.search(query)
+        if not m:
+            return None
+        # Re-find the number/word right before the unit so we get the count.
+        full_m = re.search(
+            r"\b(a|an|one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s+"
+            r"(day|days|week|weeks|month|months|year|years)\s+ago\b",
+            query, re.IGNORECASE,
+        )
+        if not full_m:
+            return None
+        count_str = full_m.group(1).lower()
+        unit = full_m.group(2).lower()
+        count = self._WORD_TO_INT.get(count_str)
+        if count is None:
+            try:
+                count = int(count_str)
+            except ValueError:
+                return None
+        unit_days = self._UNIT_DAYS[unit if unit.endswith("s") else unit + "s"]
+        days_back = count * unit_days
+        target = self.question_date - timedelta(days=days_back)
+        # Topic phrase = the part of the question BEFORE the "X ago" clause,
+        # stripped of question/pronoun stop-words. e.g.,
+        # "Which book did I finish a week ago?" → topic ≈ "book finish".
+        head = query[:full_m.start()].strip().rstrip(",.")
+        head = re.sub(
+            r"\b(?:which|what|who|where|did|do|does|i|we|my|the|a|an|that|"
+            r"this|in|on|at|of|to|with|from|for)\b",
+            "", head, flags=re.IGNORECASE,
+        )
+        topic = re.sub(r"\s+", " ", head).strip()
+        if not topic:
+            return None
+        # Find concepts dated within ±1 day of target (sessions are
+        # day-granular; small jitter possible if the dataset rounds).
+        candidates = []
+        for c in self._concepts:
+            if c.date is None:
+                continue
+            if abs((c.date.date() - target.date()).days) > 1:
+                continue
+            score = _phrase_score(topic, c.raw_text)
+            if score >= 0.34:
+                candidates.append((score, c))
+        if not candidates:
+            return None
+        # Prefer CONCEPT over EVENT on tied score (same convention as
+        # _topk_dated). Then date proximity to the target.
+        candidates.sort(
+            key=lambda x: (-x[0], x[1].node_id.startswith("evt-"),
+                           abs((x[1].date.date() - target.date()).days)
+                           if x[1].date else 0),
+        )
+        # Bypass only when the top candidate clearly beats the runner-up.
+        # Ambiguous on the same date → inject as RECALL_HINT and let the
+        # LLM choose. (Mirror _best_concept's 0.20 margin.)
+        bypass = (
+            len(candidates) == 1
+            or (candidates[0][0] - candidates[1][0]) >= 0.20
+        )
+        top = candidates[0][1]
+        return {
+            "answer": top.title,
+            "reasoning": (
+                f"Question date {self.question_date.date()} − {days_back} days "
+                f"⇒ target {target.date()}. Matched '{top.title}' on "
+                f"{top.date.date()} (score {candidates[0][0]:.2f})."
+            ),
+            "bypass": bypass,
         }
 
     _LATEST_RE = re.compile(
