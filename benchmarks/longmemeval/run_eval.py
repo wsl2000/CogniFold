@@ -922,6 +922,8 @@ def run_benchmark(args: argparse.Namespace) -> None:
             "ground_truth": ground_truth,
             "context_length": len(context_text),
             "graph_nodes": graph.node_count,
+            "symbolic_pattern": (symbolic_result or {}).get("pattern"),
+            "bypass_taken": bool(should_bypass),
         }
 
         if eval_result:
