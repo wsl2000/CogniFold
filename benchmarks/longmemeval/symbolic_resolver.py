@@ -200,6 +200,30 @@ class LongMemEvalSymbolicResolver:
             return None
         return hits[0][1]
 
+    def _best_recent_concept(self, phrase: str) -> _Concept | None:
+        """Like _best_concept, but on near-tied scores prefer LATEST date.
+
+        Use for "X ago" / "since X" questions where the implicit referent
+        is the most recent matching event, not the oldest. The default
+        _topk_dated sort breaks score ties by EARLIEST date (good for
+        "which happened first" semantics), which silently picks the
+        wrong Emma when the user has 4 sessions mentioning her — the
+        2026-05 baseline returned "1138 days ago" for `gpt4_468eb063`
+        ("how many days ago did I meet Emma?") because it locked onto
+        an old Emma reference. Recency tiebreak fixes that class.
+        """
+        hits = self._topk_dated(phrase, k=5)
+        if not hits:
+            return None
+        top_score = hits[0][0]
+        # Candidates whose score is within 0.20 of the top — "good matches".
+        # Among these, pick the most recent.
+        near_top = [c for s, c in hits if (top_score - s) < 0.20]
+        if not near_top:
+            return None
+        near_top.sort(key=lambda c: c.date or datetime.min, reverse=True)
+        return near_top[0]
+
     # ----------------------- pattern resolvers ----------------------------
 
     # Patterns matching event phrases after key prepositions
@@ -372,7 +396,11 @@ class LongMemEvalSymbolicResolver:
         unit = m.group(1).lower()
         unit_key = unit if unit.endswith("s") else unit + "s"
         phrase = m.group(2).strip()
-        c = self._best_concept(phrase)
+        # "X ago" implies the MOST RECENT X, not the oldest. Recency
+        # tiebreak fixes the `gpt4_468eb063` Emma case where 4 sessions
+        # mention "Emma" and the old recall-only scorer locked onto the
+        # oldest (1138 days ago) instead of the recent one (9 days).
+        c = self._best_recent_concept(phrase)
         if c is None or c.date is None:
             return None
         diff_days = (self.question_date - c.date).days
@@ -404,7 +432,8 @@ class LongMemEvalSymbolicResolver:
         unit = m.group(1).lower()
         unit_key = unit if unit.endswith("s") else unit + "s"
         phrase = m.group(2).strip()
-        c = self._best_concept(phrase)
+        # "since X" implies the MOST RECENT X (same as "X ago" semantics).
+        c = self._best_recent_concept(phrase)
         if c is None or c.date is None:
             return None
         diff_days = (self.question_date - c.date).days

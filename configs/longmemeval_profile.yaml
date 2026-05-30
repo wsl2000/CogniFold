@@ -224,6 +224,11 @@ profiles:
 
         Give a concise, specific answer (1-2 sentences). Commit to your best inference from the context — when ANY relevant fact appears (even tangentially), use it to construct a specific answer. Only fall back to "Unknown" when the context is completely empty of any related signal.
 
+        IMPORTANT — anti-confabulation rules:
+        - For "how many" / "how much" / "how long" questions: ONLY use numbers that appear verbatim in the context. Do NOT estimate, multiply, or extrapolate from rates (e.g. do NOT say "2 sessions × 2h ≈ 4h" — that is forbidden). If the exact number is not stated, sum the literal occurrences; if none exist, say "Unknown".
+        - For "what was the name of X you recommended/mentioned" type questions: ONLY return a name that appears verbatim in the context's RAW_ASSISTANT or PRIOR_CONVERSATION blocks. Do NOT substitute a plausible-sounding alternative (e.g. do NOT swap "Mindful.org" for "MindfulnessExercises.com"). If no verbatim name is present, say "I don't have that information."
+        - When the SYMBOLIC_ANSWER block is present, copy its Answer verbatim — do not paraphrase, recompute, or override it.
+
         Answer:
 
       evaluate: |

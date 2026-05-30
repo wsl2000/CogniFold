@@ -237,6 +237,23 @@ _RECENCY_TRIGGER = re.compile(
 )
 
 
+# Cluster E trigger — "previous conversation about X" / "you (mentioned|
+# recommended|provided|listed|suggested) X". When the question explicitly
+# references the assistant's prior turn, the answer is in a raw assistant
+# EVENT — which retrieval routinely buries because (a) its title is just
+# "Assistant message" so phrase score is weak, and (b) the distilled CONCEPT
+# nodes win on lexical overlap. build_assistant_recall_block surfaces the
+# raw assistant text directly.
+_ASSISTANT_RECALL_TRIGGER = re.compile(
+    r"\b(?:"
+    r"previous\s+conversation|earlier\s+conversation|our\s+(?:previous|earlier|prior)\s+(?:chat|conversation|discussion)|"
+    r"you\s+(?:mentioned|recommended|provided|listed|suggested|told\s+me|said|named|gave\s+me)|"
+    r"recommendation\s+(?:you|i)|that\s+you\s+(?:recommended|gave|named|listed)"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
 def _stopwords() -> set[str]:
     return {
         "a","an","the","this","that","these","those","i","my","me","mine",
@@ -309,6 +326,79 @@ def build_recency_block(graph: ConceptGraph, question: str, max_items: int = 8) 
     ]
     for i, (_, dt, title, desc) in enumerate(top, 1):
         lines.append(f"{i}. [{dt.date()}] **{title}** — {desc}")
+    return "\n".join(lines) + "\n"
+
+
+def build_assistant_recall_block(
+    graph: ConceptGraph, question: str, max_items: int = 4, snippet_chars: int = 600
+) -> str:
+    """Surface raw assistant EVENT text for "previous conversation about X"
+    questions.
+
+    The distilled CONCEPT nodes paraphrase the assistant's surface form away
+    (the Borges quote becomes "user asked about the Library of Babel"), and
+    retrieval ranks them above raw EVENTs because the EVENT title is just
+    "Assistant message". When the question explicitly asks for a name /
+    title / quote the assistant produced earlier, hand the reader the raw
+    text directly.
+
+    Pattern: same lexical-overlap scoring as build_recency_block. Filtered
+    to assistant role EVENTs only. Trigger-gated so this block is silent on
+    questions that don't reference a prior assistant turn (no regression
+    risk on the other clusters).
+    """
+    if not _ASSISTANT_RECALL_TRIGGER.search(question):
+        return ""
+
+    sw = _stopwords()
+    q_tokens = {
+        t for t in re.findall(r"[a-zA-Z]+", question.lower())
+        if t not in sw and len(t) > 2
+    }
+    if not q_tokens:
+        return ""
+
+    scored: list[tuple[float, datetime, str]] = []
+    for n in graph.get_all_nodes():
+        if n.type != NodeType.EVENT:
+            continue
+        if n.data.get("role") != "assistant":
+            continue
+        content = n.data.get("content") or n.data.get("description") or ""
+        if not content:
+            continue
+        date_str = n.data.get("date") or n.data.get("timestamp")
+        if not date_str:
+            continue
+        try:
+            dt = datetime.fromisoformat(date_str.replace("Z", "")[:19]) if "T" in date_str \
+                else datetime.fromisoformat(date_str)
+        except Exception:
+            continue
+        text_tokens = set(re.findall(r"[a-zA-Z]+", content.lower()))
+        overlap = len(q_tokens & text_tokens)
+        if overlap == 0:
+            continue
+        # Recall fraction × small log boost for richer assistant turns.
+        score = overlap / max(1, len(q_tokens))
+        scored.append((score, dt, content))
+
+    if not scored:
+        return ""
+
+    # Sort by score DESC; on ties, prefer newer date (more likely the turn
+    # the user is referring back to).
+    scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
+    top = scored[:max_items]
+
+    lines = [
+        "## RAW_ASSISTANT (verbatim text from assistant turns the question likely refers to — copy names/quotes from here, do NOT substitute)",
+    ]
+    for i, (score, dt, content) in enumerate(top, 1):
+        snippet = content.strip().replace("\n", " ")
+        if len(snippet) > snippet_chars:
+            snippet = snippet[:snippet_chars] + "…"
+        lines.append(f"{i}. [{dt.date()}] (overlap={score:.2f}) {snippet}")
     return "\n".join(lines) + "\n"
 
 
@@ -885,6 +975,15 @@ def run_benchmark(args: argparse.Namespace) -> None:
         recency_block = build_recency_block(graph, question)
         if recency_block:
             context_text = recency_block + "\n" + context_text
+
+        # Cluster E — Assistant-text recall. When the question explicitly
+        # references a prior assistant turn ("previous conversation about X",
+        # "you recommended/mentioned/listed Y"), the answer is in a raw
+        # assistant EVENT that distilled CONCEPT retrieval routinely buries.
+        # Surface it directly so the reader can copy the verbatim name/quote.
+        assistant_block = build_assistant_recall_block(graph, question)
+        if assistant_block:
+            context_text = assistant_block + "\n" + context_text
 
         # Symbolic deterministic resolver (ToMi-style): pattern-match the
         # question against the dated graph and compute an exact answer string.
