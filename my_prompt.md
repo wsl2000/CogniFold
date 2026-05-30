@@ -9,10 +9,11 @@
 
 **Base repo (canonical remote)**: <https://github.com/OpenNorve/CogniFold>
 
-**Working branch**: **`iter`** — all autonomous-loop commits and snapshots
-MUST land on this branch only. **Never push to `main`, `public-release`,
-`cognifold-dev`, or any other branch.** The `iter` branch is dedicated
-to the autonomous campaign so other work isn't disturbed.
+**Working branch**: **`longmemeval-iter`** — all autonomous-loop commits and
+snapshots MUST land on this branch only. **Never push to `main`,
+`public-release`, `cognifold-dev`, `iter`, or any other branch.** The
+`longmemeval-iter` branch is dedicated to this autonomous campaign so other
+work isn't disturbed.
 
 Verify with `git remote -v` and `git branch --show-current` BEFORE
 running anything that pushes.
@@ -20,8 +21,8 @@ running anything that pushes.
 ```bash
 git clone https://github.com/OpenNorve/CogniFold.git && cd CogniFold
 # (SSH equivalent: git clone git@github.com:OpenNorve/CogniFold.git)
-git checkout iter                  # ← MUST be on iter before any commit
-git branch --show-current          # → must print "iter"
+git checkout longmemeval-iter      # ← MUST be on this branch before any commit
+git branch --show-current          # → must print "longmemeval-iter"
 python -m venv .venv && source .venv/bin/activate
 pip install -e .
 echo "OPENAI_API_KEY=sk-..." > .env
@@ -42,14 +43,15 @@ git remote rename <existing-OpenNorve-remote-name> origin   # only if needed
 ```
 
 **Git push credentials.** The per-round inline push (§7.2) only works
-if `git push origin iter` succeeds non-interactively. Verify:
+if `git push origin longmemeval-iter` succeeds non-interactively. Verify:
 
 ```bash
 # SSH path: confirm the GitHub SSH key works
 ssh -T git@github.com    # expect "Hi <user>! You've successfully authenticated"
 # or HTTPS path: ensure ~/.git-credentials or GH_TOKEN is set
-git push origin iter --dry-run    # must succeed without password prompt
-                                  # AND must show "iter -> iter" (NOT main/other)
+git push origin longmemeval-iter --dry-run    # must succeed without password prompt
+                                              # AND must show "longmemeval-iter -> longmemeval-iter"
+                                              # (NOT iter/main/other)
 ```
 
 If either check prompts for credentials, push will silently fail and
@@ -59,22 +61,24 @@ The dataset auto-downloads on first run (~50MB to `benchmarks/longmemeval/data/`
 
 ---
 
-## 1. Model configuration (best-quality, cost no object)
+## 1. Model configuration (cost-effective)
 
-> The only sanctioned configuration for this playbook. Costs ~$30-80
-> for full N=500; wall-clock ~15 min with 500-way parallel on a
-> high-TPM key (§2.2), or ~3-5 h on a standard Tier-5 key, ~40-60 h
-> single-process (§2.1).
+> The sanctioned cost-effective configuration. Costs **~$15-25** for
+> full N=500; wall-clock **~5-8 min** with 500-way parallel on a
+> high-TPM key (§2.2), or ~1-2 h on a standard Tier-5 key, ~15-25 h
+> single-process (§2.1). Reader matches Mastra's leaderboard stack
+> (`gpt-5-mini` reasoning_effort=high) so the J-Score target is
+> apples-to-apples with their **94.87%**.
 
 ### 1.1 Role assignments
 
 | Role | Model | Settings | Why |
 |---|---|---|---|
-| **Writer** (extraction) | `openai:gpt-5` | `reasoning_effort=high` (current auto), ideal: `low` | Reasoning model judges *spirit* of anchor rules instead of mechanical execution → fixes the Round 8 Rule-5 over-fragmentation failure mode. **Current code auto-applies `high` for any `gpt-5/o1/o3` model** (`batch.py:434`, `graph.py:372`) — that works, just slower. Lowering to `low` for the writer requires a small code change (see §1.2); skip if not urgent. ~10× slower than gpt-4o-mini per session but +3-5% on extraction recall. |
-| **Reader** (QA) | `openai:gpt-5` | `reasoning_effort=high`, `max_completion_tokens=24576`, `temperature` reasoning-model default | Full gpt-5 over gpt-5-mini gains +1-2 pp on date arithmetic, aggregation, refusal calibration. **Auto-applied** by `run_eval.py:124-132` when reader model contains `gpt-5/o1/o3`. (If you ever see truncated answers, bump the `24576` constant in `run_eval.py:131` to `32768`.) |
-| **Judge** | `openai:gpt-4o` | default | **NEVER substitute.** Canonical LongMemEval judge — different judge ⇒ cannot compare against Mastra/Hindsight numbers. |
-| **Embedding** | `openai:text-embedding-3-large` | 3072 dim | +3-5% retrieval recall on long-tail named entities vs `text-embedding-3-small` (1536 dim). Directly attacks Cluster 1 (assistant-text recall) and Cluster 2 (multi-session enumeration). |
-| **Reranker** | **B — LLM rerank** (batched) using `openai:gpt-5` `reasoning_effort=low` | one batched call per question, 50 candidates → ranked id list | See §1.2 for full justification. **Do NOT use A or C** (see warning). |
+| **Writer** (extraction) | `openai:gpt-4o-mini` | `temperature=0`, default tokens | Extraction is mechanical JSON transcription, not reasoning — reasoning models add 10-30× latency for no measurable quality gain on this task. v6 with `gpt-4o-mini` writer hit 93.3% on stratified n=30. Dominant cost driver (~50 calls/Q × 500 Q); keeping it cheap is the biggest cost lever. |
+| **Reader** (QA) | `openai:gpt-5-mini` | `reasoning_effort=high`, `max_completion_tokens=24576` | Matches Mastra SOTA's reader exactly. Reasoning pays off here: cross-session synthesis, recency comparison via dates, preference inference. **Auto-applied** by `run_eval.py:124-132` when reader model contains `gpt-5/o1/o3`. Full `gpt-5` would add +1-2 pp at ~5× the per-call cost; for cost-effective, `gpt-5-mini` is the right point. |
+| **Judge** | `openai:gpt-4o` | default | **NEVER substitute.** Canonical LongMemEval judge — different judge ⇒ cannot compare against Mastra/Hindsight numbers. Only ~1 call per question so the cost is negligible. |
+| **Embedding** | `openai:text-embedding-3-small` | 1536 dim | 6× cheaper than `text-embedding-3-large` ($0.02 vs $0.13 per 1M tokens). Costs ~3-5 pp retrieval recall on long-tail named entities; the rerank step (below) compensates by pulling buried-but-relevant nodes back to the top. |
+| **Reranker** | **B — LLM rerank** (batched) using `openai:gpt-5-mini` `reasoning_effort=low` | one batched call per question, 50 candidates → ranked id list | See §1.2 for full justification. ~5× cheaper than `gpt-5`-low rerank with negligible quality drop on this short-form ranking task. **Do NOT use A or C** (see warning). |
 
 `reasoning_effort=high` + `max_completion_tokens=24576` are auto-applied
 by the runner when it detects an `o1`/`o3`/`gpt-5` model.
@@ -87,21 +91,21 @@ Three rerank paradigms exist; only one is right for this benchmark.
 |---|---|---|---|
 | **A — Bi-encoder** (embedding cosine) | independently encode q and d, score by cosine | ⚠️ **Already in hybrid retrieval**; adding another layer of bi-encoder rerank is a no-op | ❌ DO NOT add as "rerank" — would just duplicate `semantic_match` step |
 | **B — LLM-rerank** | LLM jointly attends to (q, d), outputs relevance | ✅ **Best fit** — LongMemEval questions are pragmatically complex (ordinals like "27th item", indirect references like "the previous conversation about X", temporal qualifiers) — needs reasoning to score relevance | ✅ **USE THIS** |
-| **C — Cross-encoder** (Cohere rerank-v3 / BAAI bge-reranker-v2-m3) | dedicated 568M model jointly scoring (q, d) | ⚠️ Good for generic IR, weaker on pragmatic queries — wasn't trained on questions like LongMemEval's | ❌ Skip — B with gpt-5-low subsumes it |
+| **C — Cross-encoder** (Cohere rerank-v3 / BAAI bge-reranker-v2-m3) | dedicated 568M model jointly scoring (q, d) | ⚠️ Good for generic IR, weaker on pragmatic queries — wasn't trained on questions like LongMemEval's | ❌ Skip — B with `gpt-5-mini`-low subsumes it |
 
 **Why B subsumes C on this benchmark**: cross-encoders are trained on generic web search relevance (`query="best italian restaurant nyc"`, `doc=<restaurant review>`). LongMemEval queries are far more linguistically complex ("what was the 27th prompt parameter you listed?") — a reasoning LLM understands the pragmatic intent, a frozen cross-encoder does not.
 
-**Why NOT per-doc B** (only batched B): per-doc rerank with gpt-5 = 50 LLM calls per question × 500 questions = 25000 calls ≈ $75 + 20+ hours. Batched B = 1 LLM call per question = 500 calls ≈ $3 + 30 min. **Always batched.**
+**Why NOT per-doc B** (only batched B): per-doc rerank with `gpt-5-mini` = 50 LLM calls per question × 500 questions = 25000 calls ≈ $15 + 10+ hours. Batched B = 1 LLM call per question = 500 calls ≈ $0.50 + 15 min. **Always batched.**
 
 #### Batched B-rerank is now wired (just pass the flag)
 
-The infrastructure for batched B-rerank is landed on `iter`:
+The infrastructure for batched B-rerank is landed on `longmemeval-iter`:
 
 - `MemoryQueryAgent.rerank_with_llm_batched()` — one LLM call ranks
   every candidate jointly, returns top-K indices.
 - `call_llm()` accepts `model=` and `reasoning_effort=` so the rerank
-  step uses `openai:gpt-5` `reasoning_effort=low` while writer/reader
-  use their own models.
+  step uses `openai:gpt-5-mini` `reasoning_effort=low` while
+  writer/reader use their own models.
 - `QueryConfig` exposes `use_llm_rerank_batched`, `rerank_model`,
   `rerank_reasoning_effort`, `pre_rerank_pool`.
 - `run_eval.py` exposes `--llm-rerank`, `--rerank-model`,
@@ -114,9 +118,8 @@ Use the §2.3 command — it now runs as-is, no source edits needed.
 
 **Don't enable the *existing* `use_llm_rerank=True`** — that flag
 routes through the legacy per-doc path at hardcoded gpt-4o-mini
-(`src/cognifold/query/llm.py:95`). 50× more LLM calls and a weaker
-rerank model. The new `--llm-rerank` CLI flag binds to the batched
-path; use it.
+(`src/cognifold/query/llm.py:95`). 50× more LLM calls. The new
+`--llm-rerank` CLI flag binds to the batched path; use it.
 
 ---
 
@@ -125,28 +128,27 @@ path; use it.
 ### 2.1 Currently-runnable command (TODAY, no code changes)
 
 This command runs the **§1 config minus rerank** end-to-end on the
-existing pipeline. The rerank step is currently disabled by default
-(see §1.2 for what's needed to enable it) — every other §1 setting
-is wired through CLI flags or env vars.
+existing pipeline. Use it only for a first sanity check; for the real
+iteration loop use §2.3 (with rerank).
 
 ```bash
 # Set API key once
 echo "OPENAI_API_KEY=sk-..." > .env
 
-# Single-process full N=500. Wall-clock ~40-60 h (gpt-5 high reasoning
-# on both writer + reader). Parallelize via §2.2 for ~15 min total.
+# Single-process full N=500. Wall-clock ~15-25 h (gpt-4o-mini writer
+# + gpt-5-mini-high reader). Parallelize via §2.2 for ~5-8 min total.
 PYTHONPATH=src .venv/bin/python -u -m benchmarks.longmemeval.run_eval \
-    --model openai:gpt-5 \
-    --writer-model openai:gpt-5 \
+    --model openai:gpt-5-mini \
+    --writer-model openai:gpt-4o-mini \
     --judge-model openai:gpt-4o \
-    --embedding openai:text-embedding-3-large \
+    --embedding openai:text-embedding-3-small \
     --symbolic-resolver --symbolic-temporal --symbolic-bypass \
-    --batch-mode \
+    --batch-mode --llm-eval \
     --stratified 133 --limit 500 \
     --resume
 ```
 
-**Every flag is real** — `grep "add_argument" benchmarks/longmemeval/run_eval.py` to verify. The `reasoning_effort=high` + `max_completion_tokens=24576` settings are auto-applied by `run_eval.py:124-132` (reader) and `src/cognifold/agent/batch.py:434` (writer) when the model contains `gpt-5`/`o1`/`o3`.
+**Every flag is real** — `grep "add_argument" benchmarks/longmemeval/run_eval.py` to verify. The `reasoning_effort=high` + `max_completion_tokens=24576` settings are auto-applied by `run_eval.py:124-132` (reader) when the reader model contains `gpt-5`/`o1`/`o3`. The writer (`gpt-4o-mini`) is non-reasoning, so it runs at `temperature=0`.
 
 ### 2.2 Parallel mode (default for iteration)
 
@@ -157,14 +159,14 @@ for unchanged qids, so "full every time" costs nothing extra while
 making each metric directly comparable.
 
 The `scripts/parallel_longmemeval.sh` driver currently hardcodes a
-weaker stack — `grep "openai:" scripts/parallel_longmemeval.sh` finds
-the model lines. Before launching, edit them to:
+different model stack — `grep "openai:" scripts/parallel_longmemeval.sh`
+finds the model lines. Before launching, edit them to:
 
 ```bash
---model openai:gpt-5 \
---writer-model openai:gpt-5 \
+--model openai:gpt-5-mini \
+--writer-model openai:gpt-4o-mini \
 --judge-model openai:gpt-4o \
---embedding openai:text-embedding-3-large \
+--embedding openai:text-embedding-3-small \
 ```
 
 Then:
@@ -179,8 +181,8 @@ bash scripts/parallel_longmemeval.sh 500 133 500
 ```
 
 - `N_PARALLEL=500` — **fixed default**. One Python process per qid →
-  queue depth = 1, full N=500 finishes in ~15 min wallclock on a
-  high-TPM gpt-5 key. Pre-flight resource check: this default assumes
+  queue depth = 1, full N=500 finishes in ~5-8 min wallclock on a
+  high-TPM key. Pre-flight resource check: this default assumes
   **≥ 150 GB RAM** (each process ~300 MB) and **≥ 64 CPU cores**.
   Verify with `free -g` and `nproc` before launching. If the box is
   smaller, scale N_PARALLEL down — 100 needs ~30 GB RAM, 50 needs ~15 GB.
@@ -189,33 +191,34 @@ bash scripts/parallel_longmemeval.sh 500 133 500
   **entire** dataset (133+133+78+70+56+30 = 500).
 - `TOTAL_LIMIT=500` — full LongMemEval.
 
-**Choose N_PARALLEL based on your actual gpt-5 TPM cap, but never
-exceed 500** (depth=1 already, more parallel processes serve no
-purpose — they'd just queue on OpenAI's side).
+**Choose N_PARALLEL based on your tightest TPM cap among the four
+models you're using** (writer `gpt-4o-mini`, reader `gpt-5-mini`,
+rerank `gpt-5-mini`, judge `gpt-4o`). The `gpt-5-mini` reader cap is
+usually the binding constraint. Never exceed 500 (depth=1 already).
 
-| Your gpt-5 TPM cap | Recommended N_PARALLEL | Why |
+| Your tightest TPM cap | Recommended N_PARALLEL | Why |
 |---|---|---|
-| ≥ 12M TPM (custom / Scale Tier) | **500** | Saturates throughput at depth=1, ~15 min wallclock |
-| 5M-12M | 250-400 | Sweet spot; minor 429 backoff but minimal stall |
-| 800K-5M (standard Tier 5) | 50-75 | Just enough to saturate cap; avoids retry noise |
-| 400K (Tier 4) | 25 | Conservative — stays under cap |
-| < 400K (Tier 1-3) | 12 | Avoid persistent 429s |
+| ≥ 8M TPM (Scale Tier / custom) | **500** | Saturates throughput at depth=1, ~5-8 min wallclock |
+| 3M-8M | 250-400 | Sweet spot; minor 429 backoff but minimal stall |
+| 800K-3M (standard Tier 5) | 75-150 | Just enough to saturate cap; avoids retry noise |
+| 400K (Tier 4) | 30-50 | Conservative — stays under cap |
+| < 400K (Tier 1-3) | 12-20 | Avoid persistent 429s |
 
-**How to check your cap**: hit any gpt-5 endpoint and read the
+**How to check your cap**: hit any `gpt-5-mini` endpoint and read the
 `x-ratelimit-limit-tokens` response header (or check
 <https://platform.openai.com/settings/organization/limits>). Divide
-by ~21K tokens/min/qid to get the parallelism that saturates without
+by ~12K tokens/min/qid to get the parallelism that saturates without
 heavy throttling.
 
 Wall-clock per full N=500:
-- 500 parallel (high-TPM key, depth=1) → **~15 min**
-- 50 parallel (standard Tier 5, TPM-capped) → ~2.5-3 h
-- 25 parallel (Tier 4 conservative) → ~4-5 h
+- 500 parallel (high-TPM key, depth=1) → **~5-8 min**
+- 75 parallel (standard Tier 5) → ~45-60 min
+- 30 parallel (Tier 4 conservative) → ~1.5-2 h
 
 **Why full-every-iteration**: each fix must be measured on the same
 500 qids as the prior baseline. Sampled / partial runs introduce
 selection bias. The driver only re-processes qids whose verdict line
-was dropped from `hypothesis.jsonl`, so iteration cost ≈ **~15 min
+was dropped from `hypothesis.jsonl`, so iteration cost ≈ **~5-8 min
 regardless of #changed qids** (with N_PARALLEL=500 depth=1, all
 dropped qids run simultaneously).
 
@@ -227,21 +230,21 @@ when complete (resume).
 
 ```bash
 PYTHONPATH=src .venv/bin/python -u -m benchmarks.longmemeval.run_eval \
-    --model openai:gpt-5 \
-    --writer-model openai:gpt-5 \
+    --model openai:gpt-5-mini \
+    --writer-model openai:gpt-4o-mini \
     --judge-model openai:gpt-4o \
-    --embedding openai:text-embedding-3-large \
+    --embedding openai:text-embedding-3-small \
     --symbolic-resolver --symbolic-temporal --symbolic-bypass \
-    --llm-rerank --rerank-model openai:gpt-5 \
+    --llm-rerank --rerank-model openai:gpt-5-mini \
     --rerank-reasoning-effort low --rerank-pool 100 \
     --batch-mode --llm-eval \
     --stratified 133 --limit 500 \
     --resume
 ```
 
-Projected ceiling: **~96-97% J-Score** on full N=500 (Mastra SOTA is 94.87%). Cost ≈ $40-80; wall-clock adds ~30 min total (one batched gpt-5-low call per question).
+Projected ceiling: **~94-95% J-Score** on full N=500 (Mastra SOTA with the same reader = 94.87%). Cost ≈ **$15-25**; wall-clock adds ~5-10 min total (one batched `gpt-5-mini`-low call per question).
 
-`--rerank-pool 100` tells retrieval to keep the top 100 candidates before rerank; rerank then trims to `max_nodes` (20-50 depending on aggregation detection). Drop to `--rerank-pool 50` if your gpt-5 TPM cap forces it.
+`--rerank-pool 100` tells retrieval to keep the top 100 candidates before rerank; rerank then trims to `max_nodes` (20-50 depending on aggregation detection). Drop to `--rerank-pool 50` if your `gpt-5-mini` TPM cap forces it.
 
 ---
 
@@ -513,10 +516,10 @@ Append every key event to `history.md` in chronological order:
 Append after **every full-N run** (baseline + every re-test). Keep
 it dense — it's the ground truth.
 
-**Push timing**: §7.2's loop calls `git push origin iter` **inline
-after each round's commit**, not on a schedule, and always targets the
-`iter` branch only (see §0). Pushes fire on the two events that
-produce a full-N hypothesis state:
+**Push timing**: §7.2's loop calls `git push origin longmemeval-iter`
+**inline after each round's commit**, not on a schedule, and always
+targets the `longmemeval-iter` branch only (see §0). Pushes fire on the
+two events that produce a full-N hypothesis state:
 
 1. After step (3): the baseline full N=500 run + snapshot + history
    commit.
@@ -531,7 +534,7 @@ current round's in-flight work.
 1. **Never amend or force-push** when running unattended — every change
    is a NEW commit. Force-push can wipe out other agents' work.
 2. `history.md` commits land in step (3) and step (7) of §7.2 — both
-   are followed immediately by `git push origin iter`.
+   are followed immediately by `git push origin longmemeval-iter`.
 3. If a push fails (auth, conflict, force-rejected) the loop should
    surface the error and halt (do NOT silently swallow it). Investigate
    the remote state, `git pull --rebase`, retry the push, then resume.
@@ -542,67 +545,72 @@ current round's in-flight work.
 
 | System | J-Score |
 |---|---|
-| Mastra (GPT-5-mini) | 94.87% |
+| Mastra (`gpt-5-mini` reader) | 94.87% |
 | Hindsight (Gemini-3) | 91.40% |
 | Supermemory (Gemini-3) | 85.20% |
 | `gpt-4o` reader bar | 84.23% |
 | Zep | 71.20% |
 
-Target: beat Mastra's 94.87% on the full N=500.
+Target: meet or beat Mastra's 94.87% on the full N=500. Mastra's
+reader is also `gpt-5-mini` (matching §1.1), so the comparison is
+apples-to-apples on the reader; CogniFold's edge has to come from
+the graph + symbolic resolver + rerank.
 
 ---
 
 ## 7. Autonomous loop (entry point)
 
-> Single entry point for "run at any cost, hit the strongest possible
-> result". Composes §0 / §1 / §2 / §3 / §4 into one runnable loop.
+> Single entry point for cost-effective iteration to the §6 SOTA target.
+> Composes §0 / §1 / §2 / §3 / §4 into one runnable loop.
 
 ### 7.1 One-time setup (do these in order)
 
-1. **§0** — clone from `OpenNorve/CogniFold`, **`git checkout iter`**
+1. **§0** — clone from `OpenNorve/CogniFold`, **`git checkout longmemeval-iter`**
    (the dedicated autonomous-loop branch), install, set
    `OPENAI_API_KEY`, verify `git remote -v`, `git branch --show-current`
-   prints `iter`, and SSH/HTTPS push credentials succeed.
+   prints `longmemeval-iter`, and SSH/HTTPS push credentials succeed.
 2. **§2.2** — find the model lines in `scripts/parallel_longmemeval.sh`
    (`grep -n "openai:" scripts/parallel_longmemeval.sh` — should hit
    3-4 lines near the `nohup ... python -u -m benchmarks.longmemeval.run_eval`
    block) and edit them to the §1 stack:
    ```
-   --model openai:gpt-5
-   --writer-model openai:gpt-5
+   --model openai:gpt-5-mini
+   --writer-model openai:gpt-4o-mini
    --judge-model openai:gpt-4o
-   --embedding openai:text-embedding-3-large
+   --embedding openai:text-embedding-3-small
+   ```
+   Also add the rerank flags:
+   ```
+   --llm-rerank --rerank-model openai:gpt-5-mini
+   --rerank-reasoning-effort low --rerank-pool 100
    ```
 3. **§8** — walk the verification checklist before launching.
-4. **Optional** — implement §1.2 batched B-rerank code edits if you
-   want the projected +2-3 pp from rerank. If you skip this, §7.2's
-   loop runs *without* rerank (still expected to land well above
-   prior baselines).
-5. Create empty `history.md` (if missing), commit it, and seed the
+4. Create empty `history.md` (if missing), commit it, and seed the
    loop's `ROUND` counter:
    ```bash
-   echo "# LongMemEval Campaign — gpt-5 / gpt-5 / gpt-4o / 3-large" \
+   echo "# LongMemEval Campaign — gpt-4o-mini / gpt-5-mini / gpt-4o / 3-small + gpt-5-mini rerank" \
        > history.md
    git add history.md
    git commit -m "Bootstrap campaign log"
-   echo "0" > .iter_round    # ROUND counter; loop reads + increments
+   echo "0" > .longmemeval_iter_round    # ROUND counter; loop reads + increments
    ```
 
 ### 7.2 The loop
 
-`ROUND` is persisted in `.iter_round` (created in §7.1 step 5).
-Read + bump it each iteration so the snapshot/commit labels are
-stable across crashes / resumes.
+`ROUND` is persisted in `.longmemeval_iter_round` (created in §7.1
+step 4). Read + bump it each iteration so the snapshot/commit labels
+are stable across crashes / resumes.
 
 ```text
 loop forever:
-    ROUND = int(open(".iter_round").read().strip()) + 1
-    open(".iter_round", "w").write(str(ROUND))
+    ROUND = int(open(".longmemeval_iter_round").read().strip()) + 1
+    open(".longmemeval_iter_round", "w").write(str(ROUND))
 
     # (1) Run the full N=500 with the §1 stack
     bash scripts/parallel_longmemeval.sh 500 133 500
-    # 500 parallel (depth=1) assumes a high-TPM gpt-5 key (≥12M TPM).
-    # On a standard Tier-5 key drop to 50; see §2.2 table.
+    # 500 parallel (depth=1) assumes a high-TPM key (≥8M TPM on the
+    # gpt-5-mini reader). On a standard Tier-5 key drop to 75-150;
+    # see §2.2 table.
 
     # (1b) Config gate — §8.1. Aborts the round if any model/embedding
     #      silently fell back. A drift here makes the round's metric
@@ -634,7 +642,7 @@ loop forever:
                                  notes="Confirmed clean rerun ≥ 475/500")
             git add -A
             git commit -m "FINAL: ${metric_pct}% (${correct}/500) — confirmed clean rerun"
-            git push origin iter
+            git push origin longmemeval-iter
             sys.exit(0)
         # Confirmation failed (stale verdicts inflated the headline).
         # Fall through with the *real* metric — this round's snapshot
@@ -645,9 +653,9 @@ loop forever:
 
     # (3) Append to history.md (per §5 template)
     #     then commit + push immediately.
-    git add history.md $snapshot_dir .iter_round
+    git add history.md $snapshot_dir .longmemeval_iter_round
     git commit -m "Round ${ROUND}: ${metric_pct}% (${correct}/500)"
-    git push origin iter || halt("baseline push failed; see §5 rule 3")
+    git push origin longmemeval-iter || halt("baseline push failed; see §5 rule 3")
 
     # (4) Analyze failures per §3.2 (cluster → why → solution)
     # (5) Propose fix per §3.3 (estimate trigger isolation; not a gate)
@@ -676,7 +684,7 @@ loop forever:
     # the commit is the audit record either way).
     git add -A
     git commit -m "Round ${ROUND} fix ${ACTION}: <one-line summary> — net ${NET} (fixes=${fixes}, regressions=${regressions})"
-    git push origin iter || halt("post-fix push failed; see §5 rule 3")
+    git push origin longmemeval-iter || halt("post-fix push failed; see §5 rule 3")
     # (loop back to top)
 ```
 
@@ -704,13 +712,16 @@ loop forever:
 
 ## 8. Verification checklist before launching
 
-- [ ] `.env` has a valid OpenAI Tier 5 key (gpt-5 access required).
-- [ ] `grep "openai:gpt-5\b" scripts/parallel_longmemeval.sh` if running parallel — confirms model lines were updated to §1's stack.
-- [ ] **Judge stays gpt-4o** — `grep "judge-model" scripts/parallel_longmemeval.sh` must show `openai:gpt-4o`, no substitutions.
+- [ ] `.env` has a valid OpenAI Tier 5 key with `gpt-5-mini` AND `gpt-4o` access.
+- [ ] `grep "openai:gpt-5-mini\b" scripts/parallel_longmemeval.sh` if running parallel — confirms reader was updated to §1's stack.
+- [ ] **Writer is gpt-4o-mini** — `grep "writer-model openai:gpt-4o-mini" scripts/parallel_longmemeval.sh` must hit.
+- [ ] **Judge stays gpt-4o** — `grep "judge-model openai:gpt-4o\b" scripts/parallel_longmemeval.sh` must hit, no substitutions.
+- [ ] **Embedding is 3-small** — `grep "openai:text-embedding-3-small" scripts/parallel_longmemeval.sh` must hit.
+- [ ] **Rerank is on** — `grep "llm-rerank" scripts/parallel_longmemeval.sh` must hit; `grep "rerank-model openai:gpt-5-mini" scripts/parallel_longmemeval.sh` confirms the rerank model.
 - [ ] If `benchmarks/longmemeval/output/` already exists from a prior run, snapshot it before launching: `cp -r benchmarks/longmemeval/output benchmarks/longmemeval/output_baseline`. (On a fresh machine there's nothing to back up — skip this item.)
 - [ ] `git remote -v` shows origin = `https://github.com/OpenNorve/CogniFold.git` (HTTPS or SSH form both OK).
-- [ ] `git branch --show-current` returns **`iter`** — never run the loop on any other branch.
-- [ ] `git push origin iter --dry-run` succeeds without credential prompt AND reports `iter -> iter` (not main/other) — the loop pushes inline after each round.
+- [ ] `git branch --show-current` returns **`longmemeval-iter`** — never run the loop on any other branch.
+- [ ] `git push origin longmemeval-iter --dry-run` succeeds without credential prompt AND reports `longmemeval-iter -> longmemeval-iter` (not iter/main/other) — the loop pushes inline after each round.
 
 ### 8.1 Runtime config fail-fast gate (MUST run before treating any result as valid)
 
@@ -719,7 +730,7 @@ back to the reader model when `--judge-model` / `--writer-model` /
 `--embedding` are omitted, so a missing flag will *not* error and the
 resulting J-Score will be incomparable.
 
-**Before reporting any metric, every batch log must pass all 5 of these
+**Before reporting any metric, every batch log must pass all 6 of these
 greps.** Failing any one ⇒ the run is invalid; discard the result, fix
 the launch command, re-run from scratch (not from `--resume`).
 
@@ -729,12 +740,12 @@ LOG=$(ls -t logs/parallel_b*.log logs/longmemeval_*.log 2>/dev/null | head -1)
 [ -n "$LOG" ] || { echo "FATAL: no run log found"; exit 1; }
 
 fail=0
-grep -q "Using judge model: openai:gpt-4o\b"                    "$LOG" || { echo "JUDGE != openai:gpt-4o"; fail=1; }
-grep -q "Using writer model: openai:gpt-5\b"                    "$LOG" || { echo "WRITER != openai:gpt-5"; fail=1; }
-grep -q "Using model: openai:gpt-5\b"                           "$LOG" || { echo "READER != openai:gpt-5"; fail=1; }
-grep -q "Using embedding: openai:text-embedding-3-large\b"      "$LOG" || { echo "EMBEDDING != text-embedding-3-large"; fail=1; }
-grep -q "Stratified sampling: 133 .* × 6"                       "$LOG" || { echo "STRATIFIED != 133 × 6 types"; fail=1; }
-grep -q "Batched B-rerank: enabled (model=openai:gpt-5"         "$LOG" || { echo "RERANK != openai:gpt-5 batched"; fail=1; }
+grep -q "Using judge model: openai:gpt-4o\b"                       "$LOG" || { echo "JUDGE != openai:gpt-4o"; fail=1; }
+grep -q "Using writer model: openai:gpt-4o-mini\b"                 "$LOG" || { echo "WRITER != openai:gpt-4o-mini"; fail=1; }
+grep -q "Using model: openai:gpt-5-mini\b"                         "$LOG" || { echo "READER != openai:gpt-5-mini"; fail=1; }
+grep -q "Using embedding: openai:text-embedding-3-small\b"         "$LOG" || { echo "EMBEDDING != text-embedding-3-small"; fail=1; }
+grep -q "Stratified sampling: 133 .* × 6"                          "$LOG" || { echo "STRATIFIED != 133 × 6 types"; fail=1; }
+grep -q "Batched B-rerank: enabled (model=openai:gpt-5-mini"       "$LOG" || { echo "RERANK != openai:gpt-5-mini batched"; fail=1; }
 
 [ "$fail" -eq 0 ] || { echo "ABORT: config drift detected — result is NOT comparable to SOTA"; exit 1; }
 echo "OK: all 6 model/config gates passed"
@@ -749,10 +760,11 @@ Why each grep matters (do not relax any of these):
 | Gate | What goes wrong without it | Historical regression |
 |---|---|---|
 | `judge = openai:gpt-4o` | Silent fallback to reader model. Numbers become incomparable to Mastra/Hindsight. | The 2026-05 NVIDIA-route run hit 61.4% because judge defaulted to `gpt-5.4-mini`. |
-| `writer = openai:gpt-5` | Falls back to reader. With anything weaker than gpt-5 the extraction misses arithmetic facts and multi-session under-counts collapse to errors. | Same 61.4% run; multi-session error rate was 45%. |
-| `reader = openai:gpt-5` | The CLI flag is `--model`; if it's wrong, the §1 stack name is a lie. | Same. |
-| `embedding = text-embedding-3-large` | Defaults to `text-embedding-3-small` in the profile. Retrieval recall drops 3-5 pp; multi-session under-counts because the relevant session falls below top-K. | Standard default-trap; -3 to -5 pp on multi-session. |
+| `writer = openai:gpt-4o-mini` | Silent fallback to reader (`gpt-5-mini`, reasoning model). Adds 10-30× extraction latency and changes graph topology vs the canonical baseline. | Cost spike + per-round noise. |
+| `reader = openai:gpt-5-mini` | The CLI flag is `--model`; if it's wrong, the §1 stack name is a lie and you'll be comparing against the wrong Mastra row. | Same 61.4% run; reader was a third-party-routed `gpt-5.4-mini`. |
+| `embedding = text-embedding-3-small` | If it's `text-embedding-3-large` you're paying 6× per-token without budget approval; if it's anything else (Gemini, etc.) retrieval recall drops badly. | Default-trap when profile is hand-edited. |
 | `Stratified sampling: 133 × 6` | Without it, only 30 of each type are sampled (180 total) — denominator is wrong, score is incomparable. | Pre-2026-04 default truncated to subsets. |
+| `Batched B-rerank: openai:gpt-5-mini` | Without rerank, multi-session under-counts inflate (the relevant session can sit at rank 30-50 in raw retrieval). | Estimated -1 to -2 pp on overall J-Score. |
 
 **Do not** bypass this gate by editing the greps to be lenient. The
 whole point is that one mismatched line ⇒ the run is thrown away.
@@ -761,14 +773,18 @@ whole point is that one mismatched line ⇒ the run is thrown away.
 
 ## 9. What to NEVER do in the autonomous loop
 
-- ❌ Switch judge from gpt-4o (breaks comparability with SOTA table)
-- ❌ Substitute writer or reader with anything other than `openai:gpt-5` (the §1 stack is the only sanctioned configuration; weaker models break the audit trail and stronger ones don't exist)
+- ❌ Switch judge from `openai:gpt-4o` (breaks comparability with SOTA table)
+- ❌ Substitute the reader with anything other than `openai:gpt-5-mini` — that's Mastra's reader, and is the head we're benchmarking against
+- ❌ Substitute the writer with `gpt-5` / `gpt-5-mini` / any reasoning model — extraction is mechanical and the 10-30× latency cost is unjustified, plus the graph topology will diverge from prior snapshots
+- ❌ Substitute the embedding with `text-embedding-3-large` or anything else — pays 6× per-token without the budget envelope, and changes retrieval ordering vs prior rounds
+- ❌ Substitute the rerank model — `openai:gpt-5-mini` `reasoning_effort=low` is the right cost/quality point; using `gpt-5` or `gpt-4o` here just burns money
 - ❌ Run partial N (sampled / stratified < 133) — breaks denominator
 - ❌ Skip cluster analysis (§3.2) before proposing a fix — historically the #1 cause of regressions
 - ❌ Force-push (`git push -f`) — overwrites other commits
 - ❌ Disable `--symbolic-resolver` / `--symbolic-temporal` / `--symbolic-bypass` — they're load-bearing, account for ~5 pp
-- ❌ Edit the gpt-4o-mini constant in `src/cognifold/query/llm.py` to some other model without also implementing §1.2 batched rerank — per-doc rerank with gpt-5 will exhaust your budget in hours
+- ❌ Disable `--llm-rerank` to "save cost" — rerank is ~$2 of the ~$20 budget and the multi-session under-counting it prevents is worth multiple pp
+- ❌ Re-route `call_llm()` in `src/cognifold/query/llm.py` to a different model without going through `--rerank-model` — that path is the only one configurable from outside
 - ❌ Accept a fix with `net ≤ −2` even if it "feels right" — §3.5's rule is hard. (Net 0 / −1 fixes can be kept under the reusable-infrastructure exception; everything below is a revert.)
 - ❌ Exit at the first ≥ 475 reading without the §4 confirmation rerun. The incremental loop's `hypothesis.jsonl` is a patchwork of fix-test results that may overstate the true metric; only a clean full-N rerun under current code is allowed to terminate.
-- ❌ Push to any branch other than **`iter`**. Never run `git push origin main`, `git push origin HEAD` from a non-iter branch, `git push --all`, or anything that would touch `main` / `public-release` / `cognifold-dev` / etc. The autonomous loop is scoped to `iter` so concurrent work on other branches is safe.
-- ❌ Switch branches mid-loop. If `git branch --show-current` ever returns something other than `iter`, halt and investigate before continuing — accidental commits to the wrong branch leak the campaign's snapshots and history into shared branches.
+- ❌ Push to any branch other than **`longmemeval-iter`**. Never run `git push origin main`, `git push origin iter`, `git push origin HEAD` from a non-`longmemeval-iter` branch, `git push --all`, or anything that would touch `main` / `iter` / `public-release` / `cognifold-dev` / etc. The autonomous loop is scoped to `longmemeval-iter` so concurrent work on other branches is safe.
+- ❌ Switch branches mid-loop. If `git branch --show-current` ever returns something other than `longmemeval-iter`, halt and investigate before continuing — accidental commits to the wrong branch leak the campaign's snapshots and history into shared branches.
