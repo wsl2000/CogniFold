@@ -696,6 +696,104 @@ Output JSON format:
     except Exception as e:
         logger.error(f"Error in batch extraction: {e}")
 
+    # ---- Patch B: dated-anchor regex pass over user-role turns ----
+    # The LLM extraction paraphrases away dated lifecycle anchors
+    # ("started ukulele lessons" → "user is learning ukulele"), which
+    # makes _try_diff_since-style resolvers fail with "no memory of
+    # when X happened". This pass scans the raw user-role turns for
+    # explicit verb+object phrases and adds a CONCEPT with the verb
+    # AND topic keyword in the title so BM25 / symbolic resolver can
+    # find it by phrase.
+    #
+    # Improvements over the reverted R7-D:
+    #   - widened verb list (was started/finished/recovered/got; now
+    #     adds began/took up/attended/joined/enrolled/signed up/
+    #     completed/launched/picked up/booked/ordered)
+    #   - title carries BOTH the verb AND the object noun
+    #     (R7-D's "helmet" without "bike" failed BM25 on "bike");
+    #     here we keep the full "ATTENDED a baking class" phrase
+    #   - only fires when a date is unambiguously the session date
+    #     (no risk of cross-day misattribution)
+    _add_dated_anchors_from_session(session, timestamp, graph, time_node_id)
+
+
+_ANCHOR_VERB_RE = re.compile(
+    r"\bi\s+(?:(?:have\s+|just\s+|finally\s+|recently\s+)?"
+    r"(started|began|took\s+up|picked\s+up|signed\s+up\s+for|"
+    r"enrolled\s+in|joined|launched|"
+    r"finished|completed|wrapped\s+up|"
+    r"recovered\s+from|got\s+over|"
+    r"attended|went\s+to|booked|ordered|received|got|"
+    r"met|first\s+met|"
+    r"bought|purchased|"
+    r"moved\s+(?:to|into)|relocated\s+to))"
+    r"\s+(?:(?:a|an|the|my|our|some|to\s+the|to\s+a)\s+)?"
+    r"([a-z][^.,!?\n;]{2,80})",
+    re.IGNORECASE,
+)
+
+
+def _add_dated_anchors_from_session(
+    session: list[dict],
+    timestamp: datetime,
+    graph: ConceptGraph,
+    time_node_id: str,
+) -> None:
+    """Scan user-role turns for verb+object lifecycle phrases and add a
+    dated CONCEPT for each. Safe to call after the LLM extraction —
+    duplicates are filtered by title uniqueness inside ConceptGraph.
+    """
+    session_date_str = timestamp.date().isoformat()
+    seen_titles: set[str] = set()
+
+    for turn in session:
+        if turn.get("role") != "user":
+            continue
+        content = turn.get("content", "")
+        if not content:
+            continue
+        for m in _ANCHOR_VERB_RE.finditer(content):
+            verb = re.sub(r"\s+", " ", m.group(1).strip().lower())
+            obj_phrase = re.sub(r"\s+", " ", m.group(2).strip())
+            # Trim object phrase to first ~10 words to keep title tight.
+            obj_words = obj_phrase.split()[:10]
+            obj_clean = " ".join(obj_words).rstrip(" .,'\"")
+            if len(obj_clean) < 3:
+                continue
+            title = f"{verb} {obj_clean}".lower()
+            if title in seen_titles:
+                continue
+            seen_titles.add(title)
+            # Anchor concept: title carries verb + topic keyword;
+            # description echoes the full triggering sentence for the
+            # reader to see in context.
+            stamped = f"[{session_date_str}] {title}"
+            concept_id = f"anchor-{uuid.uuid4().hex[:8]}"
+            try:
+                graph.add_node(
+                    Node(
+                        id=concept_id,
+                        type=NodeType.CONCEPT,
+                        data={
+                            "title": stamped,
+                            "description": f"[{session_date_str}] User stated: \"{m.group(0).strip()}\"",
+                            "strength": 0.85,
+                            "concept_type": "dated_anchor",
+                            "extracted_at": timestamp.isoformat(),
+                            "date": session_date_str,
+                            "anchor_verb": verb,
+                            "anchor_object": obj_clean,
+                        },
+                        reasoning=f"Dated-anchor regex pass over user turn on {session_date_str}",
+                        created_at=timestamp,
+                    )
+                )
+                graph.add_edge(
+                    Edge(source=concept_id, target=time_node_id, created_at=timestamp)
+                )
+            except Exception:
+                pass
+
 
 def run_benchmark(args: argparse.Namespace) -> None:
     """Run the benchmark evaluation."""
