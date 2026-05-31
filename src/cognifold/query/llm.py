@@ -67,7 +67,14 @@ def _get_gemini_client() -> object | None:
         return None
 
 
-def call_llm(prompt: str, system_prompt: str | None = None) -> str:
+def call_llm(
+    prompt: str,
+    system_prompt: str | None = None,
+    *,
+    model: str | None = None,
+    reasoning_effort: str | None = None,
+    max_tokens: int = 500,
+) -> str:
     """Call LLM with cached client instances.
 
     Tries OpenAI first, then Gemini. Caches clients at module level
@@ -76,6 +83,14 @@ def call_llm(prompt: str, system_prompt: str | None = None) -> str:
     Args:
         prompt: The prompt to send.
         system_prompt: Optional system-level instruction (e.g. language).
+        model: Override model name. Accepts "openai:<name>" prefix or
+            raw name. When None, falls back to the legacy default
+            "gpt-4o-mini" for the OpenAI path.
+        reasoning_effort: For gpt-5/o1/o3 reasoning models, pass through
+            "low"/"medium"/"high". Ignored on non-reasoning models.
+            When None and model is reasoning-class, defaults to "high".
+        max_tokens: Output token budget. For reasoning models the call
+            uses max_completion_tokens = max(max_tokens, 24576) instead.
 
     Returns:
         LLM response text.
@@ -83,6 +98,16 @@ def call_llm(prompt: str, system_prompt: str | None = None) -> str:
     Raises:
         RuntimeError: If no LLM API key is available.
     """
+    openai_model = "gpt-4o-mini"
+    if model:
+        openai_model = model.split(":", 1)[1] if model.startswith("openai:") else model
+
+    is_reasoning = (
+        openai_model.startswith("o1")
+        or openai_model.startswith("o3")
+        or "gpt-5" in openai_model
+    )
+
     # Try OpenAI first
     openai_client = _get_openai_client()
     if openai_client is not None:
@@ -91,12 +116,17 @@ def call_llm(prompt: str, system_prompt: str | None = None) -> str:
             if system_prompt:
                 messages.append({"role": "system", "content": system_prompt})
             messages.append({"role": "user", "content": prompt})
-            response = openai_client.chat.completions.create(  # type: ignore[union-attr]
-                model="gpt-4o-mini",
-                messages=messages,
-                temperature=0.0,
-                max_tokens=500,
-            )
+            kwargs: dict = {
+                "model": openai_model,
+                "messages": messages,
+            }
+            if is_reasoning:
+                kwargs["reasoning_effort"] = reasoning_effort or "high"
+                kwargs["max_completion_tokens"] = max(max_tokens, 24576)
+            else:
+                kwargs["temperature"] = 0.0
+                kwargs["max_tokens"] = max_tokens
+            response = openai_client.chat.completions.create(**kwargs)  # type: ignore[union-attr]
             return response.choices[0].message.content or ""  # type: ignore[union-attr]
         except Exception as e:
             logger.debug("OpenAI call failed: %s", e)

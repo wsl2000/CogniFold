@@ -103,10 +103,13 @@ for ((i=0; i<N_PARALLEL; i++)); do
         --model openai:gpt-5-mini \
         --writer-model openai:gpt-4o-mini \
         --judge-model openai:gpt-4o \
+        --embedding openai:text-embedding-3-small \
         --symbolic-resolver --symbolic-temporal --symbolic-bypass \
+        --llm-rerank --rerank-model openai:gpt-5-mini \
+        --rerank-reasoning-effort low --rerank-pool 100 \
         --question-ids "$IDS_CSV" \
         --output-dir "$OUTDIR" \
-        --batch-mode \
+        --batch-mode --llm-eval \
         > "$LOG" 2>&1 &
     PIDS+=($!)
     START=$(( END + 1 ))

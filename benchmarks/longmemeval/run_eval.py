@@ -237,6 +237,23 @@ _RECENCY_TRIGGER = re.compile(
 )
 
 
+# Cluster E trigger — "previous conversation about X" / "you (mentioned|
+# recommended|provided|listed|suggested) X". When the question explicitly
+# references the assistant's prior turn, the answer is in a raw assistant
+# EVENT — which retrieval routinely buries because (a) its title is just
+# "Assistant message" so phrase score is weak, and (b) the distilled CONCEPT
+# nodes win on lexical overlap. build_assistant_recall_block surfaces the
+# raw assistant text directly.
+_ASSISTANT_RECALL_TRIGGER = re.compile(
+    r"\b(?:"
+    r"previous\s+conversation|earlier\s+conversation|our\s+(?:previous|earlier|prior)\s+(?:chat|conversation|discussion)|"
+    r"you\s+(?:mentioned|recommended|provided|listed|suggested|told\s+me|said|named|gave\s+me)|"
+    r"recommendation\s+(?:you|i)|that\s+you\s+(?:recommended|gave|named|listed)"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
 def _stopwords() -> set[str]:
     return {
         "a","an","the","this","that","these","those","i","my","me","mine",
@@ -309,6 +326,79 @@ def build_recency_block(graph: ConceptGraph, question: str, max_items: int = 8) 
     ]
     for i, (_, dt, title, desc) in enumerate(top, 1):
         lines.append(f"{i}. [{dt.date()}] **{title}** — {desc}")
+    return "\n".join(lines) + "\n"
+
+
+def build_assistant_recall_block(
+    graph: ConceptGraph, question: str, max_items: int = 4, snippet_chars: int = 600
+) -> str:
+    """Surface raw assistant EVENT text for "previous conversation about X"
+    questions.
+
+    The distilled CONCEPT nodes paraphrase the assistant's surface form away
+    (the Borges quote becomes "user asked about the Library of Babel"), and
+    retrieval ranks them above raw EVENTs because the EVENT title is just
+    "Assistant message". When the question explicitly asks for a name /
+    title / quote the assistant produced earlier, hand the reader the raw
+    text directly.
+
+    Pattern: same lexical-overlap scoring as build_recency_block. Filtered
+    to assistant role EVENTs only. Trigger-gated so this block is silent on
+    questions that don't reference a prior assistant turn (no regression
+    risk on the other clusters).
+    """
+    if not _ASSISTANT_RECALL_TRIGGER.search(question):
+        return ""
+
+    sw = _stopwords()
+    q_tokens = {
+        t for t in re.findall(r"[a-zA-Z]+", question.lower())
+        if t not in sw and len(t) > 2
+    }
+    if not q_tokens:
+        return ""
+
+    scored: list[tuple[float, datetime, str]] = []
+    for n in graph.get_all_nodes():
+        if n.type != NodeType.EVENT:
+            continue
+        if n.data.get("role") != "assistant":
+            continue
+        content = n.data.get("content") or n.data.get("description") or ""
+        if not content:
+            continue
+        date_str = n.data.get("date") or n.data.get("timestamp")
+        if not date_str:
+            continue
+        try:
+            dt = datetime.fromisoformat(date_str.replace("Z", "")[:19]) if "T" in date_str \
+                else datetime.fromisoformat(date_str)
+        except Exception:
+            continue
+        text_tokens = set(re.findall(r"[a-zA-Z]+", content.lower()))
+        overlap = len(q_tokens & text_tokens)
+        if overlap == 0:
+            continue
+        # Recall fraction × small log boost for richer assistant turns.
+        score = overlap / max(1, len(q_tokens))
+        scored.append((score, dt, content))
+
+    if not scored:
+        return ""
+
+    # Sort by score DESC; on ties, prefer newer date (more likely the turn
+    # the user is referring back to).
+    scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
+    top = scored[:max_items]
+
+    lines = [
+        "## RAW_ASSISTANT (verbatim text from assistant turns the question likely refers to — copy names/quotes from here, do NOT substitute)",
+    ]
+    for i, (score, dt, content) in enumerate(top, 1):
+        snippet = content.strip().replace("\n", " ")
+        if len(snippet) > snippet_chars:
+            snippet = snippet[:snippet_chars] + "…"
+        lines.append(f"{i}. [{dt.date()}] (overlap={score:.2f}) {snippet}")
     return "\n".join(lines) + "\n"
 
 
@@ -606,6 +696,104 @@ Output JSON format:
     except Exception as e:
         logger.error(f"Error in batch extraction: {e}")
 
+    # ---- Patch B: dated-anchor regex pass over user-role turns ----
+    # The LLM extraction paraphrases away dated lifecycle anchors
+    # ("started ukulele lessons" → "user is learning ukulele"), which
+    # makes _try_diff_since-style resolvers fail with "no memory of
+    # when X happened". This pass scans the raw user-role turns for
+    # explicit verb+object phrases and adds a CONCEPT with the verb
+    # AND topic keyword in the title so BM25 / symbolic resolver can
+    # find it by phrase.
+    #
+    # Improvements over the reverted R7-D:
+    #   - widened verb list (was started/finished/recovered/got; now
+    #     adds began/took up/attended/joined/enrolled/signed up/
+    #     completed/launched/picked up/booked/ordered)
+    #   - title carries BOTH the verb AND the object noun
+    #     (R7-D's "helmet" without "bike" failed BM25 on "bike");
+    #     here we keep the full "ATTENDED a baking class" phrase
+    #   - only fires when a date is unambiguously the session date
+    #     (no risk of cross-day misattribution)
+    _add_dated_anchors_from_session(session, timestamp, graph, time_node_id)
+
+
+_ANCHOR_VERB_RE = re.compile(
+    r"\bi\s+(?:(?:have\s+|just\s+|finally\s+|recently\s+)?"
+    r"(started|began|took\s+up|picked\s+up|signed\s+up\s+for|"
+    r"enrolled\s+in|joined|launched|"
+    r"finished|completed|wrapped\s+up|"
+    r"recovered\s+from|got\s+over|"
+    r"attended|went\s+to|booked|ordered|received|got|"
+    r"met|first\s+met|"
+    r"bought|purchased|"
+    r"moved\s+(?:to|into)|relocated\s+to))"
+    r"\s+(?:(?:a|an|the|my|our|some|to\s+the|to\s+a)\s+)?"
+    r"([a-z][^.,!?\n;]{2,80})",
+    re.IGNORECASE,
+)
+
+
+def _add_dated_anchors_from_session(
+    session: list[dict],
+    timestamp: datetime,
+    graph: ConceptGraph,
+    time_node_id: str,
+) -> None:
+    """Scan user-role turns for verb+object lifecycle phrases and add a
+    dated CONCEPT for each. Safe to call after the LLM extraction —
+    duplicates are filtered by title uniqueness inside ConceptGraph.
+    """
+    session_date_str = timestamp.date().isoformat()
+    seen_titles: set[str] = set()
+
+    for turn in session:
+        if turn.get("role") != "user":
+            continue
+        content = turn.get("content", "")
+        if not content:
+            continue
+        for m in _ANCHOR_VERB_RE.finditer(content):
+            verb = re.sub(r"\s+", " ", m.group(1).strip().lower())
+            obj_phrase = re.sub(r"\s+", " ", m.group(2).strip())
+            # Trim object phrase to first ~10 words to keep title tight.
+            obj_words = obj_phrase.split()[:10]
+            obj_clean = " ".join(obj_words).rstrip(" .,'\"")
+            if len(obj_clean) < 3:
+                continue
+            title = f"{verb} {obj_clean}".lower()
+            if title in seen_titles:
+                continue
+            seen_titles.add(title)
+            # Anchor concept: title carries verb + topic keyword;
+            # description echoes the full triggering sentence for the
+            # reader to see in context.
+            stamped = f"[{session_date_str}] {title}"
+            concept_id = f"anchor-{uuid.uuid4().hex[:8]}"
+            try:
+                graph.add_node(
+                    Node(
+                        id=concept_id,
+                        type=NodeType.CONCEPT,
+                        data={
+                            "title": stamped,
+                            "description": f"[{session_date_str}] User stated: \"{m.group(0).strip()}\"",
+                            "strength": 0.85,
+                            "concept_type": "dated_anchor",
+                            "extracted_at": timestamp.isoformat(),
+                            "date": session_date_str,
+                            "anchor_verb": verb,
+                            "anchor_object": obj_clean,
+                        },
+                        reasoning=f"Dated-anchor regex pass over user turn on {session_date_str}",
+                        created_at=timestamp,
+                    )
+                )
+                graph.add_edge(
+                    Edge(source=concept_id, target=time_node_id, created_at=timestamp)
+                )
+            except Exception:
+                pass
+
 
 def run_benchmark(args: argparse.Namespace) -> None:
     """Run the benchmark evaluation."""
@@ -686,6 +874,14 @@ def run_benchmark(args: argparse.Namespace) -> None:
     logger.info(f"Using model: {config.model_name}")
     logger.info(f"Batch mode: {args.batch_mode}")
     logger.info(f"Evaluation mode: {'LLM' if args.llm_eval else 'skip'}")
+    if args.llm_rerank:
+        logger.info(
+            f"Batched B-rerank: enabled (model={args.rerank_model}, "
+            f"reasoning_effort={args.rerank_reasoning_effort}, "
+            f"pool={args.rerank_pool or 'max_nodes'})"
+        )
+    else:
+        logger.info("Batched B-rerank: disabled")
 
     if args.stratified:
         # Stratified sampling: take N per question_type for balanced coverage
@@ -769,6 +965,10 @@ def run_benchmark(args: argparse.Namespace) -> None:
             max_nodes=20,
             include_reasoning=True,
             retrieval_mode=retrieval_mode,
+            use_llm_rerank_batched=bool(args.llm_rerank),
+            rerank_model=args.rerank_model,
+            rerank_reasoning_effort=args.rerank_reasoning_effort,
+            pre_rerank_pool=args.rerank_pool if args.llm_rerank else 0,
         )
         query_agent = MemoryQueryAgent(graph, config=query_config, embedder=embedder)
 
@@ -837,12 +1037,23 @@ def run_benchmark(args: argparse.Namespace) -> None:
             question, re.IGNORECASE,
         )
         _query_max_nodes = 50 if (_qa_agg_count or _qa_agg_sum) else None
+        # On aggregation questions, also boost the pre-rerank pool so the
+        # rerank step has a fuller session set to choose from. Only takes
+        # effect when --llm-rerank is on; otherwise the override is
+        # max_nodes-equivalent (rerank disabled ⇒ pool boost is moot).
+        if args.llm_rerank and (_qa_agg_count or _qa_agg_sum):
+            _query_pre_rerank_pool = max(args.rerank_pool, 100)
+        elif args.llm_rerank:
+            _query_pre_rerank_pool = args.rerank_pool
+        else:
+            _query_pre_rerank_pool = None
         _query_start = time.time()
         query_result = query_agent.query_for_qa(
             question=question,
             domain="longmemeval",
             query_mode=args.query_mode,
             max_nodes=_query_max_nodes,
+            pre_rerank_pool=_query_pre_rerank_pool,
         )
         context_text = query_result.context
 
@@ -862,6 +1073,15 @@ def run_benchmark(args: argparse.Namespace) -> None:
         recency_block = build_recency_block(graph, question)
         if recency_block:
             context_text = recency_block + "\n" + context_text
+
+        # Cluster E — Assistant-text recall. When the question explicitly
+        # references a prior assistant turn ("previous conversation about X",
+        # "you recommended/mentioned/listed Y"), the answer is in a raw
+        # assistant EVENT that distilled CONCEPT retrieval routinely buries.
+        # Surface it directly so the reader can copy the verbatim name/quote.
+        assistant_block = build_assistant_recall_block(graph, question)
+        if assistant_block:
+            context_text = assistant_block + "\n" + context_text
 
         # Symbolic deterministic resolver (ToMi-style): pattern-match the
         # question against the dated graph and compute an exact answer string.
@@ -922,6 +1142,8 @@ def run_benchmark(args: argparse.Namespace) -> None:
             "ground_truth": ground_truth,
             "context_length": len(context_text),
             "graph_nodes": graph.node_count,
+            "symbolic_pattern": (symbolic_result or {}).get("pattern"),
+            "bypass_taken": bool(should_bypass),
         }
 
         if eval_result:
@@ -1015,6 +1237,39 @@ if __name__ == "__main__":
         type=str,
         default=None,
         help="Override LLM model used for evaluation (default: same as --model). Pass openai:gpt-4o to match the canonical LongMemEval judge.",
+    )
+    parser.add_argument(
+        "--llm-rerank",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable batched B-rerank: one LLM call per question scores every "
+        "retrieved candidate jointly and returns ranked indices. See "
+        "my_prompt.md §1.2 — this is the canonical rerank path; the legacy "
+        "per-doc rerank is intentionally not exposed via CLI.",
+    )
+    parser.add_argument(
+        "--rerank-model",
+        type=str,
+        default="openai:gpt-5",
+        help="Rerank LLM. Default openai:gpt-5 (cheap with reasoning_effort=low).",
+    )
+    parser.add_argument(
+        "--rerank-reasoning-effort",
+        type=str,
+        default="low",
+        choices=["low", "medium", "high"],
+        help="Reasoning effort for rerank LLM. Default low — rerank is "
+        "scoring relevance, not full QA, so low effort is enough.",
+    )
+    parser.add_argument(
+        "--rerank-pool",
+        type=int,
+        default=0,
+        help="When --llm-rerank is on, retrieval keeps this many candidates "
+        "before reranking (rerank then trims to max_nodes). 0 = use "
+        "max_nodes (no pool expansion). On aggregation questions "
+        "(detected via the R9-A heuristic), the runner auto-bumps to "
+        "max(this, 100) so the relevant session is in the pool.",
     )
     parser.add_argument(
         "--resume",
