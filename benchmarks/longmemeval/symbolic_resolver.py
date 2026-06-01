@@ -474,11 +474,31 @@ class LongMemEvalSymbolicResolver:
         "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
     }
 
+    # Advice/preference-question guard — these ask for NEW
+    # recommendations (referring to a FUTURE "this weekend") and should
+    # never trigger a date-based recall pattern.
+    _ADVICE_GUARD_RE = re.compile(
+        r"\b(?:"
+        r"can\s+you\s+(?:recommend|suggest|tip|tell\s+me)|"
+        r"any\s+(?:recommend|suggest|tip)|"
+        r"what\s+should\s+(?:i|we)|"
+        r"any\s+tips?\s+(?:on|for)|"
+        r"do\s+you\s+(?:recommend|suggest)|"
+        r"please\s+(?:recommend|suggest|share|tell)|"
+        r"could\s+you\s+(?:recommend|suggest)"
+        r")\b",
+        re.IGNORECASE,
+    )
+
     def _try_relative_ago_recall(self, query: str) -> dict | None:
         if self.question_date is None:
             return None
         # Skip the "how many ... ago" form — _try_diff_ago owns that.
         if re.search(r"how\s+many\b", query, re.IGNORECASE):
+            return None
+        # Skip advice/preference requests — they're about FUTURE actions
+        # and a recall match would substitute a wrong past event.
+        if self._ADVICE_GUARD_RE.search(query):
             return None
         m = self._RELATIVE_AGO_RE.search(query)
         if not m:
@@ -704,6 +724,12 @@ class LongMemEvalSymbolicResolver:
             return None
         # Skip "how many ... ago" form — _try_diff_ago / _try_relative_ago_recall own that
         if re.search(r"how\s+many\b", query, re.IGNORECASE):
+            return None
+        # Skip advice/preference requests — they ask about a FUTURE
+        # weekend/week (e.g. "Can you recommend events this weekend?"),
+        # not recall of a past event. Mis-firing here caused 3 SSP
+        # regressions on the prior N=500 run.
+        if self._ADVICE_GUARD_RE.search(query):
             return None
         # Try each named-day form
         target_dates: list = []

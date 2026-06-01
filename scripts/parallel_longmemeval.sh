@@ -21,8 +21,14 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 [ -f .env ] && set -a && source .env && set +a
+# Route OpenAI SDK to OpenRouter when an OPENROUTER key is present.
+if [ -n "${OPENROUTER_API_KEY:-}" ]; then
+    export OPENAI_API_KEY="$OPENROUTER_API_KEY"
+    export OPENAI_BASE_URL="https://openrouter.ai/api/v1"
+    unset OPENAI_ORGANIZATION
+fi
 if [ -z "${OPENAI_API_KEY:-}" ]; then
-    echo "ERROR: OPENAI_API_KEY not set" >&2
+    echo "ERROR: neither OPENROUTER_API_KEY nor OPENAI_API_KEY set" >&2
     exit 1
 fi
 
@@ -100,12 +106,12 @@ for ((i=0; i<N_PARALLEL; i++)); do
     rm -rf "$OUTDIR"
     mkdir -p "$OUTDIR"
     nohup .venv/bin/python -u -m benchmarks.longmemeval.run_eval \
-        --model openai:gpt-5-mini \
-        --writer-model openai:gpt-4o-mini \
-        --judge-model openai:gpt-4o \
-        --embedding openai:text-embedding-3-small \
+        --model openai:openai/gpt-5-mini \
+        --writer-model openai:openai/gpt-4o-mini \
+        --judge-model openai:openai/gpt-4o \
+        --embedding openai:openai/text-embedding-3-small \
         --symbolic-resolver --symbolic-temporal --symbolic-bypass \
-        --llm-rerank --rerank-model openai:gpt-5-mini \
+        --llm-rerank --rerank-model openai:openai/gpt-5-mini \
         --rerank-reasoning-effort low --rerank-pool 100 \
         --question-ids "$IDS_CSV" \
         --output-dir "$OUTDIR" \

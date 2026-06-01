@@ -259,7 +259,12 @@ _ASSISTANT_RECALL_TRIGGER = re.compile(
     r"i\s+was\s+going\s+through\s+our|"
     r"we\s+(?:discussed|talked\s+about)\s+\w+(?:\s+\w+){0,5}\s+earlier|"
     r"i\s+(?:think\s+)?we\s+discussed|"
-    r"that\s+(?:list|recommendation|suggestion)\s+you\s+(?:gave|provided|mentioned|made)"
+    # extended for SSA recall patterns: "remind me what was the X on
+    # that list", "in your submission/paper", "the X you gave"
+    r"remind\s+me\s+(?:what\s+(?:was|did)|of\s+the|about\s+the)|"
+    r"on\s+that\s+list|"
+    r"in\s+(?:that|your|the\s+previous)\s+(?:submission|paper|report|review|response|article|plan)|"
+    r"that\s+(?:list|recommendation|suggestion|advice|note|plan|chart|table)\s+you\s+(?:gave|provided|mentioned|made|wrote|shared)"
     r")\b",
     re.IGNORECASE,
 )

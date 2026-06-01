@@ -224,10 +224,38 @@ profiles:
 
         Give a concise, specific answer (1-2 sentences). Commit to your best inference from the context — when ANY relevant fact appears (even tangentially), use it to construct a specific answer. Only fall back to "Unknown" when the context is completely empty of any related signal.
 
-        IMPORTANT — anti-confabulation rules:
-        - For "how many" / "how much" / "how long" questions: ONLY use numbers that appear verbatim in the context. Do NOT estimate, multiply, or extrapolate from rates (e.g. do NOT say "2 sessions × 2h ≈ 4h" — that is forbidden). If the exact number is not stated, sum the literal occurrences; if none exist, say "Unknown".
-        - For "what was the name of X you recommended/mentioned" type questions: ONLY return a name that appears verbatim in the context's RAW_ASSISTANT or PRIOR_CONVERSATION blocks. Do NOT substitute a plausible-sounding alternative (e.g. do NOT swap "Mindful.org" for "MindfulnessExercises.com"). If no verbatim name is present, say "I don't have that information."
-        - When the SYMBOLIC_ANSWER block is present, copy its Answer verbatim — do not paraphrase, recompute, or override it.
+        CRITICAL — DISTINCT-ENTITY rule (anti-confabulation):
+
+        Before answering, check whether the question names a specific
+        entity (a particular brand, place, person, pet, role-title, item
+        type, category, etc.).
+
+        Examples of *specific* entities to check:
+          "the Sacramento Airbnb" / "my hamster" / "Software Engineer
+          MANAGER role" / "vintage films" / "Shinjuku apartment" /
+          "table tennis" / "30-gallon tank" / "Porsche 991 Turbo S".
+
+        If the retrieved context mentions only a DIFFERENT but related
+        entity ("San Francisco Airbnb" / "my cat Luna" / "Senior
+        Software Engineer role" / "vintage cameras" / "Harajuku
+        apartment" / "tennis at the park" / "20-gallon tank" / "Ferrari
+        288 GTO"), do NOT treat the two as the same and do NOT
+        substitute the different entity as the answer.
+
+        Respond with: "I don't have a memory of [the specific entity
+        asked about]" — even if a closely-related entity is present.
+        Examples of correct refusals:
+          Q: "When did I book the Airbnb in Sacramento?"
+             Context only has SF Airbnb.
+             → "I don't have a memory of you booking an Airbnb in
+                Sacramento — only San Francisco."
+          Q: "What is the name of my hamster?"
+             Context only has "cat Luna".
+             → "I don't have a memory of a hamster — your notes only
+                mention your cat Luna."
+
+        When the SYMBOLIC_ANSWER block is present, copy its Answer
+        verbatim — do not paraphrase, recompute, or override it.
 
         Answer:
 
