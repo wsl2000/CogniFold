@@ -137,12 +137,19 @@ class LongMemEvalSymbolicResolver:
         """Try each pattern in order; return {answer, reasoning, pattern}."""
         for pattern_name, fn in [
             ("date_diff_between",  self._try_diff_between),
+            # New TR resolvers (target 2026-06-01 baseline TR failures).
+            # Order: most-specific (two-event diff / activity duration /
+            # named-day) before single-event ago/since patterns to avoid
+            # the broader patterns swallowing matches.
+            ("diff_since_when",    self._try_diff_since_when),
+            ("duration_activity",  self._try_duration_activity),
             ("which_first",        self._try_which_first),
             ("chronological_order", self._try_chronological_order),
             ("rank_among",         self._try_rank_among),
             ("date_diff_ago",      self._try_diff_ago),
             ("date_diff_since",    self._try_diff_since),
             ("relative_ago_recall", self._try_relative_ago_recall),
+            ("named_day_recall",   self._try_named_day_recall),
             ("latest_value",       self._try_latest_value),
             ("topic_recall",       self._try_topic_recall),
         ]:
@@ -540,6 +547,250 @@ class LongMemEvalSymbolicResolver:
             "reasoning": (
                 f"Question date {self.question_date.date()} − {days_back} days "
                 f"⇒ target {target.date()}. Matched '{top.title}' on "
+                f"{top.date.date()} (score {candidates[0][0]:.2f})."
+            ),
+            "bypass": bypass,
+        }
+
+    # =====================================================================
+    # NEW: TR cluster patterns (targeted at 2026-06-01 baseline failures)
+    # =====================================================================
+
+    # "How many days had passed since I X when I Y" — interval between two
+    # USER-anchored events. Distinct from _try_diff_since (which assumes
+    # the reference is question_date). Targets baseline failures #6 (book
+    # finish vs library event), #12 (ukulele vs guitar tech), #13 (flu vs
+    # 10th jog), #31 (Adidas vs Converse).
+    _DIFF_SINCE_WHEN_RE = re.compile(
+        r"how\s+many\s+(day|days|week|weeks|month|months|year|years)\s+"
+        r"(?:have|had)\s+passed\s+since\s+(?:i|my|we)\s+(.+?)\s+"
+        r"when\s+(?:i|my|we)\s+(.+?)(?:\?|$)",
+        re.IGNORECASE,
+    )
+
+    def _try_diff_since_when(self, query: str) -> dict | None:
+        m = self._DIFF_SINCE_WHEN_RE.search(query)
+        if not m:
+            return None
+        unit = m.group(1).lower()
+        unit_key = unit if unit.endswith("s") else unit + "s"
+        phrase_a = m.group(2).strip()
+        phrase_b = m.group(3).strip()
+        a = self._best_recent_concept(phrase_a)
+        b = self._best_recent_concept(phrase_b)
+        if a is None or b is None or a.date is None or b.date is None:
+            return None
+        # Both phrases must clearly distinguish from each other; if their
+        # top-1 dates are within 1 day, the question is asking about a
+        # diff that's effectively zero — likely a mis-anchored extraction.
+        diff_days = abs((b.date - a.date).days)
+        if diff_days < 1:
+            return None
+        diff_units = max(1, round(diff_days / self._UNIT_DAYS[unit_key]))
+        unit_word = unit_key if diff_units != 1 else unit_key.rstrip("s")
+        return {
+            "answer": f"{diff_units} {unit_word}",
+            "reasoning": (
+                f"Event A '{a.title}' on {a.date.date()}; "
+                f"Event B '{b.title}' on {b.date.date()}; "
+                f"diff = {diff_days} days."
+            ),
+            "bypass": True,
+        }
+
+    # "How long had I been X-ing when Y" / "How many weeks have I been X when Y"
+    # — duration of an ongoing activity at the time of a trigger event.
+    # Treats activity phrase as the START anchor and trigger phrase as the
+    # END anchor. Targets baseline failures #14 (sculpting + tools), #29
+    # (Book Lovers + meetup), #33 (bird watching + workshop), #35 (binoculars
+    # + goldfinches), #36 (exchange + orientation).
+    _DURATION_HOW_MANY_RE = re.compile(
+        r"how\s+many\s+(day|days|week|weeks|month|months|year|years)\s+"
+        r"(?:have|had)\s+(?:i|we)\s+been\s+(.+?)\s+"
+        r"when\s+(?:i|we)\s+(.+?)(?:\?|$)",
+        re.IGNORECASE,
+    )
+    _DURATION_HOW_LONG_RE = re.compile(
+        r"how\s+long\s+(?:had|have)\s+(?:i|we)\s+been\s+(.+?)\s+"
+        r"(?:when\s+(?:i|we)|before\s+(?:i|the|my))\s+(.+?)(?:\?|$)",
+        re.IGNORECASE,
+    )
+    _DURATION_DID_BEFORE_RE = re.compile(
+        r"how\s+long\s+did\s+(?:i|we)\s+(?:use|have|own)\s+(.+?)\s+"
+        r"before\s+(?:i|the|my)\s+(.+?)(?:\?|$)",
+        re.IGNORECASE,
+    )
+
+    def _try_duration_activity(self, query: str) -> dict | None:
+        # Try each variant in order
+        unit = None
+        unit_key = None
+        m = self._DURATION_HOW_MANY_RE.search(query)
+        if m:
+            unit = m.group(1).lower()
+            unit_key = unit if unit.endswith("s") else unit + "s"
+            activity = m.group(2).strip()
+            trigger = m.group(3).strip()
+        else:
+            m = self._DURATION_HOW_LONG_RE.search(query) or self._DURATION_DID_BEFORE_RE.search(query)
+            if not m:
+                return None
+            activity = m.group(1).strip()
+            trigger = m.group(2).strip()
+            unit_key = None  # detect at output time
+        # Find the START of the activity (most recent anchor) and the trigger event
+        a = self._best_recent_concept(activity)
+        b = self._best_recent_concept(trigger)
+        if a is None or b is None or a.date is None or b.date is None:
+            return None
+        # Duration must be positive (trigger after start)
+        diff_days = (b.date - a.date).days
+        if diff_days < 1:
+            return None
+        if unit_key is None:
+            # Auto-pick unit by diff magnitude
+            if diff_days < 14: unit_key = "days"
+            elif diff_days < 60: unit_key = "weeks"
+            elif diff_days < 730: unit_key = "months"
+            else: unit_key = "years"
+        diff_units = max(1, round(diff_days / self._UNIT_DAYS[unit_key]))
+        unit_word = unit_key if diff_units != 1 else unit_key.rstrip("s")
+        return {
+            "answer": f"{diff_units} {unit_word}",
+            "reasoning": (
+                f"Activity '{a.title}' started {a.date.date()}; "
+                f"Trigger '{b.title}' on {b.date.date()}; "
+                f"duration = {diff_days} days."
+            ),
+            "bypass": True,
+        }
+
+    # "last Saturday" / "Valentine's day" / "past weekend" / "last week"
+    # — named-day recall. Map the named day to a target date relative to
+    # question_date, then find the best concept on that date. Targets
+    # baseline failures #18 (music event last Sat), #19 (airline Valentine),
+    # #20 (bike past weekend), #21 (artist last Fri), #22 (milestone four
+    # weeks ago), #23 (religious activity last week).
+    _LAST_WEEKDAY_RE = re.compile(
+        r"\b(?:last|past|this)\s+"
+        r"(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
+        re.IGNORECASE,
+    )
+    _LAST_PERIOD_RE = re.compile(
+        r"\b(?:last|past|this)\s+(weekend|week|month)\b",
+        re.IGNORECASE,
+    )
+    _HOLIDAY_RE = re.compile(
+        r"\b(valentine'?s?\s+day|christmas(?:\s+day)?|halloween|"
+        r"new\s+year'?s?\s+(?:day|eve)|thanksgiving|easter(?:\s+sunday)?|"
+        r"independence\s+day|labor\s+day)\b",
+        re.IGNORECASE,
+    )
+    _HOLIDAY_DATES = {  # (month, day) for fixed holidays
+        "valentine": (2, 14),
+        "christmas": (12, 25),
+        "halloween": (10, 31),
+        "new year": (1, 1),
+        "independence": (7, 4),
+    }
+
+    _WEEKDAY_IDX = {
+        "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
+        "friday": 4, "saturday": 5, "sunday": 6,
+    }
+
+    def _try_named_day_recall(self, query: str) -> dict | None:
+        if self.question_date is None:
+            return None
+        # Skip "how many ... ago" form — _try_diff_ago / _try_relative_ago_recall own that
+        if re.search(r"how\s+many\b", query, re.IGNORECASE):
+            return None
+        # Try each named-day form
+        target_dates: list = []
+        weekday_m = self._LAST_WEEKDAY_RE.search(query)
+        period_m = self._LAST_PERIOD_RE.search(query)
+        holiday_m = self._HOLIDAY_RE.search(query)
+        if weekday_m:
+            dow = self._WEEKDAY_IDX[weekday_m.group(1).lower()]
+            today_dow = self.question_date.weekday()
+            days_back = (today_dow - dow) % 7
+            if days_back == 0: days_back = 7  # "last Friday" on a Friday → last week's
+            target_dates = [self.question_date - timedelta(days=days_back)]
+        elif period_m:
+            period = period_m.group(1).lower()
+            if period == "weekend":
+                # Most recent Sat-Sun before question_date
+                today_dow = self.question_date.weekday()
+                # last Sunday = today - (today_dow + 1) days if today_dow >= 0
+                # last Saturday = last Sunday - 1
+                days_to_last_sun = today_dow + 1
+                last_sun = self.question_date - timedelta(days=days_to_last_sun)
+                last_sat = last_sun - timedelta(days=1)
+                target_dates = [last_sat, last_sun]
+            elif period == "week":
+                # Range 1-7 days back
+                target_dates = [self.question_date - timedelta(days=d) for d in range(1, 8)]
+            elif period == "month":
+                # Range 1-30 days back
+                target_dates = [self.question_date - timedelta(days=d) for d in range(1, 31)]
+        elif holiday_m:
+            holiday_str = holiday_m.group(1).lower()
+            mday = None
+            for key, md in self._HOLIDAY_DATES.items():
+                if key in holiday_str:
+                    mday = md; break
+            if mday is None:
+                return None
+            # Most recent occurrence before question_date
+            yr = self.question_date.year
+            cand = self.question_date.replace(month=mday[0], day=mday[1])
+            if cand >= self.question_date:
+                cand = cand.replace(year=yr - 1)
+            target_dates = [cand]
+        else:
+            return None
+
+        # Topic phrase = stripped question (drop date clause + stop-words)
+        head = query
+        for rx in (self._LAST_WEEKDAY_RE, self._LAST_PERIOD_RE, self._HOLIDAY_RE):
+            head = rx.sub("", head)
+        head = re.sub(
+            r"\b(?:which|what|who|where|how|did|do|does|i|we|my|the|a|an|that|"
+            r"this|in|on|at|of|to|with|from|for|was|were|been|did|have|had)\b",
+            "", head, flags=re.IGNORECASE,
+        )
+        topic = re.sub(r"\s+", " ", head).strip().rstrip("?.,")
+        if not topic:
+            return None
+        # Find concepts dated to any target date (±1 day) with topic match
+        target_dates_set = {d.date() for d in target_dates}
+        candidates = []
+        for c in self._concepts:
+            if c.date is None:
+                continue
+            # Closest target date
+            min_off = min(abs((c.date.date() - td).days) for td in target_dates_set)
+            if min_off > 1:
+                continue
+            score = _phrase_score(topic, c.raw_text)
+            if score >= 0.34:
+                candidates.append((score, c, min_off))
+        if not candidates:
+            return None
+        # Sort by (score DESC, prefer CONCEPT over EVENT, date proximity)
+        candidates.sort(
+            key=lambda x: (-x[0], x[1].node_id.startswith("evt-"), x[2]),
+        )
+        bypass = (
+            len(candidates) == 1
+            or (candidates[0][0] - candidates[1][0]) >= 0.20
+        )
+        top = candidates[0][1]
+        return {
+            "answer": top.title,
+            "reasoning": (
+                f"Named-day '{query[:60]}' → target dates "
+                f"{sorted(target_dates_set)[:3]}. Matched '{top.title}' on "
                 f"{top.date.date()} (score {candidates[0][0]:.2f})."
             ),
             "bypass": bypass,

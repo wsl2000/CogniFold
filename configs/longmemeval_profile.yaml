@@ -184,40 +184,13 @@ profiles:
             ✓ "User is planning to bake chocolate chip cookies for an upcoming party"
             ✗ "User likes cookies"  ← drops the specific plan + context
 
-        (9) TYPED ATTRIBUTE VERBATIM — when user states a TYPED ATTRIBUTE
-            of an owned entity (pet breed, car make/model, paint color,
-            phone model, plant species, clothing size, dog name), the
-            attribute VALUE must appear verbatim in the title — do NOT
-            paraphrase to a category or inference from surrounding context.
-            USER: "My golden retriever Max loves his Kong toys"
-            ✓ {{"title": "User owns a golden retriever named Max",
-                "description": "Pet: golden retriever, named Max, enjoys Kong toys"}}
-            ✗ {{"title": "User has an active dog named Max"}}  ← BREED LOST,
-              reader will guess Labrador from "active + Kong"
-            (Same rule for car: "my 2018 silver Tesla Model 3" → title must
-            contain "Tesla Model 3"; for phone: "my iPhone 14 Pro Max" →
-            "iPhone 14 Pro Max" in title.)
-
-        (10) DURATION ANCHOR — when user states an explicit DURATION
-            ("I spent N days/weeks/hours on X", "N-day trip", "It took
-            N days to Y", "N-hour session"), preserve N + unit + topic
-            in the title. Do NOT replace with a date-range that downstream
-            reasoning might mis-compute.
-            USER: "I spent 2 days on my solo camping trip to Yosemite"
-            ✓ {{"title": "User spent 2 days on solo camping trip to Yosemite",
-                "description": "Duration: 2 days; activity: solo camping at Yosemite"}}
-            ✗ {{"title": "User went on solo camping trip to Yosemite",
-                "description": "Left for Yosemite 2023-04-05; returned 2023-05-17"}}
-              ← downstream computes 42 days from the date range instead
-              of the stated 2 days.
-
         ============================================================
 
         Extract concepts that cover (composite, not categorical):
           - Profile / preferences / habits — including the trigger or context if stated.
           - Specific events / actions / decisions — with where + when when they appear.
           - Stated relationships / mentions — with the role or context.
-          - PLUS every fact matching anchor rules (1)-(10) above.
+          - PLUS every fact matching anchor rules (1)-(8) above.
 
         Return strict JSON. Do not infer; only encode facts explicitly stated.
         {{

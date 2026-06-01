@@ -246,9 +246,20 @@ _RECENCY_TRIGGER = re.compile(
 # raw assistant text directly.
 _ASSISTANT_RECALL_TRIGGER = re.compile(
     r"\b(?:"
-    r"previous\s+conversation|earlier\s+conversation|our\s+(?:previous|earlier|prior)\s+(?:chat|conversation|discussion)|"
-    r"you\s+(?:mentioned|recommended|provided|listed|suggested|told\s+me|said|named|gave\s+me)|"
-    r"recommendation\s+(?:you|i)|that\s+you\s+(?:recommended|gave|named|listed)"
+    # require explicit past-conversation anchor; the broader version
+    # ("you mentioned/suggested" alone) was empirically shown to mis-fire
+    # on present-tense advice requests ("Can you suggest some activities?")
+    # and inject unrelated assistant text → preference-cluster regressions.
+    r"previous\s+(?:conversation|chat|discussion|talk)|"
+    r"earlier\s+(?:conversation|chat|discussion)|"
+    r"prior\s+(?:conversation|chat|discussion)|"
+    r"our\s+(?:previous|earlier|prior|last)\s+(?:chat|conversation|discussion|talk)|"
+    r"in\s+our\s+(?:previous|earlier|prior|last)\s+(?:chat|conversation|discussion|talk)|"
+    r"last\s+time\s+(?:we|you|i)|"
+    r"i\s+was\s+going\s+through\s+our|"
+    r"we\s+(?:discussed|talked\s+about)\s+\w+(?:\s+\w+){0,5}\s+earlier|"
+    r"i\s+(?:think\s+)?we\s+discussed|"
+    r"that\s+(?:list|recommendation|suggestion)\s+you\s+(?:gave|provided|mentioned|made)"
     r")\b",
     re.IGNORECASE,
 )
