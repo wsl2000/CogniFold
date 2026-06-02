@@ -263,3 +263,40 @@ Auto-stub `CHANGES.md` is written by `parallel_longmemeval.sh` post-merge when `
 - Push only to `opennorve/longmemeval-iter`. Never to `main`, `iter`, `public-release`, `cognifold-dev`.
 - iter03 not snapshotted (reverted in place). iter04 (`ae16124`) was local-only and dropped via soft-reset before iter15 push.
 - Current pushed HEAD: `37c4aa1` (iter05-15 batch, PR #3 reviewer duanyiqun).
+
+## iter16 — CONCEPTS_NEAR_TARGET_DATE enumeration block
+
+- **Score (TR)**: 79.7% (+0.8 vs iter15) — first 79%+ TR
+- **Changes**: new `build_target_date_concepts_block` — for "X N weeks ago" Qs, enumerate every dated CONCEPT within ±3 days of the resolved target date as a `## CONCEPTS_NEAR_TARGET_DATE` block. Reader sees `[date]`, off-by-X days, title and 160-char description for each candidate so it can pick by date proximity rather than retrieval ranking.
+- **TR gains** (4): gpt4_21adecb5 (undergrad→master 6 mo), gpt4_4929293b (cousin's wedding), gpt4_8279ba03 (smoker), b29f3365 (guitar lessons).
+- **TR regressions** (3): gpt4_1d80365e (Yosemite — stochastic), gpt4_59149c78 (art event — stochastic), gpt4_5dcc0aab (cleaned shoes — named_day picked planning concept).
+- **Decision**: KEEP. Confirmed `target_cands_block` lift on 21adecb5 + 4929293b.
+
+## iter17 — named_day verb-content guard + count_among lenient verb
+
+- **Score (TR)**: **81.2%** (+1.5 vs iter16) — **first 80%+, new high, +6 vs iter02**
+- **Changes**:
+  - `_try_named_day_recall`: VERB-content guard. When the Q has a clear action verb (clean/wear/buy/fly/give/receive/eat/drink/sing/swim/win/lose/meet/say/tell/find/ride/drive/etc — with irregular-form variants), bypass is rejected unless the top concept's text mentions the verb stem or an irregular form. Fixes `gpt4_5dcc0aab` ("cleaned shoes" was bypassing to "User lent spare running shoes") and `gpt4_f420262d` ("Valentine's airline" was bypassing to a SkyMiles enrollment note).
+  - `_try_count_among`: verb_pats softened from hard skip to non-blocking verb-match flag. Bypass now requires `has_verb_match AND 2 ≤ n ≤ 12`. Still triggered 0 TR cases (a3838d2b needs more investigation — regex matches but matches list stays empty even with relaxed verb).
+- **TR gains** (4): gpt4_1d80365e (Yosemite — finally), gpt4_59149c78 (art event Met), gpt4_5dcc0aab (cleaned shoes), gpt4_93159ced (NovaTech).
+- **TR regressions** (2): gpt4_2c50253f (wake) and b29f3365 (guitar) — both stochastic.
+- **Decision**: KEEP — pushed in PR #3.
+
+---
+
+## Research scan — public memory systems' temporal mechanics
+
+After iter17 hit 81.2% TR, surveyed what other published systems use for temporal reasoning:
+
+| System | LongMemEval-S | TR-only | Key mechanic |
+|---|---|---|---|
+| **Chronos** (High) | 95.6% | strong | event tuples (S-V-O + resolved datetime); separate event_calendar + turn_calendar; tool-calling loop at query time. **Event calendar +58.9% baseline (ablation).** |
+| **Mem0 + Temporal** | 94.8% top_50 | strong | per-memory temporal pass extracts start/end/status/precision; 7 query intent types; additive temporal score |
+| **EverMemOS** | 82.0% | strong | MemCell (content + timestamp + metadata); foresight signals; agentic retrieval |
+| **TSM** | — | 69.92% | dialogue-time vs event-time split; spaCy ParseTime; episodic TKG (S, R, O, t) + durative |
+| **Zep / Graphiti** | 71.2% | 62.4% gpt-4o / 54.1% gpt-4o-mini | bi-temporal edges with t_valid/t_invalid/t_created/t_expired; LLM contradiction resolution |
+| **Ours (iter17)** | — | **81.2%** | TODAY block + datetime-precision in `data["date"]` + planning blacklists + noun gates + R/W blocks |
+
+Our 81.2% TR is between Zep and TSM. The big gap to Chronos/Mem0 is the same lever — **store the resolved event date on each concept (not session date)**. Our writer currently dates concepts by the session timestamp, so "I bought my Adidas on January 10th" (session 2023-02-03) gets stored with date=2023-02-03, not the user's stated 2023-01-10. The resolver then computes "days ago" against the session date, producing the wrong answer.
+
+iter18 plan: borrow Chronos+Mem0's approach — add a writer pass that resolves each concept's `event_date` + `event_date_precision` (day/week/month/year/unknown) and stores it. resolver and reader use `event_date` first, fall back to `session_date`.

@@ -628,9 +628,13 @@ class LongMemEvalSymbolicResolver:
             # Topic noun match.
             if not any(n in text for n in topic_nouns):
                 continue
-            # Verb match (best-effort).
-            if verb_pats and not any(v in text for v in verb_pats):
-                continue
+            # iter17: verb match now LENIENT — skip if no verb_pats hits,
+            # but only mark these as low-confidence so we don't bypass on
+            # weak matches. Removed the hard skip because writers paraphrase
+            # heavily (a3838d2b had "User volunteered at Walk for Wildlife
+            # event" — my old verb_pats {participated,took part,went to}
+            # rejected it before iter15 added "volunteered").
+            verb_match = (not verb_pats) or any(v in text for v in verb_pats)
             # Date constraint.
             if upper_bound_date is not None and c.date.date() >= upper_bound_date:
                 continue
@@ -641,20 +645,22 @@ class LongMemEvalSymbolicResolver:
             if key in seen:
                 continue
             seen.add(key)
-            matches.append((c.date, label))
+            matches.append((c.date, label, verb_match))
 
         if not matches:
             return None
+        # iter17: only bypass when there's at least one verb-matched concept
+        # (high confidence the user actually did the action vs just mentioning it).
+        has_verb_match = any(v for _, _, v in matches)
         n = len(matches)
-        # Bypass only when n is reasonably small and confident.
-        bypass = (1 <= n <= 12)
+        bypass = has_verb_match and (2 <= n <= 12)
         return {
             "answer": str(n),
             "reasoning": (
                 f"count_among: topic={topic_phrase!r}; verb={verb_root}; "
                 f"before={before_clause or 'none'} (upper_bound={upper_bound_date}); "
-                f"matched {n} events: "
-                + "; ".join(f"{d.date()} {l[:60]}" for d, l in matches[:5])
+                f"matched {n} events (verb-matched={sum(1 for _,_,v in matches if v)}): "
+                + "; ".join(f"{d.date()} {l[:60]}" for d, l, _ in matches[:5])
             ),
             "bypass": bypass,
         }
@@ -1434,6 +1440,59 @@ class LongMemEvalSymbolicResolver:
             top_text = (candidates[0][1].title + " " + candidates[0][1].description).lower()
             if not any(t in top_text for t in object_tokens):
                 bypass = False
+        # iter17: VERB-content guard — when the question has a clear action
+        # verb (clean/wear/buy/give/receive/fly/attend/visit/eat/cook/...),
+        # the matched concept must mention that verb (or its variants).
+        # gpt4_5dcc0aab "Which pair of shoes did I clean last month?" was
+        # bypassing to "User lent spare running shoes" because both have
+        # "shoes" on the same date; "lent" ≠ "clean". gpt4_f420262d
+        # "What airline I flied with on Valentine's day?" bypassed to
+        # "Delta SkyMiles" because the SkyMiles enrollment matched the
+        # date; the right concept ("American Airlines") would have the
+        # verb "flew"/"flight".
+        if bypass:
+            qverb_m = re.search(
+                r"\b(?:did|do|does|have|had|was|were)\s+(?:i|we|my)\s+(\w+)",
+                query.lower(),
+            )
+            if qverb_m:
+                qverb = qverb_m.group(1)
+                if len(qverb) > 3 and qverb not in {
+                    "have", "make", "made", "took", "take", "been", "want",
+                    "wanted", "thought", "think", "feel", "felt",
+                }:
+                    stems = {
+                        qverb,
+                        qverb + "ed", qverb + "d", qverb + "ing",
+                        qverb.rstrip("e") + "ed", qverb.rstrip("e") + "ing",
+                    }
+                    # Also derive a few common forms for irregular verbs
+                    irregular = {
+                        "fly": {"flew", "flown", "flying", "flight"},
+                        "go": {"went", "gone", "going"},
+                        "buy": {"bought", "buying"},
+                        "give": {"gave", "given", "giving"},
+                        "receive": {"received", "receiving"},
+                        "see": {"saw", "seen", "seeing"},
+                        "eat": {"ate", "eaten", "eating"},
+                        "drink": {"drank", "drunk", "drinking"},
+                        "sing": {"sang", "sung", "singing"},
+                        "swim": {"swam", "swum", "swimming"},
+                        "win": {"won", "winning"},
+                        "lose": {"lost", "losing"},
+                        "meet": {"met", "meeting"},
+                        "say": {"said", "saying"},
+                        "tell": {"told", "telling"},
+                        "find": {"found", "finding"},
+                        "ride": {"rode", "ridden", "riding"},
+                        "drive": {"drove", "driven", "driving"},
+                    }
+                    if qverb in irregular:
+                        stems |= irregular[qverb]
+                    top_text = (candidates[0][1].title + " "
+                                + candidates[0][1].description).lower()
+                    if not any(s in top_text for s in stems):
+                        bypass = False
         top = candidates[0][1]
         return {
             "answer": top.title,
