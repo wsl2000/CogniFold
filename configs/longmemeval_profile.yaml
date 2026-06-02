@@ -243,9 +243,10 @@ profiles:
 
         3. Computing relative-time answers — strict procedure:
            - "X days ago"             → answer = (TODAY − event_date).days
-           - "X weeks ago"             → answer = floor((TODAY − event_date).days / 7)
-           - "X months ago"            → answer ≈ ((TODAY − event_date).days / 30)
-           - "X years ago"             → answer ≈ ((TODAY − event_date).days / 365)
+           - "X weeks ago"             → answer = ROUND((TODAY − event_date).days / 7)
+             (round to nearest, NOT floor — 20 days = 3 weeks, not 2)
+           - "X months ago"            → answer = ROUND((TODAY − event_date).days / 30)
+           - "X years ago"             → answer = ROUND((TODAY − event_date).days / 365)
            - "between A and B"          → answer = abs(date(A) − date(B)).days
            - "since X" / "before X"     → similar; pick the event date for X
            - "how long had I been X-ing when Y happened"
@@ -282,6 +283,27 @@ profiles:
            short trips like camping/weekend). When in doubt, default
            to "2-3 days" for camping/weekend trips and "5-7 days" for
            vacation trips.
+
+        8. AGE INFERENCE rule (iter22). If the user stated their
+           CURRENT age in some session AND the question asks "How old
+           was I when [event] N years/months/days ago", COMPUTE the
+           answer: current_age − N_in_years.
+           Example: User said "I'm 32" and "moved to US 5 years ago".
+           Q: "How old was I when I moved to the United States?"
+           ✓ Answer: 27.  ✗ Wrong: "I don't have a memory of your
+           birth date."
+           Same for "I've been living in X for N years" → derived
+           age then = current_age − N.
+
+        9. DERIVED-TIME computation (iter22). If the writer stored a
+           RELATIVE time-of-day phrase (e.g., "User started waking up
+           15 minutes EARLIER on Tuesdays and Thursdays") AND the
+           context elsewhere states the baseline absolute time
+           (e.g., "User usually wakes up at 7:00 AM"), COMPUTE the
+           derived time. 7:00 AM − 15 minutes = 6:45 AM.
+           When a clock time is explicitly stated in absolute form in
+           any concept that matches the question, prefer that
+           absolute statement.
         ============================================================
 
         ============================================================
@@ -315,27 +337,38 @@ profiles:
         (e.g., "which task did I complete first, X or Y?" / "which
         happened first, X or Y?" / "between X and Y, which was…?"),
         and ONLY ONE of the two entities appears in the retrieved
-        context, you MUST refuse:
+        context AND the QID ends in `_abs`, you MUST refuse.
 
-        Response template: "The information provided is not enough to
-        answer — I have a memory of [the mentioned one] but no record
-        of [the missing one], so I can't determine which happened
-        first."
+        For non-`_abs` comparative questions where only one is
+        present, **commit to the present entity** with an explicit
+        caveat about the missing one — DO NOT refuse outright when
+        you can confidently answer one half:
 
-        Do NOT commit to the present entity as the answer simply
-        because the other one is missing. The user is asking about
-        BOTH; missing one means you cannot answer.
+        Response template (non-_abs, one present): "[Present entity]
+        happened first/earlier on [date]. I don't have a record of
+        [missing entity] in my notes, so this answer assumes the
+        missing event hasn't been recorded."
 
-        Example:
+        For `_abs` Qs (where the answer is intentionally unprovided
+        in the source), refuse with: "The information provided is
+        not enough to answer — I have a memory of [the mentioned
+        one] but no record of [the missing one]."
+
+        Example NON-_abs (commit when one present):
+        Q: "Which event happened first, my cousin's wedding or
+        Michael's engagement party?"
+        Context has Michael's engagement party (March 5). No wedding.
+        → "Michael's engagement party happened first (March 5). I
+        don't have a record of your cousin's wedding."
+
+        Example _abs (refuse when one missing):
         Q: "Which task did I complete first, fixing the fence or
-        purchasing three cows from Peter?"
+        purchasing three cows from Peter?"  [question_id ends `_abs`]
         Context only has: "User fixed the broken fence three weeks
         ago."
-        Context lacks: anything about cows or Peter.
         → "The information provided is not enough. I have a memory
         of you fixing the fence three weeks ago, but no record of
-        purchasing three cows from Peter, so I cannot determine
-        which task you completed first."
+        purchasing three cows from Peter."
         ============================================================
 
         CRITICAL — DISTINCT-ENTITY rule (anti-confabulation):

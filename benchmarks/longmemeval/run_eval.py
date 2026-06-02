@@ -129,7 +129,13 @@ def call_llm(prompt: str, config: AgentConfig, json_mode: bool = False) -> str:
             # High reasoning effort for QA — LongMemEval rewards thorough
             # multi-session synthesis. 24K budget so thinking + reply fit.
             kwargs["max_completion_tokens"] = max(config.max_tokens, 24576)
-            kwargs["reasoning_effort"] = "high"
+            # iter23: honor config.reasoning_effort when set (allow writer
+            # config to choose "low" so gpt-5-mini can be used as writer
+            # without ~3min/call latency on "high"). Default stays "high"
+            # for reader.
+            kwargs["reasoning_effort"] = (
+                getattr(config, "reasoning_effort", None) or "high"
+            )
         else:
             kwargs["temperature"] = 0.0
         if json_mode:
@@ -1553,6 +1559,13 @@ def run_benchmark(args: argparse.Namespace) -> None:
     if getattr(args, "resolve_event_dates", False):
         writer_config = dataclasses.replace(writer_config, resolve_event_dates=True)
         logger.info("W2 event_date resolution pass: ENABLED")
+    # iter23: writer-specific reasoning_effort (so gpt-5-mini can be used
+    # as writer with low effort).
+    if getattr(args, "writer_reasoning_effort", None):
+        writer_config = dataclasses.replace(
+            writer_config, reasoning_effort=args.writer_reasoning_effort
+        )
+        logger.info(f"Writer reasoning_effort: {args.writer_reasoning_effort}")
 
     logger.info(f"Using model: {config.model_name}")
     logger.info(f"Batch mode: {args.batch_mode}")
@@ -2156,6 +2169,18 @@ if __name__ == "__main__":
         "user-role turns. Adds ~$0.0001 per session in writer cost. Helps "
         "with failure cases where the main extractor paraphrased away the "
         "specific value (Exp A WRITER bucket: ~7/23 of the Bucket C cases).",
+    )
+    parser.add_argument(
+        "--writer-reasoning-effort",
+        type=str,
+        default=None,
+        choices=["low", "medium", "high", None],
+        help=(
+            "iter23: writer-specific reasoning_effort. Defaults to 'high' "
+            "(matches reader) when the writer is a gpt-5 reasoning model. "
+            "Set 'low' to use gpt-5-mini as writer without the 3-min/call "
+            "latency that 'high' incurs."
+        ),
     )
     parser.add_argument(
         "--resolve-event-dates",

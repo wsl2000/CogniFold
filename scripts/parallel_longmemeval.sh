@@ -132,6 +132,14 @@ if [ "${RESOLVE_EVENT_DATES:-0}" = "1" ]; then
     EXTRA_FLAGS+=(--resolve-event-dates)
     echo "  + --resolve-event-dates"
 fi
+if [ -n "${WRITER_REASONING_EFFORT:-}" ]; then
+    EXTRA_FLAGS+=(--writer-reasoning-effort "$WRITER_REASONING_EFFORT")
+    echo "  + --writer-reasoning-effort $WRITER_REASONING_EFFORT"
+fi
+
+# Allow writer model override via env (default keeps gpt-4o-mini).
+WRITER_MODEL="${WRITER_MODEL:-openai:openai/gpt-4o-mini}"
+echo "  writer model: $WRITER_MODEL"
 
 PIDS=()
 BATCH_DIRS=()
@@ -149,7 +157,7 @@ for ((i=0; i<N_PARALLEL; i++)); do
     mkdir -p "$OUTDIR"
     nohup .venv/bin/python -u -m benchmarks.longmemeval.run_eval \
         --model openai:openai/gpt-5-mini \
-        --writer-model openai:openai/gpt-4o-mini \
+        --writer-model "$WRITER_MODEL" \
         --judge-model openai:openai/gpt-4o \
         --embedding openai:openai/text-embedding-3-small \
         --symbolic-resolver --symbolic-temporal --symbolic-bypass \
