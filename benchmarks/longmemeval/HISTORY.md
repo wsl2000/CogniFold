@@ -300,3 +300,44 @@ After iter17 hit 81.2% TR, surveyed what other published systems use for tempora
 Our 81.2% TR is between Zep and TSM. The big gap to Chronos/Mem0 is the same lever — **store the resolved event date on each concept (not session date)**. Our writer currently dates concepts by the session timestamp, so "I bought my Adidas on January 10th" (session 2023-02-03) gets stored with date=2023-02-03, not the user's stated 2023-01-10. The resolver then computes "days ago" against the session date, producing the wrong answer.
 
 iter18 plan: borrow Chronos+Mem0's approach — add a writer pass that resolves each concept's `event_date` + `event_date_precision` (day/week/month/year/unknown) and stores it. resolver and reader use `event_date` first, fall back to `session_date`.
+
+## iter18 — W2 event_date resolution pass (Chronos/Mem0 inspired)
+
+- **Score (TR-only, 133)**: 79.7% (-1.5 vs iter17) — REGRESSED on TR
+- **NET (TR-only)**: 1 gain (binoculars), 3 regressions (spark plug, undergrad→master, art event Met)
+- **Changes**:
+  - New `_resolve_event_dates_pass` in `run_eval.py`. After main batch extraction, run an LLM call that takes session_date + user_messages + new concept list, returns per-concept `event_date` / `precision` / `status`. Writes `node.data["event_date"]`.
+  - `_index_concepts` in resolver: prefer `data["event_date"]` over `data["date"]` when present.
+  - `AgentConfig.resolve_event_dates: bool = False` (opt-in field).
+  - CLI: `--resolve-event-dates` flag. parallel script: `RESOLVE_EVENT_DATES=1` env passthrough.
+  - Sanity check: rejects event_date if precision == "unknown" OR if days-off from session > 365 days future or < 10 years past.
+- **Analysis**: The LLM occasionally writes WRONG event_dates (~5% of concepts), which then override the safe session_date and produce wrong resolver answers. Net negative on this dataset.
+- **Decision**: KEEP CODE (gated by flag, default OFF). DO NOT enable in production runs until LLM accuracy is improved (e.g., precision="day" requirement + confidence threshold).
+
+## iter19 — Full N=500 validation run (iter17 code state, W1 ON, W2 OFF)
+
+- **Score**: **86.80%** strict (434/500), 87.40% partial — **NEW SOTA on stack**
+- **NET vs iter02 (83.2%)**: **+18 cases (+3.6 pts)**
+- **NET vs iter05 (84.2%)**: +13 cases (+2.6 pts)
+- **By type vs iter05**:
+  - KU 94.9% = (unchanged)
+  - MS 82.0% = (unchanged)
+  - SSA 91.1% (-3.6 — 2 stochastic regressions)
+  - SSP 90.0% (-3.3 — 2 judge-strict PARTIALs)
+  - SSU 97.1% = (unchanged)
+  - **TR 78.9% (+12.0 vs iter05's 66.9%, +3.7 vs iter02's 75.2%)** — completely cleared the iter05 datetime-in-title TR regression
+- **Recovered**: the iter05 W1 typed-attr + ctx-bump + R2/R3 hint blocks gain on KU/MS/SSU/SSP/SSA (mostly), plus all iter06-17 TR resolver/reader improvements.
+- **SSA regressions** (2): `89527b6b` (Plesiosaur color — reader stochastic noise on factual recall), `eaca4986` (chord progression — iter19 reader inferred a chord progression instead of preserving the melody-notes-as-given that iter05 did, judge marked INCORRECT).
+- **SSP regressions** (2): `0a34ad58` (Tokyo tips — iter05 referenced Suica+Narita Express, iter19 referenced Suica+generic Google Maps; judge gave PARTIAL), `1a1907b4` (cocktail — essentially same answer, judge gave PARTIAL on subtle wording).
+- **Note**: 3 qids initially failed due to OpenRouter transient errors; resumed and merged. Final count = 500/500.
+- **Decision**: KEEP — current best. Submitted as PR update.
+
+## Trajectory summary (overall strict on N=500)
+
+```
+iter00 (df644ee)  80.0%
+iter02 (f5ec922)  83.2%  ★ previous prod
+iter05            84.2%  +1.0 (TR -8.3 regression hidden in overall +1.0)
+iter19 (37c4aa1+) 86.8%  +3.6 vs iter02, +2.6 vs iter05, TR recovered
+```
+

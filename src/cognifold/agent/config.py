@@ -38,6 +38,11 @@ class AgentConfig:
     # (date/time/duration/quantity/name) verbatim from user-role turns.
     # Adds one extra LLM call per session (~$0.0001 with gpt-4o-mini).
     extract_typed_attributes: bool = False
+    # W2 (iter18): opt-in pass that resolves per-concept event_date from
+    # the user's relative-time phrasing. Stored as node.data["event_date"]
+    # so resolvers/readers can use the true event date instead of the
+    # session-extraction date. Borrowed from Chronos/Mem0.
+    resolve_event_dates: bool = False
     # Forwarded to OpenAI Responses API when set (gpt-5-class models only).
     reasoning_effort: str | None = None
 

@@ -115,7 +115,17 @@ class LongMemEvalSymbolicResolver:
             ctype = (n.data.get("concept_type") or "").lower()
             if ctype.startswith("typed_"):
                 continue
-            date_str = n.data.get("date") or n.data.get("extracted_at") or n.data.get("timestamp")
+            # iter18: prefer event_date (resolved absolute date from the W2
+            # pass) over session-extraction date when available. Chronos /
+            # Mem0 / Zep all rely on this distinction for TR — the session
+            # date is when the user mentioned the event; event_date is when
+            # the event actually happened.
+            date_str = (
+                n.data.get("event_date")
+                or n.data.get("date")
+                or n.data.get("extracted_at")
+                or n.data.get("timestamp")
+            )
             dt = None
             if date_str:
                 try:

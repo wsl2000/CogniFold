@@ -881,6 +881,143 @@ Evaluation:"""
         return {"result": "ERROR", "explanation": str(e)}
 
 
+_EVENT_DATE_PROMPT = """For each concept extracted from a chat session, determine the EVENT_DATE — the absolute date the event ACTUALLY occurred (which may differ from the session date, since the user often discusses past events in current sessions).
+
+Session date (when the user said these things): {session_date}
+
+User messages from this session:
+{user_messages}
+
+Concepts extracted from this session (the ones whose event_date we need to resolve):
+{concept_list}
+
+Rules — apply in order:
+1. If the user says "today" / "right now" / no temporal anchor → event_date = session_date
+2. If the user says "X days/weeks/months/years ago" → event_date = session_date − X (in the named unit)
+3. If the user names an explicit date ("on January 10th" / "February 1, 2023" / "Valentine's day") → event_date = the absolute date (use session year for month-only dates; closest past date for holiday names)
+4. If the user says "last Saturday" → event_date = the most recent Saturday before session_date
+5. If the user says "last week" → event_date = a date 7 days before session_date
+6. If the user mentions an upcoming/future event → event_date = the future date (best-effort) and status = "upcoming"
+7. If the concept is a habit / preference / ongoing state with no specific date → event_date = null and status = "ongoing"
+8. If you genuinely can't tell → event_date = null and precision = "unknown"
+
+For "precision": "day" / "week" / "month" / "year" / "unknown".
+For "status": "completed" / "ongoing" / "upcoming" / "unknown".
+
+Output JSON. event_date in YYYY-MM-DD form.
+{{"events": [
+  {{"id": "c-...", "event_date": "2023-01-10", "precision": "day", "status": "completed"}},
+  {{"id": "c-...", "event_date": null, "precision": "unknown", "status": "ongoing"}}
+]}}
+"""
+
+
+def _resolve_event_dates_pass(
+    session: list[dict],
+    timestamp: datetime,
+    new_concepts: list[tuple[str, str]],  # [(concept_id, raw_title), ...]
+    graph: ConceptGraph,
+    config: AgentConfig,
+) -> None:
+    """W2 (iter18) — Chronos-/Mem0-inspired event_date pass. For each
+    CONCEPT extracted in this session, ask the LLM to resolve the user's
+    relative-time phrasing to an absolute event_date. Store on node.data.
+
+    Without this, the writer dates every concept by the SESSION date, so
+    "I bought my Adidas on January 10th" (session 2023-02-03) gets
+    date=2023-02-03 instead of 2023-01-10. Date-arithmetic resolvers then
+    compute "days ago" against the wrong anchor.
+
+    Resolver and reader prefer `event_date` when set; fall back to `date`.
+    """
+    if not new_concepts:
+        return
+    user_messages = [
+        (t.get("content") or "").strip()
+        for t in session
+        if t.get("role") == "user" and (t.get("content") or "").strip()
+    ]
+    if not user_messages:
+        return
+    user_text = "\n\n---\n".join(user_messages)
+    if len(user_text) < 60:
+        return
+
+    session_date_str = timestamp.date().isoformat()
+    concept_list = json.dumps(
+        [{"id": cid, "title": title[:140]} for cid, title in new_concepts[:30]],
+        indent=2,
+    )
+    prompt = _EVENT_DATE_PROMPT.format(
+        session_date=session_date_str,
+        user_messages=user_text,
+        concept_list=concept_list,
+    )
+    try:
+        raw = call_llm(prompt, config, json_mode=True)
+    except Exception as e:
+        logger.error(f"event-date pass LLM call failed: {e}")
+        return
+    if not raw:
+        return
+    if "```json" in raw:
+        raw = raw.split("```json", 1)[1].split("```", 1)[0].strip()
+    elif "```" in raw:
+        raw = raw.split("```", 1)[1].split("```", 1)[0].strip()
+    try:
+        parsed = json.loads(raw)
+    except Exception as e:
+        logger.error(f"event-date pass JSON parse failed: {e}")
+        return
+
+    events = parsed.get("events", []) if isinstance(parsed, dict) else []
+    if not isinstance(events, list):
+        return
+
+    # Build a small map of new concept ids for O(1) lookup
+    new_ids = {cid for cid, _ in new_concepts}
+
+    for ev in events:
+        if not isinstance(ev, dict):
+            continue
+        cid = ev.get("id")
+        if cid not in new_ids:
+            continue
+        event_date = ev.get("event_date")
+        precision = (ev.get("precision") or "unknown").lower()
+        status = (ev.get("status") or "unknown").lower()
+        if event_date is None:
+            # Still record status/precision on the node so resolver can
+            # skip "ongoing" / "upcoming" when bypassing date arithmetic.
+            try:
+                node = graph.get_node(cid)
+                if node:
+                    node.data["event_date_precision"] = precision
+                    node.data["event_status"] = status
+            except Exception:
+                pass
+            continue
+        # Parse and validate the date.
+        try:
+            ev_dt = datetime.strptime(str(event_date)[:10], "%Y-%m-%d")
+        except Exception:
+            continue
+        # Sanity check: event_date shouldn't be far in the future relative
+        # to session_date (allow up to 1 year ahead for upcoming events).
+        # Also shouldn't be unreasonably old (>10 years before session).
+        days_off = (ev_dt.date() - timestamp.date()).days
+        if days_off > 365 or days_off < -3650:
+            continue
+        try:
+            node = graph.get_node(cid)
+            if node:
+                node.data["event_date"] = ev_dt.isoformat()
+                node.data["event_date_precision"] = precision
+                node.data["event_status"] = status
+        except Exception:
+            continue
+
+
 _TYPED_ATTR_PROMPT = """Extract verbatim typed attributes from these user messages. The main extractor often paraphrases away specific values (e.g., "submitted to ACL" loses "February 1st"; "left home at 7 AM" loses arrival time "9 AM"; "political humor" loses the cartoon name "Nu, pogodi!"). This pass preserves them.
 
 Output a JSON object with a "attributes" list. Each attribute:
@@ -1148,6 +1285,9 @@ Output JSON format:
 
         data = json.loads(response_text)
 
+        # iter18: collect new_concepts so the optional W2 pass can resolve
+        # event_date for each one.
+        new_concepts_for_w2: list[tuple[str, str]] = []
         # Add Concepts to Graph
         for concept in data.get("concepts", []):
             concept_id = f"c-{uuid.uuid4().hex[:8]}"
@@ -1178,6 +1318,7 @@ Output JSON format:
                     created_at=timestamp,
                 )
             )
+            new_concepts_for_w2.append((concept_id, raw_title))
             # Link to the last event of the session
             if events:
                 graph.add_edge(
@@ -1193,6 +1334,20 @@ Output JSON format:
 
     except Exception as e:
         logger.error(f"Error in batch extraction: {e}")
+        new_concepts_for_w2 = []  # safe default if extraction failed
+
+    # ---- W2 (iter18): event_date resolution pass ----
+    # Chronos / Mem0 / Zep all show that storing per-fact event_date
+    # (vs the session date when the user mentioned it) yields a big
+    # temporal-reasoning boost. Gated by `resolve_event_dates=True` on
+    # the AgentConfig — opt-in only via --resolve-event-dates.
+    if getattr(config, "resolve_event_dates", False) and new_concepts_for_w2:
+        try:
+            _resolve_event_dates_pass(
+                session, timestamp, new_concepts_for_w2, graph, config
+            )
+        except Exception as e:
+            logger.error(f"Error in event_date pass: {e}")
 
     # ---- W1: typed-attribute second pass over user-role turns ----
     # Exp A on 2026-06-01 showed that ~7 of 23 "I don't have memory of X"
@@ -1394,6 +1549,10 @@ def run_benchmark(args: argparse.Namespace) -> None:
     if getattr(args, "extract_typed_attributes", False):
         writer_config = dataclasses.replace(writer_config, extract_typed_attributes=True)
         logger.info("W1 typed-attribute pass: ENABLED")
+    # W2 (iter18): opt-in event_date resolution pass.
+    if getattr(args, "resolve_event_dates", False):
+        writer_config = dataclasses.replace(writer_config, resolve_event_dates=True)
+        logger.info("W2 event_date resolution pass: ENABLED")
 
     logger.info(f"Using model: {config.model_name}")
     logger.info(f"Batch mode: {args.batch_mode}")
@@ -1997,6 +2156,20 @@ if __name__ == "__main__":
         "user-role turns. Adds ~$0.0001 per session in writer cost. Helps "
         "with failure cases where the main extractor paraphrased away the "
         "specific value (Exp A WRITER bucket: ~7/23 of the Bucket C cases).",
+    )
+    parser.add_argument(
+        "--resolve-event-dates",
+        action="store_true",
+        help=(
+            "W2 (iter18): per-concept event_date resolution pass. For each "
+            "CONCEPT extracted in a session, the LLM resolves the user's "
+            "relative-time phrasing ('on January 10th', 'two weeks ago', "
+            "'last Saturday') to an absolute event_date and stores it on "
+            "the node so resolvers and readers can use the true event date "
+            "instead of the session-extraction date. Inspired by Chronos "
+            "(event-calendar +58.9 pts baseline in their ablation) and "
+            "Mem0 (per-memory temporal pass)."
+        ),
     )
 
     args = parser.parse_args()

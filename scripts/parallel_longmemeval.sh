@@ -128,6 +128,10 @@ if [ "${EXTRACT_TYPED_ATTRIBUTES:-0}" = "1" ]; then
     EXTRA_FLAGS+=(--extract-typed-attributes)
     echo "  + --extract-typed-attributes"
 fi
+if [ "${RESOLVE_EVENT_DATES:-0}" = "1" ]; then
+    EXTRA_FLAGS+=(--resolve-event-dates)
+    echo "  + --resolve-event-dates"
+fi
 
 PIDS=()
 BATCH_DIRS=()
