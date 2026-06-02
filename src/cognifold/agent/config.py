@@ -34,6 +34,12 @@ class AgentConfig:
     language: str = "auto"  # Response language: "auto", "en", "zh"
     disable_concepts: bool = False  # If True, suppresses concept formation (Episodic mode)
     intent_density: float = 0.3  # Intent generation aggressiveness (0.0=never, 1.0=maximum)
+    # W1: opt-in secondary writer pass that extracts typed attributes
+    # (date/time/duration/quantity/name) verbatim from user-role turns.
+    # Adds one extra LLM call per session (~$0.0001 with gpt-4o-mini).
+    extract_typed_attributes: bool = False
+    # Forwarded to OpenAI Responses API when set (gpt-5-class models only).
+    reasoning_effort: str | None = None
 
     concept_guidelines: tuple[str, ...] = (
         # Basic pattern detection
