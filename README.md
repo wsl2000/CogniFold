@@ -224,8 +224,8 @@ The window is read *anytime* — no query is required. Intents that crossed the 
 | `--event-stream` | enable inter-session consolidation (`merge_similar_concepts` + `prune_orphan_concepts`); **required for paper-grade LoCoMo** |
 | `--query-mode {base, rag, episodic, mergefold}` | ablation switch: `mergefold` = full CogniFold; others are baselines |
 | `--disable-concepts` | events-only baseline (skips concept formation) |
-| `--model openai:gpt-4o-mini` | reader model |
-| `--judge-model gpt-4o-mini` | LLM-as-judge for QA scoring (auto-derived from `--model` if omitted) |
+| `--model openai:gpt-5` | reader model |
+| `--judge-model openai:gpt-4o` | LLM-as-judge for QA scoring (auto-derived from `--model` if omitted) |
 | `--limit N` | cap number of examples (smoke-testing) |
 | `--no-llm-eval` | skip LLM judging step (use exact-match / F1 only) |
 
@@ -236,7 +236,7 @@ Environment overrides accepted by `scripts/reproduce.sh`: `MODEL=...`, plus the 
 One wrapper for everything — sane defaults, dataset auto-downloaded on first run, paper-faithful flags applied per benchmark.
 
 ```bash
-# canonical run: LoCoMo full 10-conversation Mem0 protocol (≈ 1 h on gpt-4o-mini)
+# canonical run: LoCoMo full 10-conversation Mem0 protocol on the recommended stack
 bash scripts/reproduce.sh
 
 # any single benchmark (paper order — CogEval-Bench first, LoCoMo second)

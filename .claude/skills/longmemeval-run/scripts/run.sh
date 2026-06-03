@@ -10,8 +10,9 @@
 # --check-only: stop after env+API checks; do not launch the full run.
 #
 # Flow:
-#     1. Eight env + API checks (~10 s, ~$0.001) — halts on any failure.
-#     2. Full N=500 run on the verified provider — ~60-90 min, ~$15-25.
+#     1. Eight env + API checks (~30 s, ~$0.01) — halts on any failure.
+#     2. Full N=500 run on the verified provider — ~2-4 h wall-clock,
+#        ~$80-150 on the recommended gpt-5 stack.
 #
 # Concurrency is auto-tuned to the chat provider: 100 on OpenRouter or
 # OpenAI direct, 10 on commonstack (ak- keys typically cap at 50 RPM).
@@ -256,7 +257,7 @@ if [ "$CHECK_ONLY" = "1" ]; then
 fi
 
 echo "Launching full N=500 (label: $LABEL, parallel=$N_PARALLEL)"
-echo "Expected ~60-90 min wall-clock, ~\$15-25 cost."
+echo "Expected ~2-4 h wall-clock, ~\$80-150 cost (gpt-5 recommended stack)."
 echo "Result will land at benchmarks/longmemeval/runs/$LABEL/"
 printf "\n"
 

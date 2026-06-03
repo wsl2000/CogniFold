@@ -35,8 +35,8 @@ class AgentConfig:
     disable_concepts: bool = False  # If True, suppresses concept formation (Episodic mode)
     intent_density: float = 0.3  # Intent generation aggressiveness (0.0=never, 1.0=maximum)
     # W1: opt-in secondary writer pass that extracts typed attributes
-    # (date/time/duration/quantity/name) verbatim from user-role turns.
-    # Adds one extra LLM call per session (~$0.0001 with gpt-4o-mini).
+    # (date/time/duration/quantity/name/person) verbatim from user-role
+    # turns. Adds one extra LLM call per session.
     extract_typed_attributes: bool = False
     # W2 (iter18): opt-in pass that resolves per-concept event_date from
     # the user's relative-time phrasing. Stored as node.data["event_date"]

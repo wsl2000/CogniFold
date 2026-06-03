@@ -162,10 +162,12 @@ if [ "${RESOLVE_EVENT_DATES:-0}" = "1" ]; then
     EXTRA_FLAGS+=(--resolve-event-dates)
     echo "  + --resolve-event-dates"
 fi
-if [ -n "${WRITER_REASONING_EFFORT:-}" ]; then
-    EXTRA_FLAGS+=(--writer-reasoning-effort "$WRITER_REASONING_EFFORT")
-    echo "  + --writer-reasoning-effort $WRITER_REASONING_EFFORT"
-fi
+# Writer reasoning_effort: writer extraction is mechanical JSON; high
+# effort on a gpt-5-class model would make full N=500 take many hours
+# without measurable quality gain. Default to low; allow env override.
+WRITER_REASONING_EFFORT="${WRITER_REASONING_EFFORT:-low}"
+EXTRA_FLAGS+=(--writer-reasoning-effort "$WRITER_REASONING_EFFORT")
+echo "  + --writer-reasoning-effort $WRITER_REASONING_EFFORT"
 
 # Allow model overrides via env. Defaults = recommended stack.
 WRITER_MODEL="${WRITER_MODEL:-openai:openai/gpt-5}"

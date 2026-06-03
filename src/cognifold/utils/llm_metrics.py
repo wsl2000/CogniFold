@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 # Prices are rough estimates; update as vendors change pricing.
 _COST_PER_M_TOKENS: dict[str, dict[str, float]] = {
     # OpenAI
+    "gpt-5": {"input": 2.50, "output": 10.00},
     "gpt-4o": {"input": 2.50, "output": 10.00},
     "gpt-4o-mini": {"input": 0.15, "output": 0.60},
     "gpt-4-turbo": {"input": 10.00, "output": 30.00},
@@ -24,6 +25,9 @@ _COST_PER_M_TOKENS: dict[str, dict[str, float]] = {
     "o1": {"input": 15.00, "output": 60.00},
     "o1-mini": {"input": 3.00, "output": 12.00},
     "o3-mini": {"input": 1.10, "output": 4.40},
+    # OpenAI embeddings (per 1 M input tokens — no output token cost)
+    "text-embedding-3-large": {"input": 0.13, "output": 0.0},
+    "text-embedding-3-small": {"input": 0.02, "output": 0.0},
     # Google Gemini
     "gemini-2.0-flash": {"input": 0.10, "output": 0.40},
     "gemini-2.0-flash-lite": {"input": 0.075, "output": 0.30},

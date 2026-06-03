@@ -31,7 +31,7 @@ else
 fi
 [ -x "$PYBIN" ] || { echo "ERROR: no python interpreter found (set PYTHON=... to override)" >&2; exit 1; }
 
-MODEL="${MODEL:-openai:gpt-4o-mini}"
+MODEL="${MODEL:-openai:gpt-5}"
 
 run_one() {
     local bench="$1"

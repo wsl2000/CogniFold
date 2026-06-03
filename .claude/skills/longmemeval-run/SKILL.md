@@ -1,6 +1,6 @@
 ---
 name: longmemeval-run
-description: One-shot LongMemEval benchmark on a fresh CogniFold clone. Verifies env + API endpoints (~10 s, ~$0.001) and then runs the full N=500 benchmark (~60-90 min, ~$15-25). Single command, no parameters to think about. Use after `git clone`, on a new machine, when the recommended stack changes, or when a previous run failed with API or environment errors. SKIP for other benchmarks (LoCoMo, MuSiQue, CogEval-Bench) — those have their own runners.
+description: One-shot LongMemEval benchmark on a fresh CogniFold clone. Verifies env + API endpoints (~30 s, ~$0.01) and then runs the full N=500 benchmark on the recommended gpt-5 stack (~2-4 h wall-clock, ~$80-150 cost). Single command, no parameters to think about. Use after `git clone`, on a new machine, when the recommended stack changes, or when a previous run failed with API or environment errors. SKIP for other benchmarks (LoCoMo, MuSiQue, CogEval-Bench) — those have their own runners.
 ---
 
 # LongMemEval One-Shot Run
