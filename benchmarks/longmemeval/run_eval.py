@@ -211,10 +211,6 @@ def call_llm(prompt: str, config: AgentConfig, json_mode: bool = False) -> str:
             kwargs["temperature"] = 0.0
         if json_mode:
             kwargs["response_format"] = {"type": "json_object"}
-        # On OpenRouter, opt-in to `usage.cost` reporting in the response.
-        base_url = os.environ.get("OPENAI_BASE_URL", "")
-        if "openrouter.ai" in base_url:
-            kwargs["extra_body"] = {"usage": {"include": True}}
         response = client.chat.completions.create(**kwargs)
         try:
             usage = getattr(response, "usage", None)
@@ -983,15 +979,12 @@ Evaluation:"""
             model_name = config.model_name.replace("openai:", "").replace(
                 "gemini:", ""
             )
-            chat_kwargs: dict = dict(
+            resp = client.chat.completions.create(
                 model=model_name,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.0,
                 max_tokens=400,
             )
-            if judge_base_url and "openrouter.ai" in judge_base_url:
-                chat_kwargs["extra_body"] = {"usage": {"include": True}}
-            resp = client.chat.completions.create(**chat_kwargs)
             try:
                 usage = getattr(resp, "usage", None)
                 if usage:
