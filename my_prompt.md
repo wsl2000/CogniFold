@@ -16,11 +16,11 @@
 
 | Role | Model |
 |---|---|
-| Reader | `openai:openai/gpt-5` (reasoning_effort=high auto) |
-| Writer | `openai:openai/gpt-5` (reasoning_effort=low for full N=500 throughput) |
-| Judge | `openai:openai/gpt-4o` (canonical, do not substitute) |
-| Reranker | `openai:openai/gpt-5` (batched, reasoning_effort=low, pool=100) |
-| Embedding | `openai:openai/text-embedding-3-large` (1536 dim via API `dimensions` param) |
+| Reader | `openai:gpt-5` (reasoning_effort=high auto) |
+| Writer | `openai:gpt-5` (reasoning_effort=low for full N=500 throughput) |
+| Judge | `openai:gpt-4o` (canonical, do not substitute) |
+| Reranker | `openai:gpt-5` (batched, reasoning_effort=low, pool=100) |
+| Embedding | `openai:text-embedding-3-large` (1536 dim via API `dimensions` param) |
 
 W1 typed-attribute pass: ON by default (`EXTRACT_TYPED_ATTRIBUTES=1`).
 W2 event_date pass: OFF by default — see iter27 notes in

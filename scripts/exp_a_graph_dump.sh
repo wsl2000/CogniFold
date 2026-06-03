@@ -37,9 +37,9 @@ for i in "${!QIDS[@]}"; do
     rm -rf "$OUTDIR" && mkdir -p "$OUTDIR"
     echo "  [$((i+1))] $QID → $OUTDIR (log: $LOG)"
     nohup .venv/bin/python -u -m benchmarks.longmemeval.run_eval \
-        --writer-model openai:openai/gpt-5 \
+        --writer-model openai:gpt-5 \
         --writer-reasoning-effort low \
-        --embedding openai:openai/text-embedding-3-large \
+        --embedding openai:text-embedding-3-large \
         --dump-graph-only \
         --no-llm-eval \
         --question-ids "$QID" \

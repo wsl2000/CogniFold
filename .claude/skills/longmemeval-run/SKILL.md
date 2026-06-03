@@ -26,11 +26,11 @@ checks.
 
 | Role | Default | Why |
 |---|---|---|
-| reader | `openai:openai/gpt-5` (reasoning_effort=high auto) | the qa_answer prompt assumes a reasoning model — strongest available reader |
-| writer | `openai:openai/gpt-5` (reasoning_effort honored from env) | strongest extractor — preserves attributes the user named verbatim |
-| judge | `openai:openai/gpt-4o` | canonical LongMemEval judge; **do not substitute** without re-calibrating against published numbers |
-| rerank | `openai:openai/gpt-5` (batched, pool=100) | one batched call per question; handles "27th item" / ordinal references |
-| embed | `openai:openai/text-embedding-3-large` (1536 dim via API `dimensions` param) | strongest embedding; cognifold/embeddings/providers.py passes `dimensions=1536` so the graph schema stays compatible |
+| reader | `openai:gpt-5` (reasoning_effort=high auto) | the qa_answer prompt assumes a reasoning model — strongest available reader |
+| writer | `openai:gpt-5` (reasoning_effort honored from env) | strongest extractor — preserves attributes the user named verbatim |
+| judge | `openai:gpt-4o` | canonical LongMemEval judge; **do not substitute** without re-calibrating against published numbers |
+| rerank | `openai:gpt-5` (batched, pool=100) | one batched call per question; handles "27th item" / ordinal references |
+| embed | `openai:text-embedding-3-large` (1536 dim via API `dimensions` param) | strongest embedding; cognifold/embeddings/providers.py passes `dimensions=1536` so the graph schema stays compatible |
 
 Override any role by exporting `READER_MODEL` / `WRITER_MODEL` /
 `JUDGE_MODEL` / `RERANK_MODEL` / `EMBED_MODEL` before invoking the

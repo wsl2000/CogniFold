@@ -134,11 +134,11 @@ ok "chat key found ($CHAT_PROVIDER)"
 # 6-8 know what to test. If you change defaults in one place, change
 # them in the other or the user will see one stack at the ping step
 # and a different stack in the full run.
-READER_MODEL_RAW="${READER_MODEL:-openai:openai/gpt-5}"
-WRITER_MODEL_RAW="${WRITER_MODEL:-openai:openai/gpt-5}"
-JUDGE_MODEL_RAW="${JUDGE_MODEL:-openai:openai/gpt-4o}"
-EMBED_MODEL_RAW="${EMBED_MODEL:-openai:openai/text-embedding-3-large}"
-RERANK_MODEL_RAW="${RERANK_MODEL:-openai:openai/gpt-5}"
+READER_MODEL_RAW="${READER_MODEL:-openai:gpt-5}"
+WRITER_MODEL_RAW="${WRITER_MODEL:-openai:gpt-5}"
+JUDGE_MODEL_RAW="${JUDGE_MODEL:-openai:gpt-4o}"
+EMBED_MODEL_RAW="${EMBED_MODEL:-openai:text-embedding-3-large}"
+RERANK_MODEL_RAW="${RERANK_MODEL:-openai:gpt-5}"
 
 # Normalize for direct provider (strip "openai:" wrapper).
 strip_wrap() { echo "$1" | sed 's/^openai://; s/^gemini://'; }
