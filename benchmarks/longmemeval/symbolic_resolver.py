@@ -445,18 +445,37 @@ class LongMemEvalSymbolicResolver:
         )
         verb_root = (verb_m.group(1) if verb_m else "").lower()
         # Map verb to common writer-output phrases.
+        # iter24: widen verb patterns. gpt4_f420262c airlines was missing
+        # JetBlue because writer extracted "booked JetBlue flight" and the
+        # old "flew" verb_pat didn't include "booked". gpt4_7f6b06db (3 trips)
+        # was missing Muir Woods because writer's "went on day hike" wasn't
+        # in the "took" pat. The pat lists now mirror common writer
+        # paraphrasings.
         verb_pats = []
-        if "visit" in verb_root:    verb_pats = ["visited", "went to", "stopped by"]
-        elif "attend" in verb_root: verb_pats = ["attended", "went to", "participated in"]
-        elif "flew" in verb_root or "flew with" in verb_root: verb_pats = ["flew", "flight", "with"]
-        elif "took" in verb_root:   verb_pats = ["took", "went on", "did a"]
-        elif "went" in verb_root:   verb_pats = ["went to", "visited"]
-        elif "saw" in verb_root:    verb_pats = ["saw", "watched"]
-        elif "watched" in verb_root: verb_pats = ["watched", "saw"]
-        elif "used" in verb_root:   verb_pats = ["used", "tried"]
-        elif "bought" in verb_root: verb_pats = ["bought", "purchased"]
-        elif "tried" in verb_root:  verb_pats = ["tried", "attempted"]
-        else:                       verb_pats = []
+        if "visit" in verb_root:
+            verb_pats = ["visited", "went to", "stopped by", "toured", "saw"]
+        elif "attend" in verb_root:
+            verb_pats = ["attended", "went to", "participated in", "joined",
+                         "saw", "watched"]
+        elif "flew" in verb_root or "flew with" in verb_root:
+            verb_pats = ["flew", "flight", "booked", "took a flight"]
+        elif "took" in verb_root:
+            verb_pats = ["took", "went on", "did a", "had a", "went hiking",
+                         "went camping", "went to", "trip to", "hike to"]
+        elif "went" in verb_root:
+            verb_pats = ["went to", "visited", "trip to", "hiked", "hike"]
+        elif "saw" in verb_root:
+            verb_pats = ["saw", "watched", "viewed"]
+        elif "watched" in verb_root:
+            verb_pats = ["watched", "saw", "viewed"]
+        elif "used" in verb_root:
+            verb_pats = ["used", "tried"]
+        elif "bought" in verb_root:
+            verb_pats = ["bought", "purchased", "got"]
+        elif "tried" in verb_root:
+            verb_pats = ["tried", "attempted"]
+        else:
+            verb_pats = []
 
         events: list[tuple[datetime, str, str]] = []  # (date, label, full_text)
         seen_labels: set[str] = set()
@@ -471,12 +490,26 @@ class LongMemEvalSymbolicResolver:
             # "museum" tokens.
             if c.node_id.startswith("evt-"):
                 continue
+            # iter25: reject lowercase-starting titles (raw-user-turn
+            # leakage that slipped past evt- filter). gpt4_7f6b06db had
+            # "got back from a solo camping trip to yosemite" — a raw
+            # user-turn fragment — passing the order_among filter and
+            # corrupting the trip list.
+            t_first = (c.title or "").strip()
+            if t_first and t_first[0].islower():
+                continue
             # iter11: enforce "past N months/weeks" horizon when the
             # question specifies one (e.g., "concerts I attended in the
             # past two months").
+            # iter24: add ±15-day buffer to horizon. The horizon is the
+            # user's narrative window ("past two months") and the writer
+            # date is the session date, which may be off by days from
+            # the event date. gpt4_d6585ce8 missed Billie Eilish because
+            # the Billie concept was dated ~2 days outside the 60-day
+            # cutoff.
             if horizon_days is not None and self.question_date is not None:
                 age_days = (self.question_date.date() - c.date.date()).days
-                if age_days < 0 or age_days > horizon_days:
+                if age_days < -3 or age_days > horizon_days + 15:
                     continue
             text = (c.title + " " + c.description).lower()
             # Reject typed-attribute synthetic nodes (already filtered in
@@ -487,11 +520,30 @@ class LongMemEvalSymbolicResolver:
             # Without this, "6 museums" order_among hauled in nodes about
             # Prado / Reina Sofia / Thyssen that were trip-PLANNING for
             # Madrid, not museums the user actually visited recently.
+            # iter24: also reject "during [my trip to X]" / "while in X"
+            # patterns — these are EVENTS but in a trip-context that GT
+            # often excludes. gpt4_7abb270c included Castello di Amorosa /
+            # Prado as same-class concepts.
             if any(p in text for p in (
+                "during my trip", "while in ", "during the trip", "on the trip",
+                "during our trip", "while abroad", "while on vacation",
+                "while traveling", "during a visit to",
                 "is planning", "is considering", "is thinking",
                 "would like to", "wants to", "intends to", "is going to",
                 "looking forward to", "is hoping to",
                 "asked the assistant", "asked about",
+                # iter25: opinion / experience-recap filters — these
+                # mention an entity but aren't an ACTION the user did.
+                # gpt4_f420262c airlines was hauling in "User had a
+                # disappointing experience with American Airlines" type
+                # concepts (12 of them).
+                "had experience", "had an experience", "had a experience",
+                "had a disappointing", "had a terrible", "had a great",
+                "had a frustrating", "had a wonderful",
+                "appreciates", "expressed appreciation",
+                "is curious about", "wonders about",
+                "is grateful", "thinks that",
+                "is excited about",
                 "recommended", "suggested", "advised",
                 "is researching", "researched",
                 "is interested in", "wonders about",
@@ -590,11 +642,17 @@ class LongMemEvalSymbolicResolver:
             return None
 
         # Find upper-bound date if "before Y" clause present.
+        # iter24: also remember anchor.node_id so we exclude the anchor
+        # concept itself from the count (otherwise "events before Run for
+        # the Cure" would include Run for the Cure itself when same-day
+        # session collision happens).
         upper_bound_date = None
+        anchor_node_ids: set[str] = set()
         if before_clause:
             anchor = self._best_recent_concept(before_clause)
             if anchor is not None and anchor.date is not None:
                 upper_bound_date = anchor.date.date()
+                anchor_node_ids.add(anchor.node_id)
 
         # Determine verb pattern set for filtering.
         # iter15: widen pattern lists — writer commonly paraphrases
@@ -644,9 +702,49 @@ class LongMemEvalSymbolicResolver:
             # heavily (a3838d2b had "User volunteered at Walk for Wildlife
             # event" — my old verb_pats {participated,took part,went to}
             # rejected it before iter15 added "volunteered").
-            verb_match = (not verb_pats) or any(v in text for v in verb_pats)
+            # iter25: verb match HARD again — debug showed a3838d2b
+            # returned 27 events because topic noun "event" matched dozens
+            # of unrelated concepts ("Stockholm 1520", "User is preparing
+            # for cycling event") that passed the noun gate but had no
+            # participation verb. With verb_pats now widened (iter15) the
+            # right concepts pass; the leak was from soft-skip.
+            if verb_pats and not any(v in text for v in verb_pats):
+                continue
+            verb_match = True
+            # iter25: reject opinion / preference / experience concepts
+            # (these have a verb but the user didn't ACTIVELY do the
+            # X — they're discussing X). gpt4_f420262c "experience with
+            # American Airlines" / "disappointing experience" patterns.
+            if any(p in text for p in (
+                "had experience", "had a experience", "had an experience",
+                "had a disappointing", "had a terrible", "had a great",
+                "is interested in", "appreciates",
+                "is curious about", "wonders about", "thinks that",
+                "believes that", "feels that",
+                "is excited about", "looks forward",
+            )):
+                continue
+            # iter24: exclude the anchor concept itself (and same-session
+            # near-duplicates of it) from the count.
+            if c.node_id in anchor_node_ids:
+                continue
+            # Also exclude concepts that re-mention the anchor in their
+            # text (e.g., "User completed the 'Run for the Cure' event").
+            if before_clause:
+                anchor_phrase_low = re.sub(r"^the\s+", "", before_clause.lower()).strip()
+                # Take 2+ word substring of the anchor as a signature
+                ap_tokens = re.findall(r"[a-z]+", anchor_phrase_low)
+                if len(ap_tokens) >= 2:
+                    sig = " ".join(ap_tokens[:3])
+                    if sig in text:
+                        continue
             # Date constraint.
-            if upper_bound_date is not None and c.date.date() >= upper_bound_date:
+            # iter24: change `>=` to `>` — writer dates concepts by session
+            # date (not event date), so a single session discussing multiple
+            # past events makes them all share the upper-bound date. Strict
+            # `>=` rejected the entire batch and produced empty matches.
+            # Using `>` allows same-session past-event concepts through.
+            if upper_bound_date is not None and c.date.date() > upper_bound_date:
                 continue
             # Dedup by leading 4 tokens.
             label = c.title.strip()

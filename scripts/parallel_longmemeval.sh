@@ -22,15 +22,45 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 [ -f .env ] && set -a && source .env && set +a
-# Route OpenAI SDK to OpenRouter when an OPENROUTER key is present.
-if [ -n "${OPENROUTER_API_KEY:-}" ]; then
+# Route OpenAI SDK. Priority: COMMONSTACK > OPENROUTER.
+# When using commonstack (no /embeddings endpoint), also route embedding
+# through OpenRouter via EMBEDDING_API_KEY / EMBEDDING_BASE_URL.
+if [ -n "${COMMONSTACK_API_KEY:-}" ]; then
+    export OPENAI_API_KEY="$COMMONSTACK_API_KEY"
+    export OPENAI_BASE_URL="https://api.commonstack.ai/v1"
+    unset OPENAI_ORGANIZATION
+    echo "  routing chat → commonstack.ai"
+    if [ -n "${EMBEDDING_API_KEY:-}" ]; then
+        echo "  routing embedding → caller-supplied EMBEDDING_API_KEY (likely OpenAI direct)"
+    elif [ -n "${OPENROUTER_API_KEY:-}" ]; then
+        export EMBEDDING_API_KEY="$OPENROUTER_API_KEY"
+        export EMBEDDING_BASE_URL="https://openrouter.ai/api/v1"
+        echo "  routing embedding → openrouter (commonstack has no /embeddings)"
+    fi
+elif [ -n "${OPENROUTER_API_KEY:-}" ]; then
     export OPENAI_API_KEY="$OPENROUTER_API_KEY"
     export OPENAI_BASE_URL="https://openrouter.ai/api/v1"
     unset OPENAI_ORGANIZATION
 fi
 if [ -z "${OPENAI_API_KEY:-}" ]; then
-    echo "ERROR: neither OPENROUTER_API_KEY nor OPENAI_API_KEY set" >&2
+    echo "ERROR: no API key set (need COMMONSTACK_API_KEY, OPENROUTER_API_KEY, or OPENAI_API_KEY)" >&2
     exit 1
+fi
+
+# iter28b: judge can route to a SEPARATE provider via JUDGE_API_KEY /
+# JUDGE_BASE_URL. Useful when chat is via commonstack (which lacks gpt-4o)
+# but the user wants the canonical LongMemEval gpt-4o judge from OpenAI
+# direct. If JUDGE_API_KEY is unset but the caller is on commonstack and
+# we have an EMBEDDING_API_KEY (OpenAI direct), reuse it as the judge key
+# so the canonical gpt-4o judge "just works" without extra env vars.
+if [ -z "${JUDGE_API_KEY:-}" ] && [ -n "${COMMONSTACK_API_KEY:-}" ] && \
+   [ -n "${EMBEDDING_API_KEY:-}" ] && \
+   [[ "${EMBEDDING_API_KEY:-}" != "$COMMONSTACK_API_KEY" ]]; then
+    export JUDGE_API_KEY="$EMBEDDING_API_KEY"
+    export JUDGE_BASE_URL="${EMBEDDING_BASE_URL:-https://api.openai.com/v1}"
+    echo "  routing judge → reusing EMBEDDING_API_KEY (likely OpenAI direct)"
+elif [ -n "${JUDGE_API_KEY:-}" ]; then
+    echo "  routing judge → caller-supplied JUDGE_API_KEY"
 fi
 
 N_PARALLEL="${1:-10}"
@@ -137,9 +167,17 @@ if [ -n "${WRITER_REASONING_EFFORT:-}" ]; then
     echo "  + --writer-reasoning-effort $WRITER_REASONING_EFFORT"
 fi
 
-# Allow writer model override via env (default keeps gpt-4o-mini).
+# Allow model overrides via env (defaults keep the original OpenRouter stack).
 WRITER_MODEL="${WRITER_MODEL:-openai:openai/gpt-4o-mini}"
-echo "  writer model: $WRITER_MODEL"
+READER_MODEL="${READER_MODEL:-openai:openai/gpt-5-mini}"
+JUDGE_MODEL="${JUDGE_MODEL:-openai:openai/gpt-4o}"
+RERANK_MODEL="${RERANK_MODEL:-openai:openai/gpt-5-mini}"
+EMBED_MODEL="${EMBED_MODEL:-openai:openai/text-embedding-3-small}"
+echo "  reader: $READER_MODEL"
+echo "  writer: $WRITER_MODEL"
+echo "  judge: $JUDGE_MODEL"
+echo "  rerank: $RERANK_MODEL"
+echo "  embed: $EMBED_MODEL"
 
 PIDS=()
 BATCH_DIRS=()
@@ -156,12 +194,12 @@ for ((i=0; i<N_PARALLEL; i++)); do
     rm -rf "$OUTDIR"
     mkdir -p "$OUTDIR"
     nohup .venv/bin/python -u -m benchmarks.longmemeval.run_eval \
-        --model openai:openai/gpt-5-mini \
+        --model "$READER_MODEL" \
         --writer-model "$WRITER_MODEL" \
-        --judge-model openai:openai/gpt-4o \
-        --embedding openai:openai/text-embedding-3-small \
+        --judge-model "$JUDGE_MODEL" \
+        --embedding "$EMBED_MODEL" \
         --symbolic-resolver --symbolic-temporal --symbolic-bypass \
-        --llm-rerank --rerank-model openai:openai/gpt-5-mini \
+        --llm-rerank --rerank-model "$RERANK_MODEL" \
         --rerank-reasoning-effort low --rerank-pool 100 \
         "${EXTRA_FLAGS[@]}" \
         --question-ids "$IDS_CSV" \

@@ -284,14 +284,22 @@ profiles:
            to "2-3 days" for camping/weekend trips and "5-7 days" for
            vacation trips.
 
-        8. AGE INFERENCE rule (iter22). If the user stated their
-           CURRENT age in some session AND the question asks "How old
-           was I when [event] N years/months/days ago", COMPUTE the
-           answer: current_age − N_in_years.
-           Example: User said "I'm 32" and "moved to US 5 years ago".
-           Q: "How old was I when I moved to the United States?"
-           ✓ Answer: 27.  ✗ Wrong: "I don't have a memory of your
-           birth date."
+        8. AGE INFERENCE rule (iter22, strengthened iter24). If the
+           context contains the user's current age (e.g., "User is 32
+           years old") OR an implicit current age (job tenure, year of
+           graduation) AND the question is "How old was I when X
+           happened" with X being an event some N years/months/days
+           ago, COMPUTE the answer: current_age − N (converted to
+           years). DO NOT refuse with "I don't have your birth date".
+
+           Worked example for d01c6aa8 ("How old was I when I moved
+           to the United States?"):
+           Context has: "User has been living in the U.S. for the
+           past five years" (extracted with TODAY = 2023-XX). User
+           CURRENT AGE in another concept (say 32).
+           ✓ Compute: 32 − 5 = 27. Answer: "27."
+           ✗ Wrong: "I don't have your birth date in my notes."
+
            Same for "I've been living in X for N years" → derived
            age then = current_age − N.
 

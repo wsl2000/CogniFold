@@ -234,20 +234,46 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
         """
         super().__init__(config)
 
-        # Get API key from config, thread-local scope, or environment
+        # Get API key from config, thread-local scope, or environment.
+        # iter26: also support EMBEDDING_API_KEY / EMBEDDING_BASE_URL
+        # overrides so the embedding endpoint can differ from the chat
+        # endpoint. Needed when chat is routed through a provider that
+        # doesn't host /embeddings (e.g., commonstack.ai).
+        import os
         from cognifold.service.llm_keys import get_api_key
 
-        self.api_key = config.api_key or get_api_key("OPENAI_API_KEY")
+        embed_api_key = os.environ.get("EMBEDDING_API_KEY", "").strip() or None
+        embed_base_url = os.environ.get("EMBEDDING_BASE_URL", "").strip() or None
+
+        self.api_key = (
+            embed_api_key
+            or config.api_key
+            or get_api_key("OPENAI_API_KEY")
+        )
         if not self.api_key:
             raise ValueError(
-                "OpenAI API key required. Set OPENAI_API_KEY env var or pass api_key in config."
+                "OpenAI API key required. Set OPENAI_API_KEY or "
+                "EMBEDDING_API_KEY env var or pass api_key in config."
             )
 
         # Import and configure the client
         try:
             from openai import OpenAI
 
-            self._client = OpenAI(api_key=self.api_key)
+            client_kwargs: dict = {"api_key": self.api_key}
+            # iter27 fix: when EMBEDDING_API_KEY is set, we want to route
+            # embeddings to a DIFFERENT endpoint than chat. Without an
+            # explicit EMBEDDING_BASE_URL we MUST force the OpenAI default
+            # endpoint — otherwise the OpenAI SDK falls back to
+            # OPENAI_BASE_URL (which may point to OpenRouter / commonstack
+            # / etc., none of which honor the embedding API key).
+            if embed_base_url:
+                client_kwargs["base_url"] = embed_base_url
+            elif embed_api_key:
+                # User wants a custom embedding key but didn't specify a
+                # custom base URL — assume OpenAI direct.
+                client_kwargs["base_url"] = "https://api.openai.com/v1"
+            self._client = OpenAI(**client_kwargs)
         except ImportError as e:
             raise ImportError(
                 "openai package required for OpenAI embeddings. Install with: pip install openai"

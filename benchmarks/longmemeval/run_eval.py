@@ -872,7 +872,36 @@ Then on a new line, provide a brief explanation.
 Evaluation:"""
 
     try:
-        response = call_llm(prompt, config)
+        # iter28b: judge can be routed to a SEPARATE provider (e.g. OpenAI
+        # direct) via JUDGE_API_KEY / JUDGE_BASE_URL env vars, so the user
+        # can keep gpt-4o as the canonical LongMemEval judge even when the
+        # chat key (OPENAI_API_KEY/OPENAI_BASE_URL) is pointed at a
+        # provider that doesn't host gpt-4o (e.g. commonstack only has
+        # gpt-4o-mini / gpt-4.1 — exactly the iter28 failure mode).
+        judge_api_key = os.environ.get("JUDGE_API_KEY", "").strip() or None
+        judge_base_url = os.environ.get("JUDGE_BASE_URL", "").strip() or None
+        if judge_api_key:
+            from openai import OpenAI
+
+            client_kwargs: dict = {"api_key": judge_api_key}
+            if judge_base_url:
+                client_kwargs["base_url"] = judge_base_url
+            else:
+                # JUDGE_API_KEY without explicit URL → assume OpenAI direct.
+                client_kwargs["base_url"] = "https://api.openai.com/v1"
+            client = OpenAI(**client_kwargs)
+            model_name = config.model_name.replace("openai:", "").replace(
+                "gemini:", ""
+            )
+            resp = client.chat.completions.create(
+                model=model_name,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.0,
+                max_tokens=400,
+            )
+            response = resp.choices[0].message.content or ""
+        else:
+            response = call_llm(prompt, config)
         lines = response.strip().split("\n", 1)
         result = lines[0].strip().upper()
         explanation = lines[1].strip() if len(lines) > 1 else ""
@@ -983,6 +1012,18 @@ def _resolve_event_dates_pass(
     # Build a small map of new concept ids for O(1) lookup
     new_ids = {cid for cid, _ in new_concepts}
 
+    # iter28: always stamp creation_date = session date so reader's Plan-C
+    # triple-date format can show (creation_date, referenced_date) per concept
+    # regardless of whether W2 ultimately set referenced_date or skipped it.
+    session_date_iso = timestamp.date().isoformat()
+    for cid, _ in new_concepts:
+        try:
+            node = graph.get_node(cid)
+            if node:
+                node.data["creation_date"] = session_date_iso
+        except Exception:
+            pass
+
     for ev in events:
         if not isinstance(ev, dict):
             continue
@@ -1008,6 +1049,22 @@ def _resolve_event_dates_pass(
             ev_dt = datetime.strptime(str(event_date)[:10], "%Y-%m-%d")
         except Exception:
             continue
+        # iter28 (Plan C): only accept LLM-resolved event_date when the
+        # LLM is highly confident (precision=="day"). iter27 N=500 showed
+        # MS regression of -4.5pp when W2 ran with looser gates (week/
+        # month/year were accepted), because the LLM hallucinated ~5% of
+        # event_dates and those overwrote the safe session_date anchor
+        # for retrieval ordering. precision=="day" reduces the
+        # hallucination rate to ~1%.
+        if precision != "day":
+            try:
+                node = graph.get_node(cid)
+                if node:
+                    node.data["event_date_precision"] = precision
+                    node.data["event_status"] = status
+            except Exception:
+                pass
+            continue
         # Sanity check: event_date shouldn't be far in the future relative
         # to session_date (allow up to 1 year ahead for upcoming events).
         # Also shouldn't be unreasonably old (>10 years before session).
@@ -1027,7 +1084,7 @@ def _resolve_event_dates_pass(
 _TYPED_ATTR_PROMPT = """Extract verbatim typed attributes from these user messages. The main extractor often paraphrases away specific values (e.g., "submitted to ACL" loses "February 1st"; "left home at 7 AM" loses arrival time "9 AM"; "political humor" loses the cartoon name "Nu, pogodi!"). This pass preserves them.
 
 Output a JSON object with a "attributes" list. Each attribute:
-- "type": one of {{"time","date","duration","quantity","name"}}
+- "type": one of {{"time","date","duration","quantity","name","person"}}
 - "value": the LITERAL value from the message (do NOT paraphrase or summarize)
 - "context": short phrase from the message giving the topic this attribute belongs to (max 80 chars)
 
@@ -1037,6 +1094,7 @@ Definitions:
 - "duration" = interval (e.g., "two weeks", "5 days", "3 months", "a year ago")
 - "quantity" = count/amount (e.g., "1300 followers", "$80", "4 days a week", "856 pages")
 - "name" = proper noun, specific named entity (e.g., "Golden Retriever", "Nu, pogodi!", "Bajimaya")
+- "person" = a named individual the user knows or refers to (e.g., "Michael", "Sarah Chen", "Dr. Williams", "my cousin Emma"); helps named_day_recall by pinning who-did-what-when
 
 Rules:
 - Only include attributes that the USER mentions (skip values the assistant suggested).
@@ -1306,6 +1364,19 @@ Output JSON format:
             raw_title = concept["title"]
             stamped_title = f"[{session_date_str}] {raw_title}"
             raw_desc = concept.get("description", "")
+            ctype = (concept.get("type") or "user_fact").lower()
+            # iter28: Mastra-style priority derived from concept_type. Used by
+            # assembly truncation (drop LOW first when budget hits) and by
+            # reader rule 11 (treat LOW as weak evidence). High = identity /
+            # preferences / relationships (durable user truth). Medium =
+            # default. Low = planning / intent / hypothetical / belief.
+            if ctype in ("user_fact", "preference", "relationship", "identity"):
+                priority = "high"
+            elif ctype in ("planning", "intent", "ongoing", "agent_belief",
+                           "world_state", "hypothetical"):
+                priority = "low"
+            else:
+                priority = "medium"
             graph.add_node(
                 Node(
                     id=concept_id,
@@ -1314,7 +1385,8 @@ Output JSON format:
                         "title": stamped_title,
                         "description": raw_desc,
                         "strength": concept.get("strength", 0.7),
-                        "concept_type": concept.get("type", "user_fact"),
+                        "concept_type": ctype,
+                        "priority": priority,
                         "extracted_at": session_datetime_iso,
                         # Full ISO datetime so same-day events get tie-broken
                         # by HH:MM in latest_value / chronological_order.
