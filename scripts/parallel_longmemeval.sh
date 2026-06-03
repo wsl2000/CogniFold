@@ -146,10 +146,13 @@ REM=$(( N_TODO - CHUNK * N_PARALLEL ))
 # Optional env-var driven extra flags (so iter-specific configurations don't
 # require editing this script).
 EXTRA_FLAGS=()
-if [ -n "${AGG_MAX_CONTEXT_CHARS:-}" ]; then
-    EXTRA_FLAGS+=(--agg-max-context-chars "$AGG_MAX_CONTEXT_CHARS")
-    echo "  + --agg-max-context-chars $AGG_MAX_CONTEXT_CHARS"
-fi
+# Aggregation context bump: "how many X" / "how much" type questions need
+# ~3x the default 6000-char retrieval context to fit a 50-node candidate
+# set without assembly truncation. iter05+ validated 15000 as the sweet
+# spot — without it the aggregation cluster regresses by ~1-2 pp overall.
+AGG_MAX_CONTEXT_CHARS="${AGG_MAX_CONTEXT_CHARS:-15000}"
+EXTRA_FLAGS+=(--agg-max-context-chars "$AGG_MAX_CONTEXT_CHARS")
+echo "  + --agg-max-context-chars $AGG_MAX_CONTEXT_CHARS"
 if [ -n "${MAX_CONTEXT_CHARS:-}" ]; then
     EXTRA_FLAGS+=(--max-context-chars "$MAX_CONTEXT_CHARS")
     echo "  + --max-context-chars $MAX_CONTEXT_CHARS"
