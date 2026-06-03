@@ -19,25 +19,30 @@ Do NOT invoke if the user is asking to iterate on the score (that's
 
 ## Recommended stack (defaults)
 
-These are the models the script tests at steps 6-8 and then uses in the
-full N=500 run. Defaults live in `scripts/parallel_longmemeval.sh` (source
-of truth) and are mirrored in `scripts/run.sh` for the ping checks.
+These are the models the script pings at steps 6-8 and then uses in the
+full N=500 run. Defaults live in `scripts/parallel_longmemeval.sh`
+(source of truth) and are mirrored in `scripts/run.sh` for the ping
+checks.
 
 | Role | Default | Why |
 |---|---|---|
-| reader | `openai:openai/gpt-5-mini` (reasoning_effort=high auto) | matches Mastra OM reader stack; the qa_answer prompt assumes a reasoning model |
-| writer | `openai:openai/gpt-4o-mini` | mechanical JSON extraction; dominant cost driver (~50 calls/qid × 500) — reasoning models add 10-30× latency for no gain here |
+| reader | `openai:openai/gpt-5` (reasoning_effort=high auto) | the qa_answer prompt assumes a reasoning model — strongest available reader |
+| writer | `openai:openai/gpt-5` (reasoning_effort honored from env) | strongest extractor — preserves attributes the user named verbatim |
 | judge | `openai:openai/gpt-4o` | canonical LongMemEval judge; **do not substitute** without re-calibrating against published numbers |
-| rerank | `openai:openai/gpt-5-mini` (effort=low, batched, pool=100) | one batched call per question; handles "27th item" / ordinal references |
-| embed | `openai:openai/text-embedding-3-small` | hard-coded 1536 dim in cognifold/embeddings/config.py; do not switch to -large without updating that dim |
+| rerank | `openai:openai/gpt-5` (batched, pool=100) | one batched call per question; handles "27th item" / ordinal references |
+| embed | `openai:openai/text-embedding-3-large` (1536 dim via API `dimensions` param) | strongest embedding; cognifold/embeddings/providers.py passes `dimensions=1536` so the graph schema stays compatible |
 
 Override any role by exporting `READER_MODEL` / `WRITER_MODEL` /
 `JUDGE_MODEL` / `RERANK_MODEL` / `EMBED_MODEL` before invoking the
 script.
 
+Stratified sampling: 133 per question type (one type, `temporal-
+reasoning`, has 133 questions — the cap means "take all" for every
+type, so the full 500 set is processed). Override with the second
+positional arg to `scripts/parallel_longmemeval.sh` if needed.
+
 W1 (`EXTRACT_TYPED_ATTRIBUTES=1`) is enabled by default in `run.sh`.
-W2 (`RESOLVE_EVENT_DATES=1`) is **off** by default — it regressed MS by
-4.5pp in iter27 validation.
+W2 (`RESOLVE_EVENT_DATES=1`) is **off** by default.
 
 ## What it does
 

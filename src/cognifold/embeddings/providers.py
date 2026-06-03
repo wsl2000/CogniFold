@@ -288,9 +288,14 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
         Returns:
             Embedding vector.
         """
+        # Pass `dimensions` explicitly so the high-dimensional OpenAI
+        # embedding models can be truncated to match cognifold's expected
+        # dim (config.dimensions). Without this, providers return native
+        # dim (e.g. 3072) which mismatches the schema.
         response = self._client.embeddings.create(
             model=self.config.model,
             input=text,
+            dimensions=self.config.dimensions,
         )
 
         embedding = np.array(response.data[0].embedding, dtype=np.float32)
@@ -321,6 +326,7 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
             response = self._client.embeddings.create(
                 model=self.config.model,
                 input=batch,
+                dimensions=self.config.dimensions,
             )
 
             for data in response.data:

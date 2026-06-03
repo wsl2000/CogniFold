@@ -128,16 +128,16 @@ else
 fi
 ok "chat key found ($CHAT_PROVIDER)"
 
-# Model defaults — MUST match scripts/parallel_longmemeval.sh:171-175
+# Model defaults — MUST match scripts/parallel_longmemeval.sh
 # (source of truth). Mirrored here only so the ping checks at steps
 # 6-8 know what to test. If you change defaults in one place, change
 # them in the other or the user will see one stack at the ping step
 # and a different stack in the full run.
-READER_MODEL_RAW="${READER_MODEL:-openai:openai/gpt-5-mini}"
-WRITER_MODEL_RAW="${WRITER_MODEL:-openai:openai/gpt-4o-mini}"
+READER_MODEL_RAW="${READER_MODEL:-openai:openai/gpt-5}"
+WRITER_MODEL_RAW="${WRITER_MODEL:-openai:openai/gpt-5}"
 JUDGE_MODEL_RAW="${JUDGE_MODEL:-openai:openai/gpt-4o}"
-EMBED_MODEL_RAW="${EMBED_MODEL:-openai:openai/text-embedding-3-small}"
-RERANK_MODEL_RAW="${RERANK_MODEL:-openai:openai/gpt-5-mini}"
+EMBED_MODEL_RAW="${EMBED_MODEL:-openai:openai/text-embedding-3-large}"
+RERANK_MODEL_RAW="${RERANK_MODEL:-openai:openai/gpt-5}"
 
 # Normalize for direct provider (strip "openai:" wrapper).
 strip_wrap() { echo "$1" | sed 's/^openai://; s/^gemini://'; }
@@ -157,13 +157,22 @@ info "reader=$READER_MODEL  writer=$WRITER_MODEL  judge=$JUDGE_MODEL  embed=$EMB
 
 # --- 6: chat ping -----------------------------------------------------
 step 6 "Chat ping (writer model: $WRITER_MODEL)"
-# Writer is non-reasoning, accepts max_tokens.
-resp=$(curl -sS -m 30 -X POST "$CHAT_BASE_URL/chat/completions" \
+# Detect reasoning models (gpt-5/o1/o3) — they reject `max_tokens`/
+# `temperature` and require `max_completion_tokens` + `reasoning_effort`.
+case "$WRITER_MODEL" in
+    *gpt-5*|*/o1*|*/o3*)
+        body=$(jq -n --arg m "$WRITER_MODEL" \
+            '{model:$m, messages:[{role:"user", content:"Reply with the single token: OK"}], max_completion_tokens:100, reasoning_effort:"low"}')
+        ;;
+    *)
+        body=$(jq -n --arg m "$WRITER_MODEL" \
+            '{model:$m, messages:[{role:"user", content:"Reply with the single token: OK"}], max_tokens:5, temperature:0}')
+        ;;
+esac
+resp=$(curl -sS -m 90 -X POST "$CHAT_BASE_URL/chat/completions" \
     -H "Authorization: Bearer $CHAT_API_KEY" \
     -H "Content-Type: application/json" \
-    -d "$(jq -n --arg m "$WRITER_MODEL" \
-        '{model:$m, messages:[{role:"user", content:"Reply with the single token: OK"}], max_tokens:5, temperature:0}')" \
-    2>&1)
+    -d "$body" 2>&1)
 echo "$resp" | jq -e '.choices[0].message.content' >/dev/null 2>&1 || \
     fail "writer chat call failed: $(echo "$resp" | head -c 220)"
 ok "chat OK"
@@ -182,14 +191,14 @@ esac
 resp=$(curl -sS -m 30 -X POST "$EMBED_BASE_URL/embeddings" \
     -H "Authorization: Bearer $EMBED_API_KEY" \
     -H "Content-Type: application/json" \
-    -d "$(jq -n --arg m "$EMBED_MODEL_TO_TEST" '{model:$m, input:"hello"}')" \
+    -d "$(jq -n --arg m "$EMBED_MODEL_TO_TEST" '{model:$m, input:"hello", dimensions:1536}')" \
     2>&1)
 dim=$(echo "$resp" | jq -r '.data[0].embedding | length' 2>/dev/null || echo "")
 if [ -z "$dim" ] || [ "$dim" = "null" ]; then
     fail "embed call failed: $(echo "$resp" | head -c 220) — set EMBEDDING_API_KEY+EMBEDDING_BASE_URL to a /embeddings-capable provider (OpenAI direct works)"
 fi
 if [ "$dim" != "1536" ]; then
-    fail "embed model returned dim=$dim (expected 1536 — text-embedding-3-small native). cognifold/embeddings/config.py expects 1536; mismatched dim will crash retrieval."
+    fail "embed model returned dim=$dim (expected 1536 to match cognifold/embeddings/config.py). Check that the provider honors the API \`dimensions\` parameter."
 fi
 ok "embed OK (1536 dim)"
 
@@ -252,4 +261,4 @@ echo "Result will land at benchmarks/longmemeval/runs/$LABEL/"
 printf "\n"
 
 EXTRACT_TYPED_ATTRIBUTES="${EXTRACT_TYPED_ATTRIBUTES:-1}" \
-exec bash scripts/parallel_longmemeval.sh "$N_PARALLEL" 200 500 "$LABEL"
+exec bash scripts/parallel_longmemeval.sh "$N_PARALLEL" 133 500 "$LABEL"

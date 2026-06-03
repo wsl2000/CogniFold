@@ -130,9 +130,8 @@ def call_llm(prompt: str, config: AgentConfig, json_mode: bool = False) -> str:
             # multi-session synthesis. 24K budget so thinking + reply fit.
             kwargs["max_completion_tokens"] = max(config.max_tokens, 24576)
             # iter23: honor config.reasoning_effort when set (allow writer
-            # config to choose "low" so gpt-5-mini can be used as writer
-            # without ~3min/call latency on "high"). Default stays "high"
-            # for reader.
+            # config to run at a different effort than the reader to trade
+            # extraction quality for speed). Default stays "high" for reader.
             kwargs["reasoning_effort"] = (
                 getattr(config, "reasoning_effort", None) or "high"
             )
@@ -799,11 +798,11 @@ Answer:"""
     # whole entry.
     if _is_junk_reader_output(answer, context):
         logger.warning(
-            "Reader returned junk output (%r) for question %r — retrying with gpt-4o-mini fallback",
+            "Reader returned junk output (%r) for question %r — retrying with gpt-4o fallback",
             answer[:60], question[:80],
         )
         fallback_config = dataclasses.replace(
-            config, model_name="openai:gpt-4o-mini", max_tokens=1024
+            config, model_name="openai:gpt-4o", max_tokens=1024
         )
         answer = call_llm(prompt, fallback_config)
     return answer
@@ -876,8 +875,7 @@ Evaluation:"""
         # direct) via JUDGE_API_KEY / JUDGE_BASE_URL env vars, so the user
         # can keep gpt-4o as the canonical LongMemEval judge even when the
         # chat key (OPENAI_API_KEY/OPENAI_BASE_URL) is pointed at a
-        # provider that doesn't host gpt-4o (e.g. commonstack only has
-        # gpt-4o-mini / gpt-4.1 — exactly the iter28 failure mode).
+        # provider that doesn't host gpt-4o.
         judge_api_key = os.environ.get("JUDGE_API_KEY", "").strip() or None
         judge_base_url = os.environ.get("JUDGE_BASE_URL", "").strip() or None
         if judge_api_key:
@@ -1617,8 +1615,8 @@ def run_benchmark(args: argparse.Namespace) -> None:
         logger.info(f"Using judge model: {args.judge_model} (separate from reader {config.model_name})")
 
     # Separate config for the extraction (write) path. Defaults to the reader
-    # config; override with --writer-model when the reader is a slow reasoning
-    # model (gpt-5-mini) but extraction is mechanical JSON (gpt-4o-mini).
+    # config; override with --writer-model when the writer should differ from
+    # the reader (e.g. lower reasoning_effort for extraction).
     writer_config = config
     if args.writer_model:
         writer_config = dataclasses.replace(config, model_name=args.writer_model)
@@ -1631,8 +1629,8 @@ def run_benchmark(args: argparse.Namespace) -> None:
     if getattr(args, "resolve_event_dates", False):
         writer_config = dataclasses.replace(writer_config, resolve_event_dates=True)
         logger.info("W2 event_date resolution pass: ENABLED")
-    # iter23: writer-specific reasoning_effort (so gpt-5-mini can be used
-    # as writer with low effort).
+    # iter23: writer-specific reasoning_effort so a gpt-5 writer can run
+    # at a different effort level than the reader.
     if getattr(args, "writer_reasoning_effort", None):
         writer_config = dataclasses.replace(
             writer_config, reasoning_effort=args.writer_reasoning_effort
@@ -2176,8 +2174,8 @@ if __name__ == "__main__":
         type=str,
         default=None,
         help="Override extraction model separately (default: same as --model). "
-        "Pair openai:gpt-4o-mini for fast deterministic JSON extraction with "
-        "openai:gpt-5-mini reader for reasoning-grade QA.",
+        "Use to route the writer to a different model / reasoning_effort "
+        "than the reader.",
     )
     parser.add_argument(
         "--disable-concepts",
@@ -2206,7 +2204,7 @@ if __name__ == "__main__":
         "--embedding",
         type=str,
         default=None,
-        help="Embedding model (e.g. openai:text-embedding-3-small, gemini:text-embedding-004, or none). Overrides profile config.",
+        help="Embedding model (e.g. openai:text-embedding-3-large, gemini:text-embedding-004, or none). Overrides profile config.",
     )
     parser.add_argument(
         "--max-context-chars",
@@ -2250,8 +2248,8 @@ if __name__ == "__main__":
         help=(
             "iter23: writer-specific reasoning_effort. Defaults to 'high' "
             "(matches reader) when the writer is a gpt-5 reasoning model. "
-            "Set 'low' to use gpt-5-mini as writer without the 3-min/call "
-            "latency that 'high' incurs."
+            "Set 'low' to run the writer at lower effort than the reader "
+            "to trade extraction quality for speed."
         ),
     )
     parser.add_argument(

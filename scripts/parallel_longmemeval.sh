@@ -167,12 +167,12 @@ if [ -n "${WRITER_REASONING_EFFORT:-}" ]; then
     echo "  + --writer-reasoning-effort $WRITER_REASONING_EFFORT"
 fi
 
-# Allow model overrides via env (defaults keep the original OpenRouter stack).
-WRITER_MODEL="${WRITER_MODEL:-openai:openai/gpt-4o-mini}"
-READER_MODEL="${READER_MODEL:-openai:openai/gpt-5-mini}"
+# Allow model overrides via env. Defaults = recommended stack.
+WRITER_MODEL="${WRITER_MODEL:-openai:openai/gpt-5}"
+READER_MODEL="${READER_MODEL:-openai:openai/gpt-5}"
 JUDGE_MODEL="${JUDGE_MODEL:-openai:openai/gpt-4o}"
-RERANK_MODEL="${RERANK_MODEL:-openai:openai/gpt-5-mini}"
-EMBED_MODEL="${EMBED_MODEL:-openai:openai/text-embedding-3-small}"
+RERANK_MODEL="${RERANK_MODEL:-openai:openai/gpt-5}"
+EMBED_MODEL="${EMBED_MODEL:-openai:openai/text-embedding-3-large}"
 echo "  reader: $READER_MODEL"
 echo "  writer: $WRITER_MODEL"
 echo "  judge: $JUDGE_MODEL"

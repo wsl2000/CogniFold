@@ -1,16 +1,14 @@
-# Model Configuration (Cost-Effective Stack)
+# Model Configuration (Recommended Stack)
 
 ## Role assignments
 
 | Role | Model | Settings | Why |
 |---|---|---|---|
-| **Writer** (extraction) | `openai:gpt-4o-mini` | `temperature=0` | Mechanical JSON transcription; reasoning models add 10-30× latency for no gain. Dominant cost driver (~50 calls/qid × 500 qid). |
-| **Reader** (QA) | `openai:gpt-5-mini` | `reasoning_effort=high`, `max_completion_tokens=24576` | Matches Mastra SOTA's reader exactly. Auto-applied by `run_eval.py:124-132` when model contains `gpt-5/o1/o3`. |
+| **Writer** (extraction) | `openai:gpt-5` | `reasoning_effort` from env (default high) | Strongest extractor; preserves verbatim attributes the user named, no paraphrase loss. |
+| **Reader** (QA) | `openai:gpt-5` | `reasoning_effort=high`, `max_completion_tokens=24576` | Auto-applied by `run_eval.py` when model name contains `gpt-5`/`o1`/`o3`. Reasoning chain handles derived dates, age inference, multi-fact synthesis. |
 | **Judge** | `openai:gpt-4o` | default | **NEVER substitute.** Canonical LongMemEval judge — different judge breaks comparability with published numbers. |
-| **Embedding** | `openai:text-embedding-3-small` | 1536 dim | 6× cheaper than 3-large. Rerank step compensates for the ~3-5 pp recall delta. |
-| **Reranker** | `openai:gpt-5-mini` `reasoning_effort=low` (batched) | `--llm-rerank`, `--rerank-pool 100` | One batched call per question. ~5× cheaper than `gpt-5`-low with negligible quality drop on short-form ranking. |
-
-Full N=500 cost ≈ **$15-25** on a high-TPM key.
+| **Embedding** | `openai:text-embedding-3-large` | 1536 dim via API `dimensions` param | `cognifold/embeddings/providers.py` passes `dimensions=self.config.dimensions` so the graph schema stays at 1536. |
+| **Reranker** | `openai:gpt-5` `reasoning_effort=low` (batched) | `--llm-rerank`, `--rerank-pool 100` | One batched call per question. Handles ordinals ("27th item") and indirect references. |
 
 ## ⚠️ Rerank paradigm — use B (LLM-rerank), not A or C
 
@@ -20,46 +18,46 @@ Full N=500 cost ≈ **$15-25** on a high-TPM key.
 | **B** — LLM-rerank (batched, `--llm-rerank` flag) | ✅ **USE** — handles ordinals like "27th item", indirect references |
 | **C** — Cross-encoder (Cohere/BGE) | ❌ Generic-IR trained; weaker on pragmatic queries |
 
-**Always batched B.** Per-doc rerank with gpt-5-mini = 25,000 calls (≈ $15, 10+ h). Batched = 500 calls (≈ $0.50, 15 min). Wired via:
-- `--llm-rerank --rerank-model openai:gpt-5-mini --rerank-reasoning-effort low --rerank-pool 100`
+**Always batched B.** Per-doc rerank explodes to 25,000 calls (~10 h);
+batched is 500 calls (~15 min). Wired via:
 
-**Do NOT enable the legacy `use_llm_rerank=True`** — that flag routes through per-doc mode at hardcoded `gpt-4o-mini` (`src/cognifold/query/llm.py:95`). 50× more calls, weaker model.
+    --llm-rerank --rerank-model openai:gpt-5 --rerank-reasoning-effort low --rerank-pool 100
 
-## N_PARALLEL by tier (TPM-derived)
+**Do NOT enable the legacy `use_llm_rerank=True`** — that flag routes
+through per-doc mode at a hardcoded model in
+`src/cognifold/query/llm.py:95`. 50× more calls, lower quality.
 
-50 parallel needs ~1.04M TPM gpt-4o-mini + 50K TPM gpt-4o → **Tier 2 minimum**, Tier 3 comfortable.
+## Provider routing
 
-| OpenAI Tier | gpt-4o-mini TPM | gpt-4o TPM | Recommended `N_PARALLEL` | Full N=500 wallclock |
-|---|---|---|---|---|
-| Tier 1 | 200K | 30K | **10** | ~3-4 h |
-| Tier 2 ($50 + 7d) | 2M | 450K | **50** | ~30-45 min |
-| Tier 3 ($100 + 7d) | 4M | 800K | 100 | ~15-25 min |
-| Tier 4 ($250 + 14d) | 10M | 2M | 250 | ~10-15 min |
-| Tier 5 ($1000 + 30d) | 150M | 30M | **500** (depth=1) | ~5-15 min |
+Default is OpenRouter (chat + embed + judge via one gateway). The
+launcher (`scripts/parallel_longmemeval.sh`) routes whichever key is
+set:
 
-**How to check your tier**: hit any model, read `x-ratelimit-limit-tokens` response header, or visit `https://platform.openai.com/settings/organization/limits`.
+| Key in `.env` | Effect |
+|---|---|
+| `OPENROUTER_API_KEY` | chat / writer / reader / rerank / embed / judge all via OpenRouter (recommended default) |
+| `OPENAI_API_KEY` | all via OpenAI direct (requires tier with `gpt-5` access + embed dimensions support) |
+| `COMMONSTACK_API_KEY` | chat via commonstack; the launcher auto-routes embed + judge to a caller-supplied `EMBEDDING_API_KEY` / `JUDGE_API_KEY` (since commonstack typically lacks `/embeddings` and `gpt-4o`) |
 
-## Alternative: OpenRouter (when OpenAI quota is exhausted)
+Per-role override env vars:
 
-If the OpenAI key hits quota or upgrading tiers takes too long, OpenRouter offers a drop-in OpenAI-compatible gateway aggregating 100+ models (including all OpenAI ones via passthrough). Cost: ~5-10% markup over direct OpenAI; no tier waiting period.
+    READER_MODEL / WRITER_MODEL / JUDGE_MODEL / RERANK_MODEL / EMBED_MODEL
+    EMBEDDING_API_KEY  / EMBEDDING_BASE_URL  (separate embed provider)
+    JUDGE_API_KEY      / JUDGE_BASE_URL      (separate judge provider)
+    WRITER_REASONING_EFFORT                  (writer-only reasoning effort)
+    EXTRACT_TYPED_ATTRIBUTES                 (W1 verbatim-attribute pass)
+    RESOLVE_EVENT_DATES                      (W2 event_date pass; not recommended for full-N=500 runs)
 
-**Setup**:
-```bash
-# .env
-OPENROUTER_API_KEY=sk-or-v1-...
-```
+## Balance check on OpenRouter
 
-**Edit `scripts/parallel_longmemeval.sh`** — three diffs:
-- prepend `OPENAI_BASE_URL=https://openrouter.ai/api/v1` to the env block
-- swap `OPENAI_API_KEY` → `OPENROUTER_API_KEY`
-- change every `openai:` → `openai/` in model flags (OpenRouter uses `/` as separator)
+OpenRouter exposes credits unlike OpenAI direct:
 
-So: `--model openai/gpt-5-mini --writer-model openai/gpt-4o-mini --judge-model openai/gpt-4o`.
+    curl -sS https://openrouter.ai/api/v1/credits \
+         -H "Authorization: Bearer $OPENROUTER_API_KEY"
+    # → {"data": {"total_credits": N, "total_usage": M}}; balance = N − M
 
-**Balance check** (OpenRouter exposes this, unlike OpenAI):
-```bash
-curl -sS https://openrouter.ai/api/v1/credits -H "Authorization: Bearer $OPENROUTER_API_KEY"
-# returns {"data": {"total_credits": N, "total_usage": M}}; balance = N - M
-```
+## Judge integrity
 
-**Judge integrity unchanged**: `openai/gpt-4o` on OpenRouter is the same gpt-4o model from OpenAI, just billed through the gateway. Numbers stay comparable to Mastra/Hindsight.
+The judge call is the only one whose model identity matters for
+benchmark comparability. `openai/gpt-4o` via OpenRouter is the same
+gpt-4o model from OpenAI — numbers stay comparable to Mastra / Hindsight.
