@@ -1,25 +1,27 @@
 ---
 name: longmemeval-smoketest
-description: Verify a fresh clone of CogniFold is ready to run the LongMemEval benchmark before kicking off a full N=500 run (~60 min, ~$25). Use after `git clone`, on a new machine, when the recommended stack changes, or when a previous run failed with API or environment errors. Walks env probe → API smoke (chat, embed, judge) → prints the canonical full-N=500 launch command. SKIP for other benchmarks (LoCoMo, MuSiQue, CogEval-Bench) — those have their own runners.
+description: One-shot test of CogniFold's LongMemEval benchmark on a fresh clone. Verifies env + API endpoints (~10 s, ~$0.001) and then runs the full N=500 benchmark (~60-90 min, ~$15-25). Single command, no parameters to think about. Use after `git clone`, on a new machine, when the recommended stack changes, or when a previous run failed with API or environment errors. SKIP for other benchmarks (LoCoMo, MuSiQue, CogEval-Bench) — those have their own runners.
 ---
 
-# LongMemEval Smoketest
+# LongMemEval One-Shot Test
 
 ## When to invoke
 
 - User just did `git clone` and asks "how do I run LongMemEval"
-- User says "smoke test" / "open-box test" / "first run" / "verify env"
-- Previous full N=500 run failed; need to root-cause environment vs code
+- User says "test it" / "run the benchmark" / "open-box test" / "first run"
+- Previous run failed and the user wants to retry from scratch
 - A new chat / embed / judge provider was added — verify each endpoint
-- After `git pull` brings new code — verify stack still wires up
+  then re-run the full benchmark
+- After `git pull` brings new code — verify and re-run
 
 Do NOT invoke if the user is asking to iterate on the score (that's
 `longmemeval-iterate`) or to run another benchmark (LoCoMo, etc.).
 
-## What the smoketest does
+## What it does
 
-Single script `scripts/smoketest.sh` runs eight checks in order; any
-failure halts with an actionable message:
+Single script `scripts/smoketest.sh` does:
+
+1. **Eight env + API checks** (~10 s, ~$0.001) — halts on any failure:
 
 | # | Check | Failure means |
 |---|---|---|
@@ -32,23 +34,28 @@ failure halts with an actionable message:
 | 7 | embed smoke (1 call) | embed endpoint not available on chat provider, OR returned dim ≠ 1536 (cognifold expects 1536) |
 | 8 | judge-model smoke — `openai/gpt-4o` (1 call) | judge model not hosted on chosen provider |
 
-Cost ≈ $0.001 (three short LLM calls), wall-clock ≈ 10 s.
-
-After all eight pass, the script prints the canonical full-N=500
-launch command tuned to the verified provider. The user kicks off that
-full benchmark themselves — the smoketest does not auto-launch it.
+2. **Full N=500 benchmark** on the verified provider (auto-tuned
+   parallelism: 100 on OpenRouter / OpenAI direct, 10 on commonstack).
+   Result lands at `benchmarks/longmemeval/runs/<LABEL>/`.
 
 ## How to run
 
 ```bash
+# Default (verify + run full N=500, label = run_YYYYMMDD_HHMM):
 bash .claude/skills/longmemeval-smoketest/scripts/smoketest.sh
+
+# With a custom label:
+bash .claude/skills/longmemeval-smoketest/scripts/smoketest.sh my_first_run
+
+# Env checks only, don't launch the full run:
+bash .claude/skills/longmemeval-smoketest/scripts/smoketest.sh --check-only
 ```
 
 Reads `.env` for keys. Honors `OPENROUTER_API_KEY` (recommended),
-`COMMONSTACK_API_KEY` (cap-50 RPM — script lowers full-run
-parallelism to compensate), or `OPENAI_API_KEY` (direct).
+`COMMONSTACK_API_KEY` (cap-50 RPM — script lowers parallelism to 10),
+or `OPENAI_API_KEY` (direct).
 
-Optional environment overrides — pass before the script to test
+Optional environment overrides — set before the script to test
 non-default routing:
 
 | env | effect |
@@ -57,22 +64,17 @@ non-default routing:
 | `JUDGE_API_KEY` / `JUDGE_BASE_URL` | route judge to a different provider (e.g. when chat provider has no gpt-4o) |
 | `WRITER_MODEL` / `READER_MODEL` / `JUDGE_MODEL` / `RERANK_MODEL` / `EMBED_MODEL` | override the model names tested |
 
-## After it passes
+## After the run completes
 
-The script prints the canonical full-N=500 launch line tuned to the
-provider it just verified. **Read it back to the user verbatim** — do
-not invent a different command. A typical output ends with:
+Result files at `benchmarks/longmemeval/runs/<LABEL>/`:
 
-```
-✓ ALL CHECKS PASSED.
+- `metrics.json` — strict / partial scores + count by verdict
+- `hypothesis.jsonl` — per-question answer + judge verdict + full context
+- `wrong_cases.json` — failed cases grouped by type for cluster analysis
 
-To run the full N=500 benchmark with the verified stack:
+Read the metric back to the user as a single line, e.g.:
 
-    bash scripts/parallel_longmemeval.sh 100 200 500 my_first_run
-
-Expected cost: ~$15–25, wall-clock ~60–90 min on the verified provider.
-Result will land at benchmarks/longmemeval/runs/my_first_run/
-```
+    strict 86.80% (434/500), partial 86.90% — label: my_first_run
 
 ## Hard rules
 

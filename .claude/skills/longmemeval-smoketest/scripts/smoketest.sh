@@ -1,18 +1,44 @@
 #!/usr/bin/env bash
-# LongMemEval smoketest — verify a fresh clone is ready for the full
-# N=500 benchmark before the user spends ~60 min and ~$25 on a run.
+# LongMemEval one-shot test — verify env, then run the full N=500
+# benchmark. Single command, no parameters to think about.
 #
-# Eight ordered checks (env + API smoke). Any failure halts with an
-# actionable message. Cost ≈ $0.001 total, wall-clock ≈ 10 s.
+# Usage:
+#     bash .claude/skills/longmemeval-smoketest/scripts/smoketest.sh [LABEL] [--check-only]
 #
-# After all checks pass, the script prints the canonical full-N=500
-# launch command tuned to the verified provider — the user kicks off
-# the full benchmark themselves (this script does not).
+# LABEL: optional run name (defaults to run_YYYYMMDD_HHMM). Results land
+#        at benchmarks/longmemeval/runs/<LABEL>/.
+# --check-only: stop after env+API checks; do not launch the full run.
+#
+# Flow:
+#     1. Eight env + API checks (~10 s, ~$0.001) — halts on any failure.
+#     2. Full N=500 run on the verified provider — ~60-90 min, ~$15-25.
+#
+# Concurrency is auto-tuned to the chat provider: 100 on OpenRouter or
+# OpenAI direct, 10 on commonstack (ak- keys typically cap at 50 RPM).
 #
 # See .claude/skills/longmemeval-smoketest/SKILL.md for the contract.
 
 set -uo pipefail
 cd "$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+
+# --- args -------------------------------------------------------------
+LABEL=""
+CHECK_ONLY=0
+for a in "$@"; do
+    case "$a" in
+        --check-only) CHECK_ONLY=1 ;;
+        -h|--help)
+            sed -n '2,18p' "$0" | sed 's/^# \?//'
+            exit 0
+            ;;
+        *)
+            if [ -z "$LABEL" ]; then LABEL="$a"; else
+                echo "unexpected arg: $a (use --help)" >&2; exit 2
+            fi
+            ;;
+    esac
+done
+[ -n "$LABEL" ] || LABEL="run_$(date +%Y%m%d_%H%M)"
 
 # --- output helpers ---------------------------------------------------
 PASS_PREFIX="✓"
@@ -181,7 +207,7 @@ echo "$resp" | jq -e '.choices[0].message.content' >/dev/null 2>&1 || \
     fail "judge call failed: $(echo "$resp" | head -c 220) — set JUDGE_API_KEY+JUDGE_BASE_URL to a provider that hosts $JUDGE_MODEL"
 ok "judge OK"
 
-# --- summary + next-step ----------------------------------------------
+# --- summary ----------------------------------------------------------
 printf "\n"
 echo "═════════════════════════════════════════════════════════════════"
 echo "✓ ALL CHECKS PASSED"
@@ -201,20 +227,25 @@ if [ "${JUDGE_API_KEY:-}" != "" ] && [ "${JUDGE_BASE_URL:-}" != "$CHAT_BASE_URL"
     echo "  judge   → caller-supplied JUDGE_API_KEY ($JUDGE_BASE_URL_TO_TEST)"
 fi
 printf "\n"
-echo "To run the full N=500 benchmark with the verified stack:"
-echo
+
+# --- launch full N=500 ------------------------------------------------
+# Auto-tune parallelism by provider.
 case "$CHAT_PROVIDER" in
-    commonstack)
-        echo "  # commonstack ak- keys often cap at 50 RPM — use parallelism ≤ 10"
-        echo "  bash scripts/parallel_longmemeval.sh 10 200 500 my_first_run"
-        ;;
-    openrouter|openai-direct)
-        echo "  bash scripts/parallel_longmemeval.sh 100 200 500 my_first_run"
-        ;;
+    commonstack)  N_PARALLEL=10  ;;  # ak- keys cap at ~50 RPM
+    *)            N_PARALLEL=100 ;;
 esac
-echo
-echo "Expected cost ~\$15-25; wall-clock ~60-90 min."
-echo "Results land at benchmarks/longmemeval/runs/my_first_run/"
-echo
-echo "Read the result with:"
-echo "  cat benchmarks/longmemeval/runs/my_first_run/metrics.json"
+
+if [ "$CHECK_ONLY" = "1" ]; then
+    echo "--check-only set; not launching the full run."
+    echo "When ready:"
+    echo "    bash $0 $LABEL"
+    exit 0
+fi
+
+echo "Launching full N=500 (label: $LABEL, parallel=$N_PARALLEL)"
+echo "Expected ~60-90 min wall-clock, ~\$15-25 cost."
+echo "Result will land at benchmarks/longmemeval/runs/$LABEL/"
+printf "\n"
+
+EXTRACT_TYPED_ATTRIBUTES="${EXTRACT_TYPED_ATTRIBUTES:-1}" \
+exec bash scripts/parallel_longmemeval.sh "$N_PARALLEL" 200 500 "$LABEL"
