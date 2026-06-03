@@ -128,7 +128,11 @@ else
 fi
 ok "chat key found ($CHAT_PROVIDER)"
 
-# Model defaults — match scripts/parallel_longmemeval.sh
+# Model defaults — MUST match scripts/parallel_longmemeval.sh:171-175
+# (source of truth). Mirrored here only so the ping checks at steps
+# 6-8 know what to test. If you change defaults in one place, change
+# them in the other or the user will see one stack at the ping step
+# and a different stack in the full run.
 READER_MODEL_RAW="${READER_MODEL:-openai:openai/gpt-5-mini}"
 WRITER_MODEL_RAW="${WRITER_MODEL:-openai:openai/gpt-4o-mini}"
 JUDGE_MODEL_RAW="${JUDGE_MODEL:-openai:openai/gpt-4o}"
