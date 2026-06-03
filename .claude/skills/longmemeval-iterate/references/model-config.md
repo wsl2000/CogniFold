@@ -4,7 +4,7 @@
 
 | Role | Model | Settings | Why |
 |---|---|---|---|
-| **Writer** (extraction) | `openai:gpt-5` | `reasoning_effort` from env (default high) | Strongest extractor; preserves verbatim attributes the user named, no paraphrase loss. |
+| **Writer** (extraction) | `openai:gpt-5` | `reasoning_effort=low` default (override via `WRITER_REASONING_EFFORT` env) | Strongest extractor; low effort matches mechanical-JSON nature and keeps full N=500 wall-clock tractable. |
 | **Reader** (QA) | `openai:gpt-5` | `reasoning_effort=high`, `max_completion_tokens=24576` | Auto-applied by `run_eval.py` when model name contains `gpt-5`/`o1`/`o3`. Reasoning chain handles derived dates, age inference, multi-fact synthesis. |
 | **Judge** | `openai:gpt-4o` | default | **NEVER substitute.** Canonical LongMemEval judge — different judge breaks comparability with published numbers. |
 | **Embedding** | `openai:text-embedding-3-large` | 1536 dim via API `dimensions` param | `cognifold/embeddings/providers.py` passes `dimensions=self.config.dimensions` so the graph schema stays at 1536. |
