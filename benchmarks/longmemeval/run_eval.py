@@ -74,7 +74,12 @@ def download_data(output_dir: Path) -> Path:
 # Per-process call-stats counter. Each successful LLM call records its
 # token usage by model name. Dumped to <output_dir>/call_stats.json at the
 # end of run_benchmark; the launcher merges these across batches.
-_LLM_CALL_STATS: dict[str, dict[str, int]] = {}
+#
+# `cost_usd` is summed when the provider reports an authoritative cost on
+# the response (OpenRouter populates `usage.cost`); when absent (OpenAI
+# direct doesn't return a cost field), only tokens are recorded and
+# cost_usd stays 0 for that model.
+_LLM_CALL_STATS: dict[str, dict[str, float]] = {}
 
 
 def _record_llm_call(
@@ -82,16 +87,39 @@ def _record_llm_call(
     input_tokens: int,
     output_tokens: int,
     reasoning_tokens: int = 0,
+    cost_usd: float = 0.0,
 ) -> None:
     """Increment the per-model call counter. Safe to call from any path."""
     bucket = _LLM_CALL_STATS.setdefault(
         model_name,
-        {"calls": 0, "input_tokens": 0, "output_tokens": 0, "reasoning_tokens": 0},
+        {"calls": 0, "input_tokens": 0, "output_tokens": 0, "reasoning_tokens": 0, "cost_usd": 0.0},
     )
     bucket["calls"] += 1
     bucket["input_tokens"] += int(input_tokens or 0)
     bucket["output_tokens"] += int(output_tokens or 0)
     bucket["reasoning_tokens"] += int(reasoning_tokens or 0)
+    bucket["cost_usd"] += float(cost_usd or 0.0)
+
+
+def _extract_cost_usd(usage_obj) -> float:
+    """Read OpenRouter's authoritative `cost` field off the usage object.
+
+    OpenRouter populates `usage.cost` (USD) on chat-completion responses.
+    OpenAI direct does not return any cost field — returns 0 in that case.
+    Tolerates either object-style or dict-style usage.
+    """
+    if usage_obj is None:
+        return 0.0
+    for attr in ("cost", "total_cost"):
+        try:
+            v = getattr(usage_obj, attr, None)
+            if v is None and isinstance(usage_obj, dict):
+                v = usage_obj.get(attr)
+            if v is not None:
+                return float(v)
+        except Exception:
+            pass
+    return 0.0
 
 
 def dump_call_stats(output_dir: "Path") -> None:
@@ -183,6 +211,10 @@ def call_llm(prompt: str, config: AgentConfig, json_mode: bool = False) -> str:
             kwargs["temperature"] = 0.0
         if json_mode:
             kwargs["response_format"] = {"type": "json_object"}
+        # On OpenRouter, opt-in to `usage.cost` reporting in the response.
+        base_url = os.environ.get("OPENAI_BASE_URL", "")
+        if "openrouter.ai" in base_url:
+            kwargs["extra_body"] = {"usage": {"include": True}}
         response = client.chat.completions.create(**kwargs)
         try:
             usage = getattr(response, "usage", None)
@@ -196,6 +228,7 @@ def call_llm(prompt: str, config: AgentConfig, json_mode: bool = False) -> str:
                     getattr(usage, "prompt_tokens", 0) or 0,
                     getattr(usage, "completion_tokens", 0) or 0,
                     rt,
+                    _extract_cost_usd(usage),
                 )
         except Exception:
             pass
@@ -950,12 +983,15 @@ Evaluation:"""
             model_name = config.model_name.replace("openai:", "").replace(
                 "gemini:", ""
             )
-            resp = client.chat.completions.create(
+            chat_kwargs: dict = dict(
                 model=model_name,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.0,
                 max_tokens=400,
             )
+            if judge_base_url and "openrouter.ai" in judge_base_url:
+                chat_kwargs["extra_body"] = {"usage": {"include": True}}
+            resp = client.chat.completions.create(**chat_kwargs)
             try:
                 usage = getattr(resp, "usage", None)
                 if usage:
@@ -964,6 +1000,7 @@ Evaluation:"""
                         getattr(usage, "prompt_tokens", 0) or 0,
                         getattr(usage, "completion_tokens", 0) or 0,
                         0,
+                        _extract_cost_usd(usage),
                     )
             except Exception:
                 pass

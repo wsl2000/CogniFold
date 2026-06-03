@@ -303,12 +303,20 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
             )
             bucket = _EMBED_CALL_STATS.setdefault(
                 self.config.model,
-                {"calls": 0, "input_tokens": 0},
+                {"calls": 0, "input_tokens": 0, "cost_usd": 0.0},
             )
             bucket["calls"] += 1
             usage = getattr(response, "usage", None)
             if usage:
                 bucket["input_tokens"] += int(getattr(usage, "prompt_tokens", 0) or 0)
+                # OpenRouter reports authoritative cost; OpenAI direct does not.
+                cost = None
+                for attr in ("cost", "total_cost"):
+                    cost = getattr(usage, attr, None) or (usage.get(attr) if isinstance(usage, dict) else None)
+                    if cost is not None:
+                        break
+                if cost is not None:
+                    bucket["cost_usd"] += float(cost)
         except Exception:
             pass
 
@@ -348,12 +356,19 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
                 )
                 bucket = _EMBED_CALL_STATS.setdefault(
                     self.config.model,
-                    {"calls": 0, "input_tokens": 0},
+                    {"calls": 0, "input_tokens": 0, "cost_usd": 0.0},
                 )
                 bucket["calls"] += 1
                 usage = getattr(response, "usage", None)
                 if usage:
                     bucket["input_tokens"] += int(getattr(usage, "prompt_tokens", 0) or 0)
+                    cost = None
+                    for attr in ("cost", "total_cost"):
+                        cost = getattr(usage, attr, None) or (usage.get(attr) if isinstance(usage, dict) else None)
+                        if cost is not None:
+                            break
+                    if cost is not None:
+                        bucket["cost_usd"] += float(cost)
             except Exception:
                 pass
 
