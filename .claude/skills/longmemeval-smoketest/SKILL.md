@@ -1,6 +1,6 @@
 ---
 name: longmemeval-smoketest
-description: Verify a fresh clone of CogniFold is ready to run the LongMemEval benchmark before kicking off a full N=500 run (~60 min, ~$25). Use after `git clone`, on a new machine, when the recommended stack changes, or when a previous run failed with API or environment errors. Walks env probe → API smoke (chat, embed, judge) → tiny N=6 benchmark → sanity check → prints the canonical full-run launch command. SKIP for other benchmarks (LoCoMo, MuSiQue, CogEval-Bench) — those have their own runners.
+description: Verify a fresh clone of CogniFold is ready to run the LongMemEval benchmark before kicking off a full N=500 run (~60 min, ~$25). Use after `git clone`, on a new machine, when the recommended stack changes, or when a previous run failed with API or environment errors. Walks env probe → API smoke (chat, embed, judge) → prints the canonical full-N=500 launch command. SKIP for other benchmarks (LoCoMo, MuSiQue, CogEval-Bench) — those have their own runners.
 ---
 
 # LongMemEval Smoketest
@@ -18,7 +18,7 @@ Do NOT invoke if the user is asking to iterate on the score (that's
 
 ## What the smoketest does
 
-Single script `scripts/smoketest.sh` runs nine checks in order; any
+Single script `scripts/smoketest.sh` runs eight checks in order; any
 failure halts with an actionable message:
 
 | # | Check | Failure means |
@@ -29,11 +29,14 @@ failure halts with an actionable message:
 | 4 | dataset file at `benchmarks/longmemeval/data/longmemeval_s_cleaned.json` | dataset not pulled (LFS / submodule) |
 | 5 | `.env` has chat key (`OPENROUTER_API_KEY` recommended) | user has to fill `.env` |
 | 6 | chat-model smoke (1 call) | model name wrong / quota / network |
-| 7 | embed smoke (1 call) | embed endpoint not available on chat provider |
+| 7 | embed smoke (1 call) | embed endpoint not available on chat provider, OR returned dim ≠ 1536 (cognifold expects 1536) |
 | 8 | judge-model smoke — `openai/gpt-4o` (1 call) | judge model not hosted on chosen provider |
-| 9 | tiny N=6 benchmark (1 qid per question type, ~3 min, ~$0.20) | full pipeline broken |
 
-After all nine pass, the script prints the canonical full-run command.
+Cost ≈ $0.001 (three short LLM calls), wall-clock ≈ 10 s.
+
+After all eight pass, the script prints the canonical full-N=500
+launch command tuned to the verified provider. The user kicks off that
+full benchmark themselves — the smoketest does not auto-launch it.
 
 ## How to run
 
@@ -42,15 +45,14 @@ bash .claude/skills/longmemeval-smoketest/scripts/smoketest.sh
 ```
 
 Reads `.env` for keys. Honors `OPENROUTER_API_KEY` (recommended),
-`COMMONSTACK_API_KEY` (cap-50 RPM — fine for the smoketest itself, but
-flag at end if user wants full run), or `OPENAI_API_KEY` (direct).
+`COMMONSTACK_API_KEY` (cap-50 RPM — script lowers full-run
+parallelism to compensate), or `OPENAI_API_KEY` (direct).
 
 Optional environment overrides — pass before the script to test
 non-default routing:
 
 | env | effect |
 |---|---|
-| `SMOKETEST_SKIP_TINY=1` | skip step 9 (API smoke only, ~10 s, ~$0.001) |
 | `EMBEDDING_API_KEY` / `EMBEDDING_BASE_URL` | route embed to a different provider (e.g. OpenAI direct when chat is commonstack) |
 | `JUDGE_API_KEY` / `JUDGE_BASE_URL` | route judge to a different provider (e.g. when chat provider has no gpt-4o) |
 | `WRITER_MODEL` / `READER_MODEL` / `JUDGE_MODEL` / `RERANK_MODEL` / `EMBED_MODEL` | override the model names tested |

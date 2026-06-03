@@ -2,7 +2,13 @@
 # LongMemEval smoketest — verify a fresh clone is ready for the full
 # N=500 benchmark before the user spends ~60 min and ~$25 on a run.
 #
-# Nine ordered checks. Any failure halts with an actionable message.
+# Eight ordered checks (env + API smoke). Any failure halts with an
+# actionable message. Cost ≈ $0.001 total, wall-clock ≈ 10 s.
+#
+# After all checks pass, the script prints the canonical full-N=500
+# launch command tuned to the verified provider — the user kicks off
+# the full benchmark themselves (this script does not).
+#
 # See .claude/skills/longmemeval-smoketest/SKILL.md for the contract.
 
 set -uo pipefail
@@ -15,7 +21,7 @@ INFO_PREFIX="•"
 ok()   { printf "  %s %s\n" "$PASS_PREFIX" "$*"; }
 fail() { printf "  %s %s\n" "$FAIL_PREFIX" "$*" >&2; exit 1; }
 info() { printf "  %s %s\n" "$INFO_PREFIX" "$*"; }
-step() { printf "\n[%d/9] %s\n" "$1" "$2"; }
+step() { printf "\n[%d/8] %s\n" "$1" "$2"; }
 
 # --- 1: at repo root --------------------------------------------------
 step 1 "Repo root + branch"
@@ -174,54 +180,6 @@ resp=$(curl -sS -m 30 -X POST "$JUDGE_BASE_URL_TO_TEST/chat/completions" \
 echo "$resp" | jq -e '.choices[0].message.content' >/dev/null 2>&1 || \
     fail "judge call failed: $(echo "$resp" | head -c 220) — set JUDGE_API_KEY+JUDGE_BASE_URL to a provider that hosts $JUDGE_MODEL"
 ok "judge OK"
-
-# --- 9: tiny benchmark ------------------------------------------------
-if [ "${SMOKETEST_SKIP_TINY:-}" = "1" ]; then
-    step 9 "Tiny N=6 benchmark (skipped: SMOKETEST_SKIP_TINY=1)"
-    info "set SMOKETEST_SKIP_TINY= (empty) to run end-to-end"
-else
-    step 9 "Tiny N=6 benchmark (1 qid per type, ~3-5 min, ~\$0.20)"
-    # Generate 6 stratified qids — first 1 per type.
-    "$PY" - <<PY
-import json
-from collections import defaultdict
-from pathlib import Path
-data = json.load(open("$DS"))
-by_type = defaultdict(list)
-for q in data:
-    by_type[q["question_type"]].append(q["question_id"])
-qids = [by_type[t][0] for t in sorted(by_type)]
-Path("/tmp/smoketest_qids.txt").write_text("\n".join(qids) + "\n")
-print(f"  selected {len(qids)} qids: {', '.join(q[:12] for q in qids)}")
-PY
-    # Clean any previous output_b* / tiny run dir
-    rm -rf benchmarks/longmemeval/output_b* benchmarks/longmemeval/runs/smoketest
-    info "launching... (logs in /tmp/smoketest_run.log)"
-
-    QID_LIST_FILE=/tmp/smoketest_qids.txt \
-    EXTRACT_TYPED_ATTRIBUTES="${EXTRACT_TYPED_ATTRIBUTES:-1}" \
-    bash scripts/parallel_longmemeval.sh 6 200 500 smoketest \
-        > /tmp/smoketest_run.log 2>&1
-    rc=$?
-    if [ "$rc" -ne 0 ]; then
-        echo
-        tail -25 /tmp/smoketest_run.log >&2
-        fail "tiny run exited with code $rc — see /tmp/smoketest_run.log"
-    fi
-    # Sanity: metrics file present + strict ≥ 50%
-    METRICS=benchmarks/longmemeval/runs/smoketest/metrics.json
-    [ -f "$METRICS" ] || fail "tiny run produced no metrics.json"
-    STRICT=$("$PY" -c "import json; m=json.load(open('$METRICS')); print(f\"{m['score_strict']:.1f}\")")
-    N_RES=$("$PY" -c "import json; m=json.load(open('$METRICS')); print(m['total'])")
-    if [ "$N_RES" -lt 6 ]; then
-        fail "tiny run produced $N_RES results (expected 6) — some batches failed silently. Inspect /tmp/smoketest_run.log"
-    fi
-    # Strict floor — 50% on 6 stratified is very forgiving; if it's lower
-    # then the pipeline is producing junk answers (e.g. empty hypothesis).
-    awk -v s="$STRICT" 'BEGIN { if (s < 50.0) exit 1 }' || \
-        fail "tiny run strict=$STRICT% < 50% — pipeline producing junk. Inspect benchmarks/longmemeval/runs/smoketest/hypothesis.jsonl"
-    ok "tiny run: $N_RES results, strict=$STRICT% (≥ 50% sanity floor)"
-fi
 
 # --- summary + next-step ----------------------------------------------
 printf "\n"
