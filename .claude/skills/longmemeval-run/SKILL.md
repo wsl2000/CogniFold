@@ -1,14 +1,14 @@
 ---
-name: longmemeval-smoketest
-description: One-shot test of CogniFold's LongMemEval benchmark on a fresh clone. Verifies env + API endpoints (~10 s, ~$0.001) and then runs the full N=500 benchmark (~60-90 min, ~$15-25). Single command, no parameters to think about. Use after `git clone`, on a new machine, when the recommended stack changes, or when a previous run failed with API or environment errors. SKIP for other benchmarks (LoCoMo, MuSiQue, CogEval-Bench) — those have their own runners.
+name: longmemeval-run
+description: One-shot LongMemEval benchmark on a fresh CogniFold clone. Verifies env + API endpoints (~10 s, ~$0.001) and then runs the full N=500 benchmark (~60-90 min, ~$15-25). Single command, no parameters to think about. Use after `git clone`, on a new machine, when the recommended stack changes, or when a previous run failed with API or environment errors. SKIP for other benchmarks (LoCoMo, MuSiQue, CogEval-Bench) — those have their own runners.
 ---
 
-# LongMemEval One-Shot Test
+# LongMemEval One-Shot Run
 
 ## When to invoke
 
 - User just did `git clone` and asks "how do I run LongMemEval"
-- User says "test it" / "run the benchmark" / "open-box test" / "first run"
+- User says "run the benchmark" / "open-box test" / "first run"
 - Previous run failed and the user wants to retry from scratch
 - A new chat / embed / judge provider was added — verify each endpoint
   then re-run the full benchmark
@@ -19,7 +19,7 @@ Do NOT invoke if the user is asking to iterate on the score (that's
 
 ## What it does
 
-Single script `scripts/smoketest.sh` does:
+Single script `scripts/run.sh` does:
 
 1. **Eight env + API checks** (~10 s, ~$0.001) — halts on any failure:
 
@@ -30,9 +30,9 @@ Single script `scripts/smoketest.sh` does:
 | 3 | `cognifold` + benchmark modules importable | venv broken or deps mismatch |
 | 4 | dataset file at `benchmarks/longmemeval/data/longmemeval_s_cleaned.json` | dataset not pulled (LFS / submodule) |
 | 5 | `.env` has chat key (`OPENROUTER_API_KEY` recommended) | user has to fill `.env` |
-| 6 | chat-model smoke (1 call) | model name wrong / quota / network |
-| 7 | embed smoke (1 call) | embed endpoint not available on chat provider, OR returned dim ≠ 1536 (cognifold expects 1536) |
-| 8 | judge-model smoke — `openai/gpt-4o` (1 call) | judge model not hosted on chosen provider |
+| 6 | chat-model ping (1 call) | model name wrong / quota / network |
+| 7 | embed ping (1 call) | embed endpoint not available on chat provider, OR returned dim ≠ 1536 (cognifold expects 1536) |
+| 8 | judge-model ping — `openai/gpt-4o` (1 call) | judge model not hosted on chosen provider |
 
 2. **Full N=500 benchmark** on the verified provider (auto-tuned
    parallelism: 100 on OpenRouter / OpenAI direct, 10 on commonstack).
@@ -42,13 +42,13 @@ Single script `scripts/smoketest.sh` does:
 
 ```bash
 # Default (verify + run full N=500, label = run_YYYYMMDD_HHMM):
-bash .claude/skills/longmemeval-smoketest/scripts/smoketest.sh
+bash .claude/skills/longmemeval-run/scripts/run.sh
 
 # With a custom label:
-bash .claude/skills/longmemeval-smoketest/scripts/smoketest.sh my_first_run
+bash .claude/skills/longmemeval-run/scripts/run.sh my_first_run
 
 # Env checks only, don't launch the full run:
-bash .claude/skills/longmemeval-smoketest/scripts/smoketest.sh --check-only
+bash .claude/skills/longmemeval-run/scripts/run.sh --check-only
 ```
 
 Reads `.env` for keys. Honors `OPENROUTER_API_KEY` (recommended),
@@ -79,8 +79,8 @@ Read the metric back to the user as a single line, e.g.:
 ## Hard rules
 
 1. **Do NOT add steps the script doesn't already do** — if a check is
-   missing the right move is to edit `smoketest.sh`, not to layer a
-   bespoke `curl` / `python` invocation in chat.
+   missing the right move is to edit `run.sh`, not to layer a bespoke
+   `curl` / `python` invocation in chat.
 2. **Do NOT bypass any check** even if the user pushes. Each step
    catches a real failure mode that has cost a previous user a full run.
 3. **Do NOT modify `.env`** without explicit user permission. If a key
@@ -88,7 +88,7 @@ Read the metric back to the user as a single line, e.g.:
    the codebase.
 4. **Do NOT propose iter-level fixes** (revert this resolver, tighten
    that profile rule). That's the `longmemeval-iterate` skill's job.
-   The smoketest only verifies the *current branch state* runs.
+   This skill only verifies + runs the *current branch state*.
 
 ## When checks fail
 

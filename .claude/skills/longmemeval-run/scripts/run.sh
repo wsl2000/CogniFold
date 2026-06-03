@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# LongMemEval one-shot test — verify env, then run the full N=500
+# LongMemEval one-shot run — verify env, then run the full N=500
 # benchmark. Single command, no parameters to think about.
 #
 # Usage:
-#     bash .claude/skills/longmemeval-smoketest/scripts/smoketest.sh [LABEL] [--check-only]
+#     bash .claude/skills/longmemeval-run/scripts/run.sh [LABEL] [--check-only]
 #
 # LABEL: optional run name (defaults to run_YYYYMMDD_HHMM). Results land
 #        at benchmarks/longmemeval/runs/<LABEL>/.
@@ -16,7 +16,7 @@
 # Concurrency is auto-tuned to the chat provider: 100 on OpenRouter or
 # OpenAI direct, 10 on commonstack (ak- keys typically cap at 50 RPM).
 #
-# See .claude/skills/longmemeval-smoketest/SKILL.md for the contract.
+# See .claude/skills/longmemeval-run/SKILL.md for the contract.
 
 set -uo pipefail
 cd "$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
@@ -151,8 +151,8 @@ if [ "$CHAT_PROVIDER" = "openai-direct" ]; then
 fi
 info "reader=$READER_MODEL  writer=$WRITER_MODEL  judge=$JUDGE_MODEL  embed=$EMBED_MODEL"
 
-# --- 6: chat smoke ----------------------------------------------------
-step 6 "Chat smoke (writer model: $WRITER_MODEL)"
+# --- 6: chat ping -----------------------------------------------------
+step 6 "Chat ping (writer model: $WRITER_MODEL)"
 # Writer is non-reasoning, accepts max_tokens.
 resp=$(curl -sS -m 30 -X POST "$CHAT_BASE_URL/chat/completions" \
     -H "Authorization: Bearer $CHAT_API_KEY" \
@@ -164,8 +164,8 @@ echo "$resp" | jq -e '.choices[0].message.content' >/dev/null 2>&1 || \
     fail "writer chat call failed: $(echo "$resp" | head -c 220)"
 ok "chat OK"
 
-# --- 7: embed smoke ---------------------------------------------------
-step 7 "Embed smoke"
+# --- 7: embed ping ----------------------------------------------------
+step 7 "Embed ping"
 # Cognifold uses dim=1536 hard-coded for OpenAI embeddings (config.py).
 # Force OpenAI direct for embed if explicitly set; otherwise use chat provider.
 EMBED_API_KEY="${EMBEDDING_API_KEY:-$CHAT_API_KEY}"
@@ -189,8 +189,8 @@ if [ "$dim" != "1536" ]; then
 fi
 ok "embed OK (1536 dim)"
 
-# --- 8: judge smoke ---------------------------------------------------
-step 8 "Judge smoke (model: $JUDGE_MODEL)"
+# --- 8: judge ping ----------------------------------------------------
+step 8 "Judge ping (model: $JUDGE_MODEL)"
 JUDGE_API_KEY_TO_TEST="${JUDGE_API_KEY:-$CHAT_API_KEY}"
 JUDGE_BASE_URL_TO_TEST="${JUDGE_BASE_URL:-$CHAT_BASE_URL}"
 JUDGE_MODEL_TO_TEST="$JUDGE_MODEL"
