@@ -286,6 +286,66 @@ with open("$FINAL_DIR/wrong_cases.json", "w") as f:
 
 print(f"merged: {total} results — {c['CORRECT']}/{total} = {strict:.2f}% strict, {partial:.2f}% partial")
 
+# Merge per-batch call_stats.json → FINAL_DIR/call_stats.json
+merged_stats: dict = {"chat": {}, "embed": {}}
+for batch in sorted(Path("$BASE").glob("output_b*")):
+    cp = batch / "call_stats.json"
+    if not cp.exists():
+        continue
+    try:
+        bs = json.loads(cp.read_text())
+    except Exception:
+        continue
+    for section in ("chat", "embed"):
+        for model, bucket in (bs.get(section) or {}).items():
+            mb = merged_stats[section].setdefault(
+                model,
+                {"calls": 0, "input_tokens": 0, "output_tokens": 0, "reasoning_tokens": 0}
+                if section == "chat"
+                else {"calls": 0, "input_tokens": 0},
+            )
+            for k, v in bucket.items():
+                mb[k] = mb.get(k, 0) + int(v or 0)
+
+# Add overall totals + rough cost estimate.
+_PRICES = {
+    "gpt-5":           {"in": 2.50/1e6, "out": 10.0/1e6},
+    "gpt-5-mini":      {"in": 0.25/1e6, "out":  2.0/1e6},
+    "gpt-4o":          {"in": 2.50/1e6, "out": 10.0/1e6},
+    "gpt-4o-mini":     {"in": 0.15/1e6, "out":  0.60/1e6},
+    "gpt-4.1":         {"in": 2.00/1e6, "out":  8.0/1e6},
+    "gpt-4.1-mini":    {"in": 0.15/1e6, "out":  0.60/1e6},
+    "text-embedding-3-small": {"in": 0.02/1e6, "out": 0.0},
+    "text-embedding-3-large": {"in": 0.13/1e6, "out": 0.0},
+}
+def _est_cost(model: str, in_tok: int, out_tok: int) -> float:
+    key = model.lower()
+    for stub, p in _PRICES.items():
+        if stub in key:
+            return in_tok * p["in"] + out_tok * p["out"]
+    return 0.0
+
+agg = {"chat_calls": 0, "chat_input_tokens": 0, "chat_output_tokens": 0, "chat_reasoning_tokens": 0,
+       "embed_calls": 0, "embed_input_tokens": 0, "cost_estimate_usd": 0.0}
+for model, b in merged_stats["chat"].items():
+    agg["chat_calls"] += b.get("calls", 0)
+    agg["chat_input_tokens"] += b.get("input_tokens", 0)
+    agg["chat_output_tokens"] += b.get("output_tokens", 0)
+    agg["chat_reasoning_tokens"] += b.get("reasoning_tokens", 0)
+    agg["cost_estimate_usd"] += _est_cost(model, b.get("input_tokens", 0), b.get("output_tokens", 0) + b.get("reasoning_tokens", 0))
+for model, b in merged_stats["embed"].items():
+    agg["embed_calls"] += b.get("calls", 0)
+    agg["embed_input_tokens"] += b.get("input_tokens", 0)
+    agg["cost_estimate_usd"] += _est_cost(model, b.get("input_tokens", 0), 0)
+agg["cost_estimate_usd"] = round(agg["cost_estimate_usd"], 4)
+merged_stats["aggregate"] = agg
+
+with open("$FINAL_DIR/call_stats.json", "w") as f:
+    json.dump(merged_stats, f, indent=2)
+print(f"call stats: {agg['chat_calls']} chat + {agg['embed_calls']} embed calls; "
+      f"in={agg['chat_input_tokens']+agg['embed_input_tokens']:,} out={agg['chat_output_tokens']:,} "
+      f"reasoning={agg['chat_reasoning_tokens']:,} tokens; ~\${agg['cost_estimate_usd']:.2f} (direct OpenAI pricing)")
+
 # Auto-stub CHANGES.md if this is an iter folder and the doc doesn't exist yet.
 final_dir = Path("$FINAL_DIR")
 iter_label = "$ITER_LABEL"

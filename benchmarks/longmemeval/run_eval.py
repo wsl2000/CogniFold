@@ -71,6 +71,39 @@ def download_data(output_dir: Path) -> Path:
     return file_path
 
 
+# Per-process call-stats counter. Each successful LLM call records its
+# token usage by model name. Dumped to <output_dir>/call_stats.json at the
+# end of run_benchmark; the launcher merges these across batches.
+_LLM_CALL_STATS: dict[str, dict[str, int]] = {}
+
+
+def _record_llm_call(
+    model_name: str,
+    input_tokens: int,
+    output_tokens: int,
+    reasoning_tokens: int = 0,
+) -> None:
+    """Increment the per-model call counter. Safe to call from any path."""
+    bucket = _LLM_CALL_STATS.setdefault(
+        model_name,
+        {"calls": 0, "input_tokens": 0, "output_tokens": 0, "reasoning_tokens": 0},
+    )
+    bucket["calls"] += 1
+    bucket["input_tokens"] += int(input_tokens or 0)
+    bucket["output_tokens"] += int(output_tokens or 0)
+    bucket["reasoning_tokens"] += int(reasoning_tokens or 0)
+
+
+def dump_call_stats(output_dir: "Path") -> None:
+    """Persist this batch process' call-stats counter to a JSON file."""
+    try:
+        import json as _json
+        out = output_dir / "call_stats.json"
+        out.write_text(_json.dumps(_LLM_CALL_STATS, indent=2))
+    except Exception:
+        pass
+
+
 def call_llm(prompt: str, config: AgentConfig, json_mode: bool = False) -> str:
     """Call LLM with the given prompt (OpenAI or Gemini).
 
@@ -104,6 +137,17 @@ def call_llm(prompt: str, config: AgentConfig, json_mode: bool = False) -> str:
                 model=model_name, contents=prompt, config=gc
             )
             text = getattr(response, "text", None)
+            try:
+                um = getattr(response, "usage_metadata", None)
+                if um:
+                    _record_llm_call(
+                        model_name,
+                        getattr(um, "prompt_token_count", 0) or 0,
+                        getattr(um, "candidates_token_count", 0) or 0,
+                        getattr(um, "thoughts_token_count", 0) or 0,
+                    )
+            except Exception:
+                pass
             return text.strip() if isinstance(text, str) else ""
 
         # Default: OpenAI
@@ -140,6 +184,21 @@ def call_llm(prompt: str, config: AgentConfig, json_mode: bool = False) -> str:
         if json_mode:
             kwargs["response_format"] = {"type": "json_object"}
         response = client.chat.completions.create(**kwargs)
+        try:
+            usage = getattr(response, "usage", None)
+            if usage:
+                rt = 0
+                ctd = getattr(usage, "completion_tokens_details", None)
+                if ctd is not None:
+                    rt = getattr(ctd, "reasoning_tokens", 0) or 0
+                _record_llm_call(
+                    model_name,
+                    getattr(usage, "prompt_tokens", 0) or 0,
+                    getattr(usage, "completion_tokens", 0) or 0,
+                    rt,
+                )
+        except Exception:
+            pass
         return response.choices[0].message.content or ""
     except Exception as e:
         logger.error(f"LLM call failed: {e}")
@@ -897,6 +956,17 @@ Evaluation:"""
                 temperature=0.0,
                 max_tokens=400,
             )
+            try:
+                usage = getattr(resp, "usage", None)
+                if usage:
+                    _record_llm_call(
+                        model_name,
+                        getattr(usage, "prompt_tokens", 0) or 0,
+                        getattr(usage, "completion_tokens", 0) or 0,
+                        0,
+                    )
+            except Exception:
+                pass
             response = resp.choices[0].message.content or ""
         else:
             response = call_llm(prompt, config)
@@ -2068,6 +2138,25 @@ def run_benchmark(args: argparse.Namespace) -> None:
 
     if save_wrong_cases is not None:
         save_wrong_cases(results, str(output_dir))
+
+    # Persist per-batch call stats so the launcher can merge across batches.
+    try:
+        import json as _json
+
+        merged_stats: dict = {"chat": dict(_LLM_CALL_STATS), "embed": {}}
+        # Pull embedding counter from providers module if present.
+        try:
+            from cognifold.embeddings import providers as _ep
+            es = getattr(_ep, "_EMBED_CALL_STATS", None)
+            if isinstance(es, dict):
+                merged_stats["embed"] = dict(es)
+        except Exception:
+            pass
+        (output_dir / "call_stats.json").write_text(
+            _json.dumps(merged_stats, indent=2)
+        )
+    except Exception as _e:
+        logger.warning(f"Could not write call_stats.json: {_e}")
 
     logger.info(f"Evaluation complete. Results saved to {output_path}")
 

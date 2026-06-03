@@ -297,6 +297,20 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
             input=text,
             dimensions=self.config.dimensions,
         )
+        try:
+            _EMBED_CALL_STATS = globals().setdefault(
+                "_EMBED_CALL_STATS", {}
+            )
+            bucket = _EMBED_CALL_STATS.setdefault(
+                self.config.model,
+                {"calls": 0, "input_tokens": 0},
+            )
+            bucket["calls"] += 1
+            usage = getattr(response, "usage", None)
+            if usage:
+                bucket["input_tokens"] += int(getattr(usage, "prompt_tokens", 0) or 0)
+        except Exception:
+            pass
 
         embedding = np.array(response.data[0].embedding, dtype=np.float32)
 
@@ -328,6 +342,20 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
                 input=batch,
                 dimensions=self.config.dimensions,
             )
+            try:
+                _EMBED_CALL_STATS = globals().setdefault(
+                    "_EMBED_CALL_STATS", {}
+                )
+                bucket = _EMBED_CALL_STATS.setdefault(
+                    self.config.model,
+                    {"calls": 0, "input_tokens": 0},
+                )
+                bucket["calls"] += 1
+                usage = getattr(response, "usage", None)
+                if usage:
+                    bucket["input_tokens"] += int(getattr(usage, "prompt_tokens", 0) or 0)
+            except Exception:
+                pass
 
             for data in response.data:
                 embedding = np.array(data.embedding, dtype=np.float32)
