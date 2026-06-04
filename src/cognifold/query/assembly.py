@@ -214,7 +214,61 @@ class ContextAssembler:
             elif belief_type == "world_state":
                 belief_tag = " [WORLD STATE]"
 
-        lines.append(f"- {relevance_indicator} **{node.title}**{belief_tag}")
+        # iter29 G — reflector lifecycle marker prefix. When the reflector
+        # has marked a concept as outdated or current, prepend an explicit
+        # marker so the reader can use supersession at a glance.
+        lifecycle_prefix = ""
+        if node.data:
+            status = node.data.get("status")
+            if status == "outdated":
+                lifecycle_prefix = "[✅ OUTDATED] "
+            elif status == "current" and (
+                node.data.get("replaces") or node.data.get("supersession_subject")
+            ):
+                lifecycle_prefix = "[🆕 CURRENT] "
+
+        # iter29 C — Mastra-style inline absolute event_date when W2
+        # resolved one. `(meaning YYYY-MM-DD)` lets the reader anchor the
+        # observation to an absolute date without re-reading the data line.
+        meaning_suffix = ""
+        if node.data:
+            event_date = node.data.get("event_date")
+            if event_date:
+                ev_short = str(event_date)[:10]
+                meaning_suffix = f" (meaning {ev_short})"
+
+        # iter29 G — reflector supersession trailer. When the line is
+        # outdated, point to what superseded it; when current and replaces
+        # an older concept, say so.
+        supersession_suffix = ""
+        if node.data:
+            sup_by = node.data.get("superseded_by")
+            sup_on = node.data.get("superseded_on")
+            if sup_by:
+                supersession_suffix = f" (superseded by {sup_by}"
+                if sup_on:
+                    supersession_suffix += f" on {str(sup_on)[:10]}"
+                supersession_suffix += ")"
+            else:
+                replaces = node.data.get("replaces")
+                if replaces:
+                    supersession_suffix = f" (replaces {replaces})"
+
+        lines.append(
+            f"- {relevance_indicator} {lifecycle_prefix}**{node.title}**"
+            f"{belief_tag}{meaning_suffix}{supersession_suffix}"
+        )
+
+        # iter29 I — verbatim time phrase, if writer preserved it
+        if node.data:
+            time_phrase = node.data.get("time_phrase")
+            if time_phrase:
+                lines.append(f"  _user said: \"{time_phrase}\"_")
+            assistant_said = node.data.get("assistant_said")
+            if assistant_said:
+                # Truncate to avoid blowing up context
+                quote = str(assistant_said)[:200]
+                lines.append(f"  _assistant quote: \"{quote}\"_")
 
         # Description if available
         if node.description:

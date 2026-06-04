@@ -45,6 +45,13 @@ class AgentConfig:
     resolve_event_dates: bool = False
     # Forwarded to OpenAI Responses API when set (gpt-5-class models only).
     reasoning_effort: str | None = None
+    # Per-role API key / base URL override. When set, the OpenAI client built
+    # inside `call_llm` uses these instead of the global OPENAI_API_KEY /
+    # OPENAI_BASE_URL — lets writer / reader / rerank / judge route to
+    # different providers in one process (e.g. reader on NTU direct,
+    # writer on a cheaper key).
+    api_key: str | None = None
+    base_url: str | None = None
 
     concept_guidelines: tuple[str, ...] = (
         # Basic pattern detection

@@ -412,6 +412,73 @@ profiles:
         When the SYMBOLIC_ANSWER block is present, copy its Answer
         verbatim — do not paraphrase, recompute, or override it.
 
+        iter29 TR-NEW-6 — INCLUSIVE-BOUNDARY for "how many days between
+        A and B": count INCLUSIVE of both endpoints (e.g., March 10 to
+        April 18 = 39 days, not 38).  When either convention is plausibly
+        correct, state the inclusive count.
+
+        iter29 TR-NEW-7 — NO REFUSAL on temporal-reasoning questions when
+        ANY relevant referent appears in context.  Specifically: if the
+        question is of the form "how long had I been X-ing when Y" /
+        "how many days/weeks ago did I X" / "when did I last X" /
+        "what was the X N days/weeks ago", and you see at least ONE
+        concept that names X or Y, COMPUTE the best-effort answer using
+        whatever start/end date signal is available.  Do NOT respond
+        with "I don't have a memory" / "Unknown" / "I can't determine"
+        for a TR question that has even partial evidence — the dominant
+        TR failure mode is the reader refusing when it could have
+        answered from the dated concepts present.
+
+        ============================================================
+        iter29 — MASTRA OBSERVATIONAL-MEMORY RULES
+        (adapted from mastra-ai observational memory; addresses
+        knowledge-update + planned-actions hard clusters):
+
+        KNOWLEDGE UPDATES (supersession): When asked about the user's
+        CURRENT state (current job, current location, current
+        relationship, current preference), always prefer the MOST
+        RECENT observation. Memory entries are date-stamped via the
+        `[YYYY-MM-DD]` prefix and the inline `(meaning YYYY-MM-DD)`
+        anchor — when you see conflicting information, the newer one
+        supersedes the older one. Watch for verb cues that signal
+        supersession: "will start", "is switching to", "changed to",
+        "moved to", "replaced", "no longer at", "switched from X to
+        Y". Use the post-change value as the current state and treat
+        the pre-change value as historical.
+
+        PLANNED ACTIONS (planned → completed): If the user stated
+        they planned to do something ("I'm going to ...", "I'm
+        looking forward to ...", "I will ..."), and the planned date
+        is now in the past (compute relative to the "## TODAY"
+        block), assume they completed the action UNLESS there is
+        explicit evidence they did not. Do not refuse with "the user
+        only stated a plan" — convert plans whose date has passed
+        into completed actions.
+
+        MOST RECENT USER INPUT: Treat the question itself as the
+        single highest-priority signal for what the user wants. When
+        the context contains many observations on a topic, prefer
+        ones that match the question's named entity / date / verb
+        most directly.
+
+        REFLECTOR MARKERS (iter29 F+G): Some retrieved concept lines
+        carry explicit lifecycle markers placed by the reflector
+        pass:
+          • `[✅ OUTDATED]` — this fact is no longer current; do NOT
+            use as the current-state answer. Find the corresponding
+            [🆕 CURRENT] line for the up-to-date version.
+          • `[🆕 CURRENT]` — this is the latest known value for the
+            topic; prefer it over any older [YYYY-MM-DD] line on the
+            same topic.
+          • `(superseded by X on YYYY-MM-DD)` — points to the
+            superseding concept and the supersession date.
+          • `(replaces Y)` — the line replaces an earlier value.
+        When the question is about CURRENT state, answer from the
+        `[🆕 CURRENT]` line; when the question is about HISTORICAL
+        state ("what did I used to ..." / "before I switched ..."),
+        answer from the `[✅ OUTDATED]` line.
+        ============================================================
+
         Answer:
 
       evaluate: |

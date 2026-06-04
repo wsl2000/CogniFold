@@ -72,6 +72,72 @@ IMPORTANT:
 - Every concept/intent MUST have at least one edge connecting it
 - Use descriptive node IDs (e.g., "c-morning-routine", not "c-001")
 - Return an empty array [] if no updates are needed
+
+## iter29 — Mastra observer rules (apply to every concept you create)
+
+1. **Verb precision** — use the most specific verb the user / assistant
+   actually used. Prefer "purchased", "subscribed to", "moved to",
+   "switched to", "joined", "left", "completed", "started", "ordered",
+   "booked", "applied for" over generic verbs like "got", "did",
+   "went", "had". Mirror the assistant's clarifying verbs when present.
+
+2. **Identifier preservation** — never paraphrase away identifiers.
+   Personal names, company names, product names, model numbers,
+   handles, IDs, exact numbers, dates, prices, addresses MUST be
+   reproduced verbatim in the concept's title or description. Do
+   not summarize "Plesiosaur" to "dinosaur model" or "27:12" to
+   "around 27 minutes" — keep the exact token.
+
+3. **State-change framing** — when the user reports a change of
+   state (new job, moved house, new device, ended relationship,
+   switched preference, finished a task), phrase the concept so
+   the supersession is explicit. Use phrases like:
+       "User moved from X to Y"
+       "User no longer at X — now at Y"
+       "User switched from X to Y on DATE"
+       "User completed X" (for tasks/plans now done)
+   instead of stating only the new value. This lets downstream
+   reasoning identify what was replaced.
+
+4. **Verbatim temporal phrases** — when the user uses a RELATIVE
+   time phrase ("last week", "three weeks ago", "this Tuesday",
+   "back in March", "yesterday", "two summers ago"), preserve the
+   phrase VERBATIM in the concept's `data.time_phrase` field. Do
+   not paraphrase to "recently" or "a while ago". The W2 resolver
+   needs the original phrase to compute the absolute event_date.
+
+5. **SSA — assistant verbatim quotes** — when a concept's answer
+   depends on a SPECIFIC piece of advice / recommendation / fact
+   the ASSISTANT stated (recipes, tips, named products,
+   recommendations, etc.), include the assistant's exact quoted
+   phrase in the concept's `data.assistant_said` field (one short
+   quote, ≤200 chars).
+
+6. **Serial / count fields (TR-ε)** — when the user references an
+   ordinal occurrence ("the 10th jog", "my 3rd cup of coffee",
+   "the second meeting"), store the integer in `data.serial`. When
+   they reference a count ("I've worn them four times", "this is
+   my fifth attempt"), store the integer in `data.count`. These
+   atomic fields let TR resolvers and reader compute "how long had
+   I been X-ing when I reached the Nth Y" without re-parsing the
+   description.
+
+7. **Activity start markers (TR-NEW-1)** — when the user reports
+   STARTING a new ongoing activity / membership / acquisition
+   ("I started X-ing", "I joined Y", "I got my new Z", "I signed
+   up for W", "first time I did V", "I began...", "I picked up
+   bird watching", "I bought my new running shoes"), include in
+   the concept's `data` field:
+       is_start: true
+       activity: "<the verb+object phrase, lowercase>"
+                  e.g. "bird watching", "guitar lessons",
+                  "stand-up comedy", "Adidas running shoes",
+                  "Book Lovers Unite membership"
+   This is the SINGLE most important field for "how long had I
+   been X-ing when Y happened" — the resolver finds the start
+   date by matching activity against the concept with is_start=true.
+   When the same activity has multiple plausible start events,
+   pick the EARLIEST mentioned one.
 """
 
 

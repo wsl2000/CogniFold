@@ -90,9 +90,19 @@ class LongMemEvalSymbolicResolver:
 
     # ----------------------- public API ----------------------------
 
-    def __init__(self, graph: ConceptGraph, question_date: datetime | None = None) -> None:
+    def __init__(
+        self,
+        graph: ConceptGraph,
+        question_date: datetime | None = None,
+        ignore_event_date: bool = False,
+    ) -> None:
         self.graph = graph
         self.question_date = question_date
+        # iter29 D' — when True, the resolver ignores W2-resolved
+        # `event_date` and falls back to extraction `date` / `timestamp`.
+        # iter27 showed W2 hurts MS -4.5pp and TR -3pp by introducing
+        # noisy absolute date anchors; set this flag for those types.
+        self.ignore_event_date = ignore_event_date
         self._concepts: list[_Concept] = self._index_concepts()
 
     def _index_concepts(self) -> list[_Concept]:
@@ -120,12 +130,21 @@ class LongMemEvalSymbolicResolver:
             # Mem0 / Zep all rely on this distinction for TR — the session
             # date is when the user mentioned the event; event_date is when
             # the event actually happened.
-            date_str = (
-                n.data.get("event_date")
-                or n.data.get("date")
-                or n.data.get("extracted_at")
-                or n.data.get("timestamp")
-            )
+            # iter29 D': for MS+TR questions, skip event_date — the W2
+            # anchor introduces noise that hurts session-relative ordering.
+            if self.ignore_event_date:
+                date_str = (
+                    n.data.get("date")
+                    or n.data.get("extracted_at")
+                    or n.data.get("timestamp")
+                )
+            else:
+                date_str = (
+                    n.data.get("event_date")
+                    or n.data.get("date")
+                    or n.data.get("extracted_at")
+                    or n.data.get("timestamp")
+                )
             dt = None
             if date_str:
                 try:
@@ -157,6 +176,9 @@ class LongMemEvalSymbolicResolver:
     def resolve(self, query: str) -> dict[str, Any] | None:
         """Try each pattern in order; return {answer, reasoning, pattern}."""
         for pattern_name, fn in [
+            # iter29 TR-β — directional "X before Y" must run BEFORE
+            # diff_between so the more specific direction wins.
+            ("date_diff_before",   self._try_diff_before),
             ("date_diff_between",  self._try_diff_between),
             # iter08 — "what is the order of N X earliest→latest"
             ("order_among",        self._try_order_among),
@@ -285,6 +307,85 @@ class LongMemEvalSymbolicResolver:
         an old Emma reference. Recency tiebreak fixes that class.
         """
         return self._best_recent_concept_with_nouns(phrase, set())
+
+    # iter29 TR-NEW-2 — verbs that signal the START of an ongoing
+    # activity / membership / acquisition. Used as a fallback when no
+    # concept in the graph carries `is_start=true` (writer/reflector
+    # both failed). Matched against concept title + description.
+    _START_VERBS_RE = re.compile(
+        r"\b(?:started|begin|began|begun|signed\s+up|joined|"
+        r"picked\s+up|first\s+(?:time|day|lesson|class|session)|"
+        r"got\s+(?:my\s+)?(?:new|first)|"
+        r"bought\s+(?:my\s+)?(?:new|first)|"
+        r"purchased\s+(?:my\s+)?(?:new|first)|"
+        r"received\s+(?:my\s+)?(?:new|first)|"
+        r"new\s+membership|enrolled|registered|"
+        r"accepted\s+(?:into|to)|admitted|"
+        r"moved\s+(?:to|into)|adopted|"
+        r"installed|set\s+up|launched)\b",
+        re.IGNORECASE,
+    )
+
+    def _find_is_start_concept(self, activity_phrase: str) -> "_Concept | None":
+        """iter29 TR-NEW-2 — locate the START anchor for an activity.
+
+        Two-pass scan:
+        1. `data["is_start"] == True` concepts (writer/reflector marked)
+        2. Any concept whose title/description matches a START verb
+           (started, signed up, began, ...) AND shares a noun token
+           with the question's activity phrase
+
+        Returns the EARLIEST matching concept.
+        """
+        if not activity_phrase:
+            return None
+        q_tokens = {
+            t.lower().rstrip("s")
+            for t in re.findall(r"[A-Za-z][A-Za-z0-9'-]+", activity_phrase)
+            if len(t) >= 3 and t.lower() not in self._ORDER_AMONG_STOPWORDS
+        }
+        if not q_tokens:
+            return None
+
+        def _overlaps(haystack: str) -> bool:
+            toks = {
+                t.rstrip("s")
+                for t in re.findall(r"[A-Za-z][A-Za-z0-9'-]+", haystack.lower())
+                if len(t) >= 3
+            }
+            return bool(q_tokens & toks)
+
+        # Pass 1 — strict: prefer concepts the writer/reflector tagged.
+        best: _Concept | None = None
+        for c in self._concepts:
+            if c.date is None:
+                continue
+            node = self.graph.get_node_or_none(c.node_id)
+            if node is None or not node.data.get("is_start"):
+                continue
+            activity_field = (node.data.get("activity") or "").lower()
+            if not _overlaps(f"{activity_field} {c.title} {c.description}"):
+                continue
+            assert c.date is not None
+            if best is None or (best.date is not None and c.date < best.date):
+                best = c
+        if best is not None:
+            return best
+
+        # Pass 2 — fallback: any concept whose body signals a START verb
+        # and shares a noun token with the activity phrase.
+        for c in self._concepts:
+            if c.date is None or c.node_id.startswith("evt-"):
+                continue
+            body = f"{c.title} {c.description}"
+            if not self._START_VERBS_RE.search(body):
+                continue
+            if not _overlaps(body):
+                continue
+            assert c.date is not None
+            if best is None or (best.date is not None and c.date < best.date):
+                best = c
+        return best
 
     def _best_recent_concept_with_nouns(
         self, phrase: str, required_nouns: set[str]
@@ -777,6 +878,43 @@ class LongMemEvalSymbolicResolver:
     _BETWEEN_RE = re.compile(
         r"between\s+(.+?)\s+and\s+(.+?)(?:\?|$)", re.IGNORECASE
     )
+
+    # iter29 TR-β — "how many X before/until I {verb} Y did I {verb} Z"
+    # Y is the LATER reference event; Z is the EARLIER target event.
+    # Answer = (Y_date − Z_date) in the unit X.
+    _DIFF_BEFORE_RE = re.compile(
+        r"how\s+many\s+(day|week|month|year)s?\s+before\s+"
+        r"(.{4,80}?)\s+did\s+(?:i|we)\s+(.{4,80}?)(?:\?|$)",
+        re.IGNORECASE,
+    )
+
+    def _try_diff_before(self, query: str) -> dict | None:
+        m = self._DIFF_BEFORE_RE.search(query)
+        if not m:
+            return None
+        unit = m.group(1).lower()
+        ref_phrase = m.group(2).strip()
+        tgt_phrase = m.group(3).strip()
+        ref = self._best_concept(ref_phrase)
+        tgt = self._best_concept(tgt_phrase)
+        if not ref or not tgt or ref.date is None or tgt.date is None:
+            return None
+        diff_days = (ref.date.date() - tgt.date.date()).days
+        if diff_days <= 0:
+            # Direction is wrong — target should be EARLIER than ref.
+            return None
+        unit_days = self._UNIT_DAYS[unit]
+        diff_units = max(1, round(diff_days / unit_days)) if unit != "day" else diff_days
+        unit_word = unit if diff_units != 1 else unit
+        return {
+            "answer": f"{diff_units} {unit_word}{'s' if diff_units != 1 else ''}",
+            "reasoning": (
+                f"Reference (LATER) event '{ref.title}' on {ref.date.date()}; "
+                f"target (EARLIER) event '{tgt.title}' on {tgt.date.date()}; "
+                f"diff = {diff_days} days = {diff_units} {unit_word}{'s' if diff_units != 1 else ''}."
+            ),
+            "bypass": False,  # let reader sanity-check direction
+        }
 
     def _try_diff_between(self, query: str) -> dict | None:
         m = self._BETWEEN_RE.search(query)
@@ -1341,9 +1479,37 @@ class LongMemEvalSymbolicResolver:
             activity = m.group(1).strip()
             trigger = m.group(2).strip()
             unit_key = None  # detect at output time
-        # Find the START of the activity (most recent anchor) and the trigger event
-        a = self._best_recent_concept(activity)
+        # iter29 TR-NEW-2 — when the writer marked any concept with
+        # `is_start=true` (TR-NEW-1 writer rule), prefer that as the
+        # activity anchor `a`. Falls back to the existing recency-based
+        # `_best_recent_concept` when no is_start markers exist (e.g.,
+        # legacy graphs without the new writer prompt).
+        a = self._find_is_start_concept(activity)
+        if a is None:
+            a = self._best_recent_concept(activity)
         b = self._best_recent_concept(trigger)
+        # iter29 TR-NEW-2 (bug fix) — phrase reduction fallback. Borrowed
+        # from _try_diff_since_when. When the BM25 anchor fails (writer
+        # paraphrased the verbose question phrase away), retry with the
+        # strongest 5+-char nouns only. Empirically iter27 smoke showed
+        # `_try_duration_activity` was returning None 100% of the time
+        # on Group A "how long had I been X-ing when Y" wrongs, letting
+        # downstream patterns like latest_value mis-answer.
+        if (a is None or b is None) and (activity or trigger):
+            def _reduce(p: str) -> str:
+                toks = [t for t in re.findall(r"[a-zA-Z]+", p)
+                        if len(t) >= 5 and t.lower() not in {
+                            "could", "would", "should", "about", "since",
+                            "before", "after", "which", "where", "while",
+                            "their", "those", "there", "being", "taking",
+                            "using", "having", "doing", "going",
+                        }]
+                return " ".join(toks[:6])
+            if a is None:
+                a = self._find_is_start_concept(_reduce(activity)) \
+                    or self._best_recent_concept(_reduce(activity))
+            if b is None:
+                b = self._best_recent_concept(_reduce(trigger))
         if a is None or b is None or a.date is None or b.date is None:
             return None
         # Duration must be positive (trigger after start). Date-only (iter08).

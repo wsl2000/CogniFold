@@ -178,14 +178,21 @@ def call_llm(prompt: str, config: AgentConfig, json_mode: bool = False) -> str:
                 pass
             return text.strip() if isinstance(text, str) else ""
 
-        # Default: OpenAI
-        openai_key = os.environ.get("OPENAI_API_KEY")
+        # Default: OpenAI — honor config.api_key/base_url for per-role
+        # routing (writer vs reader can hit different providers in one
+        # process). Falls back to OPENAI_API_KEY/OPENAI_BASE_URL.
+        cfg_key = getattr(config, "api_key", None)
+        cfg_url = getattr(config, "base_url", None)
+        openai_key = cfg_key or os.environ.get("OPENAI_API_KEY")
         if not openai_key:
             logger.error("OPENAI_API_KEY not set")
             return ""
         from openai import OpenAI
 
-        client = OpenAI(api_key=openai_key)
+        client_kwargs: dict = {"api_key": openai_key}
+        if cfg_url:
+            client_kwargs["base_url"] = cfg_url
+        client = OpenAI(**client_kwargs)
         # gpt-5 / o1 / o3 are reasoning models — they reject custom
         # temperature and require max_completion_tokens.
         is_reasoning_model = (
@@ -763,6 +770,262 @@ def build_today_block(question_date: datetime | None) -> str:
         "\"now\", \"recently\"). Compute date differences from this date — "
         "do NOT use the system clock or any other reference.\n"
     )
+
+
+def build_calendar_block(
+    session_dates: list[str],
+    question_date: datetime | None,
+    max_rows: int = 80,
+) -> str:
+    """iter29 H — session-date calendar at the top of context.
+
+    Renders every session date the haystack contains, annotated with
+    ``(N days ago)`` relative to TODAY. Gives the reader a single
+    look-up table to anchor "when did session N happen" questions
+    without scanning the entire context.
+    """
+    if question_date is None or not session_dates:
+        return ""
+    today = question_date.date()
+    rows: list[tuple[int, str]] = []
+    seen: set[str] = set()
+    for raw in session_dates:
+        # session_dates entries look like "2023/05/20 (Sat) 02:21".
+        m = re.match(r"(\d{4})[/-](\d{2})[/-](\d{2})", raw)
+        if not m:
+            continue
+        try:
+            d = datetime(int(m.group(1)), int(m.group(2)), int(m.group(3))).date()
+        except Exception:
+            continue
+        iso = d.isoformat()
+        if iso in seen:
+            continue
+        seen.add(iso)
+        delta = (today - d).days
+        rows.append((delta, iso))
+    if not rows:
+        return ""
+    rows.sort(key=lambda x: -x[0])  # oldest first
+    rows = rows[:max_rows]
+    lines = ["## SESSION_CALENDAR (haystack dates, anchored to TODAY)"]
+    for days, iso in rows:
+        if days == 0:
+            tag = "TODAY"
+        elif days == 1:
+            tag = "1 day ago"
+        else:
+            tag = f"{days} days ago"
+        lines.append(f"- {iso}  →  {tag}")
+    return "\n".join(lines) + "\n"
+
+
+def build_days_ago_chart(
+    question: str, question_date: datetime | None, max_rows: int = 30
+) -> str:
+    """iter29 TR-ι — days-ago lookup chart.
+
+    For TR questions containing "X days/weeks/months ago" phrasing,
+    render an explicit calendar fragment (1 day ago = …, 2 days ago = …,
+    …, 30 days ago = …) so the reader can map a duration answer onto a
+    specific absolute date without arithmetic.
+    """
+    if question_date is None:
+        return ""
+    if not re.search(r"\b(?:day|week|month|year)s?\s+ago\b", question, re.IGNORECASE):
+        return ""
+    today = question_date.date()
+    lines = ["## DAYS_AGO_CHART (use to anchor 'N days/weeks/months ago' answers)"]
+    lines.append(f"- TODAY  →  {today.isoformat()}")
+    for n in range(1, max_rows + 1):
+        target = today - timedelta(days=n)
+        if n == 1:
+            tag = "1 day ago"
+        else:
+            tag = f"{n} days ago"
+        lines.append(f"- {tag}  →  {target.isoformat()}")
+    # Weeks/months annotations for common round buckets.
+    for wks in (1, 2, 3, 4, 6, 8, 12):
+        target = today - timedelta(days=wks * 7)
+        lines.append(f"- {wks} week{'s' if wks > 1 else ''} ago  →  {target.isoformat()}")
+    for mo in (1, 2, 3, 4, 6, 9, 12):
+        target = today - timedelta(days=mo * 30)
+        lines.append(f"- ~{mo} month{'s' if mo > 1 else ''} ago  →  {target.isoformat()}")
+    return "\n".join(lines) + "\n"
+
+
+_TIMELINE_STOPWORDS = {
+    "the", "a", "an", "and", "or", "but", "of", "to", "in", "on", "at",
+    "for", "with", "by", "from", "as", "is", "are", "was", "were", "be",
+    "been", "being", "have", "has", "had", "do", "does", "did", "doing",
+    "what", "which", "when", "where", "who", "whom", "whose", "how",
+    "why", "i", "my", "me", "mine", "you", "your", "we", "us", "they",
+    "them", "their", "this", "that", "these", "those", "it", "its",
+    "than", "then", "so", "also", "very", "just", "only", "some", "any",
+    "all", "no", "not", "one", "two", "three", "first", "last", "next",
+    "ago", "before", "after", "since", "until", "during", "while",
+    "between", "among",
+}
+
+
+def _question_topic_tokens(question: str) -> list[str]:
+    """Cheap noun-phrase token extractor for timeline matching.
+
+    Returns lower-cased content tokens (≥3 chars) from the question,
+    stripped of common stopwords. Used by the topic-timeline builder to
+    match graph concepts by overlap.
+    """
+    toks = re.findall(r"\b[A-Za-z][A-Za-z0-9'-]+\b", question.lower())
+    return [t for t in toks if len(t) >= 3 and t not in _TIMELINE_STOPWORDS]
+
+
+def build_topic_timeline_block(
+    graph: ConceptGraph,
+    question: str,
+    question_date: datetime | None,
+    max_items: int = 20,
+) -> str:
+    """iter29 TR-α — topic-focused chronological timeline.
+
+    For TR questions, scan the graph for concepts whose title/description
+    overlap with the question's topic tokens and render them in a sorted
+    timeline with absolute date + (N days ago) anchors. Solves order_among
+    and "between A and B" failure modes where retrieval ranking buries the
+    correct chronology.
+    """
+    if question_date is None:
+        return ""
+    tokens = _question_topic_tokens(question)
+    if not tokens:
+        return ""
+    token_set = set(tokens)
+
+    today = question_date.date()
+    date_prefix_re = re.compile(
+        r"^\s*\[(\d{4}-\d{2}-\d{2})(?:[ T]\d{2}:\d{2}(?::\d{2})?)?\]\s*"
+    )
+    candidates: list[tuple[datetime, int, str]] = []
+    for n in graph.get_all_nodes():
+        if getattr(n, "type", None) is None:
+            continue
+        type_name = getattr(n.type, "name", str(n.type)).lower()
+        if type_name not in ("concept", "event"):
+            continue
+        ctype = (n.data.get("concept_type") or "").lower()
+        if ctype.startswith("typed_"):
+            continue
+        title = (n.data.get("title") or "").strip()
+        desc = (n.data.get("description") or "").strip()
+        body = f"{title} {desc}".lower()
+        overlap = sum(1 for t in token_set if t in body)
+        if overlap < 1:
+            continue
+
+        # Pick a date — prefer the [YYYY-MM-DD] prefix on the title, then
+        # event_date (only when caller didn't strip W2), then session
+        # date / timestamp.
+        m = date_prefix_re.match(title)
+        date_str = None
+        if m:
+            date_str = m.group(1)
+        else:
+            date_str = (
+                n.data.get("event_date")
+                or n.data.get("date")
+                or n.data.get("timestamp")
+                or ""
+            )
+        if not date_str:
+            continue
+        try:
+            dt = datetime.strptime(str(date_str)[:10], "%Y-%m-%d")
+        except Exception:
+            continue
+        # Strip date prefix from title for display.
+        title_disp = date_prefix_re.sub("", title).strip() or n.id
+        candidates.append((dt, overlap, title_disp))
+
+    if not candidates:
+        return ""
+    # Sort by date ASC; tie-break by overlap DESC.
+    candidates.sort(key=lambda x: (x[0], -x[1]))
+    # Keep top-overlap items if too many.
+    if len(candidates) > max_items:
+        by_overlap = sorted(candidates, key=lambda x: -x[1])[:max_items]
+        candidates = sorted(by_overlap, key=lambda x: x[0])
+
+    lines = ["## TOPIC_TIMELINE (chronological, sorted earliest → latest)"]
+    for dt, _, title_disp in candidates:
+        delta = (today - dt.date()).days
+        if delta == 0:
+            tag = "TODAY"
+        elif delta > 0:
+            tag = f"{delta} day{'s' if delta != 1 else ''} ago"
+        else:
+            tag = f"in {-delta} day{'s' if -delta != 1 else ''}"
+        lines.append(f"- [{dt.date().isoformat()} • {tag}] {title_disp[:160]}")
+    return "\n".join(lines) + "\n"
+
+
+def build_structured_question_parse(
+    question: str, question_date: datetime | None
+) -> str:
+    """iter29 TR-ξ — regex-based structured parse of TR questions.
+
+    Extracts (direction, time_unit, target_phrase, reference_phrase) when
+    the question matches one of the common TR templates. Outputs a small
+    PARSED_QUESTION block the reader can lean on. Pure regex — no LLM
+    call, so cost is zero.
+    """
+    if question_date is None:
+        return ""
+    q = question.strip()
+    today = question_date.date()
+    fields: list[tuple[str, str]] = []
+
+    # how many X (days/weeks/months/years) (ago|before|after|since) Y
+    m = re.search(
+        r"how\s+many\s+(day|week|month|year)s?\s+"
+        r"(ago|before|after|since|between|until)\b",
+        q, re.IGNORECASE,
+    )
+    if m:
+        fields.append(("time_unit", m.group(1).lower()))
+        fields.append(("direction", m.group(2).lower()))
+
+    # how long had I been (X-ing) when (Y happened)
+    m2 = re.search(
+        r"how\s+long\s+(?:had|have)\s+i\s+been\s+(\w+(?:ing|ed))\s+"
+        r"when\s+(.{4,120}?)(?:\?|$)",
+        q, re.IGNORECASE,
+    )
+    if m2:
+        fields.append(("template", "duration_since_start"))
+        fields.append(("activity", m2.group(1)))
+        fields.append(("reference_event", m2.group(2).strip()))
+
+    # how many days/weeks before X did Y happen
+    m3 = re.search(
+        r"how\s+many\s+(day|week|month|year)s?\s+before\s+"
+        r"i?\s*(.{4,80}?)\s+did\s+i?\s*(.{4,80}?)(?:\?|$)",
+        q, re.IGNORECASE,
+    )
+    if m3:
+        fields.append(("template", "date_diff_before"))
+        fields.append(("time_unit", m3.group(1).lower()))
+        fields.append(("reference_event", m3.group(2).strip()))
+        fields.append(("target_event", m3.group(3).strip()))
+
+    # what / when did I X (named entity)
+    if not fields:
+        return ""
+    lines = [
+        "## PARSED_QUESTION (structured cues — do not blindly trust; verify against context)",
+        f"- today: {today.isoformat()}",
+    ]
+    for k, v in fields:
+        lines.append(f"- {k}: {v}")
+    return "\n".join(lines) + "\n"
 
 
 def build_assistant_recall_block(
@@ -1737,6 +2000,24 @@ def run_benchmark(args: argparse.Namespace) -> None:
         )
         logger.info(f"Writer reasoning_effort: {args.writer_reasoning_effort}")
 
+    # iter29: per-role API key / base_url overrides. Lets the launcher route
+    # writer / reader / judge to different providers (e.g. reader on NTU
+    # direct gpt-5.4-mini, writer on a cheaper key) in one process.
+    _writer_api = os.environ.get("WRITER_API_KEY", "").strip() or None
+    _writer_url = os.environ.get("WRITER_BASE_URL", "").strip() or None
+    _reader_api = os.environ.get("READER_API_KEY", "").strip() or None
+    _reader_url = os.environ.get("READER_BASE_URL", "").strip() or None
+    if _reader_api:
+        config = dataclasses.replace(config, api_key=_reader_api, base_url=_reader_url)
+        # Reader override also propagates to derived configs that haven't
+        # yet been customized below.
+        judge_config = dataclasses.replace(judge_config, api_key=_reader_api, base_url=_reader_url)
+        writer_config = dataclasses.replace(writer_config, api_key=_reader_api, base_url=_reader_url)
+        logger.info(f"Reader/default → READER_API_KEY (base_url={_reader_url or 'OpenAI direct'})")
+    if _writer_api:
+        writer_config = dataclasses.replace(writer_config, api_key=_writer_api, base_url=_writer_url)
+        logger.info(f"Writer → WRITER_API_KEY (base_url={_writer_url or 'OpenAI direct'})")
+
     logger.info(f"Using model: {config.model_name}")
     logger.info(f"Batch mode: {args.batch_mode}")
     logger.info(f"Evaluation mode: {'LLM' if args.llm_eval else 'skip'}")
@@ -1886,6 +2167,28 @@ def run_benchmark(args: argparse.Namespace) -> None:
                             executor.execute(plan)
                         except Exception as e:
                             logger.error(f"Error processing event {event.event_id}: {e}")
+
+        # iter29 F — Reflector pass. After all sessions ingested for this
+        # qid, the reflector consolidator scans the graph and stamps
+        # explicit supersession markers (status/superseded_by/replaces)
+        # onto concept.data so the reader sees [✅ OUTDATED]/[🆕 CURRENT]
+        # tags in the rendered context. Costs ~1 extra cheap LLM call
+        # per qid. Gated by --reflector.
+        if getattr(args, "reflector", False):
+            try:
+                from cognifold.agent.reflector import run_reflector
+                _refl_cfg = writer_config
+                _refl_effort = os.environ.get("REFLECTOR_REASONING_EFFORT", "").strip() or "low"
+                _refl_cfg = dataclasses.replace(_refl_cfg, reasoning_effort=_refl_effort)
+                _refl_stats = run_reflector(graph, _refl_cfg, call_llm=call_llm)
+                logger.info(
+                    f"[{question_id}] reflector: "
+                    f"concepts={_refl_stats.get('concepts',0)} "
+                    f"supersessions={_refl_stats.get('supersessions',0)} "
+                    f"completions={_refl_stats.get('completions',0)}"
+                )
+            except Exception as e:
+                logger.error(f"Reflector pass failed for {question_id}: {e}")
 
         # Exp A diagnostic: dump full graph and skip the QA step. Used to
         # confirm whether failure cases like "I don't have a memory of X" are
@@ -2051,9 +2354,22 @@ def run_benchmark(args: argparse.Namespace) -> None:
         # AND short-circuit the LLM (`answer` = resolver answer verbatim) so
         # the reader can't unsort what we already sorted.
         question_dt = _parse_longmemeval_date(item.get("question_date", ""))
+        # iter29 D' — per-type W2 suppression: MS + TR questions get the
+        # resolver with event_date ignored (iter27 showed W2 hurt MS -4.5
+        # and TR -3 via noisy absolute date anchors); also strip the
+        # rendered `(meaning DATE)` suffix from context for these types.
+        _qtype = item.get("question_type", "") or ""
+        _suppress_w2 = _qtype in ("multi-session", "temporal-reasoning")
+        if _suppress_w2:
+            import re as _re_meaning
+            context_text = _re_meaning.sub(r"\s*\(meaning \d{4}-\d{2}-\d{2}\)", "", context_text)
         symbolic_result = None
         if args.symbolic_resolver:
-            resolver = LongMemEvalSymbolicResolver(graph, question_date=question_dt)
+            resolver = LongMemEvalSymbolicResolver(
+                graph,
+                question_date=question_dt,
+                ignore_event_date=_suppress_w2,
+            )
             symbolic_result = resolver.resolve(question)
             if symbolic_result is not None:
                 context_text = render_symbolic_block(symbolic_result) + "\n" + context_text
@@ -2073,6 +2389,34 @@ def run_benchmark(args: argparse.Namespace) -> None:
         target_cands_block = build_target_date_concepts_block(graph, question_dt, question)
         if target_cands_block:
             context_text = target_cands_block + "\n" + context_text
+
+        # iter29 TR-ξ — structured PARSED_QUESTION block (pure-regex, free).
+        if getattr(args, "tr_structured_parse", False) and _qtype == "temporal-reasoning":
+            parsed_block = build_structured_question_parse(question, question_dt)
+            if parsed_block:
+                context_text = parsed_block + "\n" + context_text
+
+        # iter29 TR-α — topic timeline for TR questions (chronological
+        # list of topic-matching events with absolute date + N days ago).
+        if getattr(args, "tr_topic_timeline", False) and _qtype == "temporal-reasoning":
+            topic_tl = build_topic_timeline_block(graph, question, question_dt)
+            if topic_tl:
+                context_text = topic_tl + "\n" + context_text
+
+        # iter29 TR-ι — days-ago calendar chart for TR questions whose
+        # text mentions "N days/weeks/months ago".
+        if getattr(args, "tr_calendar_chart", False) and _qtype == "temporal-reasoning":
+            chart_block = build_days_ago_chart(question, question_dt)
+            if chart_block:
+                context_text = chart_block + "\n" + context_text
+
+        # iter29 H — session calendar (opt-in via --session-calendar).
+        # Was always-on but iter29a evidence showed it pushed retrieval
+        # rows out of top-K → ~12pp regression on MS. Keep code, gate it.
+        if getattr(args, "session_calendar", False):
+            cal_block = build_calendar_block(session_dates, question_dt)
+            if cal_block:
+                context_text = cal_block + "\n" + context_text
 
         # iter07 — TODAY anchor goes LAST in the prepend chain so it ends up
         # at the very top of context. Reader prompt then begins with a clear
@@ -2098,12 +2442,69 @@ def run_benchmark(args: argparse.Namespace) -> None:
             if should_bypass:
                 answer = symbolic_result["answer"]
             else:
-                answer = generate_answer(
-                    question=question,
-                    context=context_text,
-                    config=config,
-                    qa_template=templates.get("qa_answer"),
-                )
+                # iter29 TR-κ — 2-pass reader for TR questions.
+                # Pass 1: list candidates + reasoning + tentative answer.
+                # Pass 2: verify TODAY usage, inclusive/exclusive
+                # boundary, direction; emit the FINAL answer.
+                if (
+                    getattr(args, "tr_two_pass", False)
+                    and _qtype == "temporal-reasoning"
+                ):
+                    pass1_template = (
+                        "You are answering a temporal-reasoning question. "
+                        "DO NOT give a final answer yet. Instead:\n"
+                        "  (a) List every concept in the context whose [YYYY-MM-DD] "
+                        "prefix could plausibly be a referent of this question. "
+                        "Quote each as 'date — title'.\n"
+                        "  (b) For each referent, state which role it plays in the "
+                        "arithmetic (target event / reference event / start of "
+                        "duration / endpoint).\n"
+                        "  (c) Compute the answer step by step, showing the "
+                        "subtraction.\n"
+                        "  (d) State a TENTATIVE answer in 1 sentence at the very "
+                        "end, prefixed with 'TENTATIVE:'.\n\n"
+                        "Question: {question}\n\nMemory Context:\n{context}\n\n"
+                        "Reasoning + tentative answer:"
+                    )
+                    pass1 = generate_answer(
+                        question=question,
+                        context=context_text,
+                        config=config,
+                        qa_template=pass1_template,
+                    )
+                    pass2_template = (
+                        "You previously analyzed a temporal-reasoning question. "
+                        "Your prior reasoning + tentative answer is below.\n"
+                        "VERIFY:\n"
+                        "  (a) Did you use the TODAY block as the reference for "
+                        "any 'X ago' phrasing? Not the system clock?\n"
+                        "  (b) Inclusive vs exclusive boundary on the day count?\n"
+                        "  (c) Direction: 'X before Y' means X is EARLIER; "
+                        "'since X' means X is the START; 'between A and B' is "
+                        "the absolute interval.\n"
+                        "  (d) If your tentative answer implies a future date, "
+                        "you've reversed direction — flip.\n"
+                        "Now give the FINAL answer in 1-2 concise sentences. "
+                        "Do NOT include 'TENTATIVE:' or chain-of-thought in the "
+                        "final answer.\n\n"
+                        "Question: {question}\n\n"
+                        "Memory Context (same as before):\n{context}\n\n"
+                        "Prior reasoning:\n" + (pass1 or "(no prior reasoning)") +
+                        "\n\nFinal answer:"
+                    )
+                    answer = generate_answer(
+                        question=question,
+                        context=context_text,
+                        config=config,
+                        qa_template=pass2_template,
+                    )
+                else:
+                    answer = generate_answer(
+                        question=question,
+                        context=context_text,
+                        config=config,
+                        qa_template=templates.get("qa_answer"),
+                    )
         except Exception as e:
             logger.error(f"Error generating answer for {question_id}: {e}")
             answer = "Error generating answer."
@@ -2383,6 +2784,80 @@ if __name__ == "__main__":
             "instead of the session-extraction date. Inspired by Chronos "
             "(event-calendar +58.9 pts baseline in their ablation) and "
             "Mem0 (per-memory temporal pass)."
+        ),
+    )
+    parser.add_argument(
+        "--reflector",
+        action="store_true",
+        help=(
+            "iter29 F — Mastra-style Reflector pass. After all sessions "
+            "are ingested for a qid, runs a consolidator LLM that stamps "
+            "supersession markers (status, superseded_by, replaces) onto "
+            "concept.data so the reader sees [✅ OUTDATED]/[🆕 CURRENT] "
+            "tags in the rendered context — directly addresses KU and "
+            "MS hard cases."
+        ),
+    )
+    parser.add_argument(
+        "--tr-cot",
+        action="store_true",
+        help=(
+            "iter29 TR-η — for temporal-reasoning questions, prepend an "
+            "explicit chain-of-thought prefix that forces the reader to "
+            "(1) name the referent event, (2) cite its absolute date, "
+            "(3) compute the arithmetic step by step, (4) only then give "
+            "the final answer."
+        ),
+    )
+    parser.add_argument(
+        "--session-calendar",
+        action="store_true",
+        help=(
+            "iter29 H — prepend a SESSION_CALENDAR table (every haystack "
+            "date with N-days-ago anchor) to the context. Was always-on "
+            "in iter29a but evidence shows it displaces top-K retrievals "
+            "and regresses MS — keep opt-in."
+        ),
+    )
+    parser.add_argument(
+        "--tr-calendar-chart",
+        action="store_true",
+        help=(
+            "iter29 TR-ι — prepend a 'days ago' calendar chart "
+            "(TODAY=YYYY-MM-DD, 1 day ago=..., 2 days ago=..., ...) to "
+            "the context for TR questions, so the reader can directly "
+            "look up the absolute date for an N-days-ago answer."
+        ),
+    )
+    parser.add_argument(
+        "--tr-topic-timeline",
+        action="store_true",
+        help=(
+            "iter29 TR-α — for TR questions, prepend a topic-focused "
+            "chronological timeline of all events matching the question's "
+            "key noun phrases, with absolute date + (N days ago) anchors. "
+            "Solves order_among / multi-event aggregation failures."
+        ),
+    )
+    parser.add_argument(
+        "--tr-two-pass",
+        action="store_true",
+        help=(
+            "iter29 TR-κ — for TR questions only, run the reader twice. "
+            "Pass 1: list candidate events with dates, propose answer, "
+            "show reasoning. Pass 2: verify TODAY usage, inclusive/"
+            "exclusive boundary, direction; return final answer. "
+            "Doubles TR reader cost (~+$3-5)."
+        ),
+    )
+    parser.add_argument(
+        "--tr-structured-parse",
+        action="store_true",
+        help=(
+            "iter29 TR-ξ — for TR questions, run a small parser that "
+            "extracts (target_event, reference_event, time_unit, "
+            "direction) from the question and injects them as a "
+            "structured PARSED_QUESTION block at the top of context."
         ),
     )
 
