@@ -45,6 +45,13 @@ class AgentConfig:
     resolve_event_dates: bool = False
     # Forwarded to OpenAI Responses API when set (gpt-5-class models only).
     reasoning_effort: str | None = None
+    # Tier 3: per-role API key / base URL override. When set, the OpenAI
+    # client built inside `call_llm` uses these instead of the global
+    # OPENAI_API_KEY / OPENAI_BASE_URL. Lets writer_config route to
+    # commonstack (gpt-4o-mini cheap) while reader_config goes to OpenAI
+    # direct (gpt-5-mini reasoning) — single-process per-call routing.
+    api_key: str | None = None
+    base_url: str | None = None
 
     concept_guidelines: tuple[str, ...] = (
         # Basic pattern detection

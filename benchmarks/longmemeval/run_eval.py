@@ -178,14 +178,21 @@ def call_llm(prompt: str, config: AgentConfig, json_mode: bool = False) -> str:
                 pass
             return text.strip() if isinstance(text, str) else ""
 
-        # Default: OpenAI
-        openai_key = os.environ.get("OPENAI_API_KEY")
+        # Default: OpenAI. Tier 3 / multi-provider: prefer per-config
+        # overrides if present (lets writer route to commonstack while
+        # reader stays on OpenAI direct in the same process).
+        cfg_key = getattr(config, "api_key", None)
+        cfg_url = getattr(config, "base_url", None)
+        openai_key = cfg_key or os.environ.get("OPENAI_API_KEY")
         if not openai_key:
-            logger.error("OPENAI_API_KEY not set")
+            logger.error("OPENAI_API_KEY not set (and config.api_key not provided)")
             return ""
         from openai import OpenAI
 
-        client = OpenAI(api_key=openai_key)
+        client_kwargs: dict = {"api_key": openai_key}
+        if cfg_url:
+            client_kwargs["base_url"] = cfg_url
+        client = OpenAI(**client_kwargs)
         # gpt-5 / o1 / o3 are reasoning models — they reject custom
         # temperature and require max_completion_tokens.
         is_reasoning_model = (
@@ -740,6 +747,173 @@ def build_recall_target_date_block(question_date: datetime | None, question: str
         f"that's more lexically similar but dated further from this "
         f"target.\n"
     )
+
+
+def build_observations_block(
+    graph: "ConceptGraph",
+    question_date: datetime | None,
+    max_lines: int = 1500,
+) -> str:
+    """Tier 3 — render every CONCEPT in the graph as a Mastra-style
+    `<observations>` block grouped by session date.
+
+    Format mirrors Mastra OM 'observations' verbatim (priority emoji +
+    HH:MM time + optional `(meaning DATE)` for resolved event_date):
+
+        <observations>
+        Date: Apr 23, 2023 (412 days ago)
+        * 🔴 (09:15) User stated has a Golden Retriever named Max.
+        * 🟡 (14:30) User went hiking at Half Dome. (meaning Apr 20, 2023)
+
+        Date: May 12, 2023 (393 days ago)
+        * 🔴 (10:00) User bought new running shoes — Nike Pegasus 40.
+        ...
+        Date: Jun 1, 2024 (TODAY)
+        * 🔴 (08:00) User asked about hotel recommendations.
+        </observations>
+
+    Group by date with `Date: <Mmm DD, YYYY> (Ndays ago | TODAY)` header,
+    chronological asc (oldest first — matches Mastra). Within a session,
+    sort by extraction time.
+
+    Priority derived from concept_type:
+      🔴 high   = user_fact / preference / relationship / identity
+      🟢 low    = planning / intent / hypothetical / agent_belief / world_state
+      🟡 medium = default (event / temporal / others)
+
+    Caps the output at max_lines (default 1500) by dropping 🟢s first,
+    then medium-priority concepts oldest-first, until under cap. High-
+    priority concepts and concepts within the latest 14 days are NEVER
+    dropped.
+    """
+    if question_date is None:
+        return ""
+    by_session: dict[str, list[tuple[datetime, str, str]]] = {}
+    for n in graph.get_all_nodes():
+        if n.type not in (NodeType.CONCEPT, NodeType.EVENT):
+            continue
+        if n.id.startswith("evt-"):
+            continue
+        ctype = (n.data.get("concept_type") or "").lower()
+        if ctype.startswith("typed_"):
+            continue
+        date_str = n.data.get("date") or n.data.get("creation_date") or n.data.get("extracted_at")
+        if not date_str:
+            continue
+        try:
+            dt = datetime.fromisoformat(str(date_str).replace("Z", ""))
+        except Exception:
+            continue
+        title = n.data.get("title", "") or ""
+        if title.startswith("[") and "]" in title[:24]:
+            title = title.split("]", 1)[1].lstrip()
+        if not title:
+            continue
+        desc = (n.data.get("description") or "").strip()
+        if ctype in ("user_fact", "preference", "relationship", "identity"):
+            emoji = "🔴"
+        elif ctype in ("planning", "intent", "hypothetical", "agent_belief", "world_state", "ongoing"):
+            emoji = "🟢"
+        else:
+            emoji = "🟡"
+        event_date = n.data.get("event_date")
+        ev_suffix = ""
+        if event_date and isinstance(event_date, str):
+            try:
+                ev_dt = datetime.fromisoformat(event_date[:10])
+                if ev_dt.date() != dt.date():
+                    ev_suffix = f" (meaning {ev_dt.strftime('%b %d, %Y')})"
+            except Exception:
+                pass
+        text = title.strip()
+        if desc and len(text) < 60:
+            first_sent = desc.split(". ", 1)[0].strip()
+            if first_sent and first_sent.lower() not in text.lower():
+                text = f"{text}. {first_sent}"
+        text = text.rstrip(".") + "."
+        line = f"* {emoji} ({dt.strftime('%H:%M')}) {text}{ev_suffix}"
+        sess_key = dt.strftime("%Y-%m-%d")
+        by_session.setdefault(sess_key, []).append((dt, emoji, line))
+
+    if not by_session:
+        return ""
+
+    all_lines: list[tuple[str, datetime, str, str]] = []
+    for sess, items in by_session.items():
+        for dt, emoji, line in items:
+            all_lines.append((sess, dt, emoji, line))
+
+    if len(all_lines) > max_lines:
+        cutoff_dt = question_date - timedelta(days=14)
+        keepers = []
+        droppable = []
+        for entry in all_lines:
+            sess, dt, emoji, line = entry
+            if dt >= cutoff_dt or emoji == "🔴":
+                keepers.append(entry)
+            else:
+                droppable.append(entry)
+        droppable.sort(key=lambda e: (0 if e[2] == "🟢" else 1, e[1]))
+        excess = len(all_lines) - max_lines
+        if excess > 0:
+            droppable = droppable[excess:]
+        all_lines = keepers + droppable
+        all_lines.sort(key=lambda e: (e[0], e[1]))
+
+    grouped: dict[str, list[tuple[datetime, str]]] = {}
+    for sess, dt, _emoji, line in all_lines:
+        grouped.setdefault(sess, []).append((dt, line))
+
+    sections: list[str] = []
+    for sess in sorted(grouped):
+        items = sorted(grouped[sess], key=lambda x: x[0])
+        try:
+            sess_dt = datetime.fromisoformat(sess)
+        except Exception:
+            continue
+        days_ago = (question_date.date() - sess_dt.date()).days
+        if days_ago == 0:
+            ann = "TODAY"
+        elif days_ago == 1:
+            ann = "1 day ago"
+        else:
+            ann = f"{days_ago} days ago"
+        header = f"Date: {sess_dt.strftime('%b %d, %Y')} ({ann})"
+        body = "\n".join(line for _, line in items)
+        sections.append(f"{header}\n{body}")
+    body_block = "\n\n".join(sections)
+    return f"<observations>\n{body_block}\n</observations>\n"
+
+
+_TIER3_READER_INSTRUCTIONS = (
+    "When answering, scan the <observations> block fully — observations are "
+    "in chronological order (oldest first). Each line is a single fact the "
+    "user told you, in the form `* <priority> (HH:MM) <fact>. (meaning DATE)`.\n"
+    "\n"
+    "Priority markers:\n"
+    "* 🔴 high — durable user facts / preferences / identity (most reliable)\n"
+    "* 🟡 medium — events / actions / temporal references\n"
+    "* 🟢 low — planning / intent / hypothetical (weakest evidence)\n"
+    "\n"
+    "Read the rules in this order:\n"
+    "1. **KNOWLEDGE UPDATES.** When the question asks about CURRENT state "
+    "('where do I currently …', 'what is my current …'), use the MOST RECENT "
+    "observation that mentions the topic. Older observations are SUPERSEDED. "
+    "Look for phrases like 'will start', 'is switching', 'changed to', "
+    "'moved to', 'no longer' as supersession indicators.\n"
+    "2. **PLANNED ACTIONS.** If the user stated a planned action ('I'm going "
+    "to …', 'I'll …', 'I'm looking forward to …') and the planned date is now "
+    "in the past, assume the action was completed unless a later observation "
+    "says otherwise.\n"
+    "3. **WHEN / HOW-LONG-AGO.** Search the observations by topic, then use "
+    "the `(meaning DATE)` suffix when present, else the `(HH:MM)` clock time "
+    "plus the date header above the line.\n"
+    "4. **DISTINCT-ENTITY.** Do not substitute a related entity. If the user "
+    "asked about X and only Y is in observations, say so.\n"
+    "5. **SYMBOLIC_ANSWER.** When a `## SYMBOLIC_ANSWER` block is present, "
+    "use its Answer as a HINT. Override it only if the observation chronology "
+    "clearly contradicts it.\n"
+)
 
 
 def build_today_block(question_date: datetime | None) -> str:
@@ -1709,10 +1883,29 @@ def run_benchmark(args: argparse.Namespace) -> None:
     # protocol (gpt-4o) or any other stronger model.
     import dataclasses
 
+    # Tier 3 / multi-provider: per-role api_key/base_url override from env.
+    # Lets writer route to commonstack (cheap gpt-4o-mini) while reader stays
+    # on OpenAI direct (gpt-5-mini reasoning) — same process, different chat
+    # endpoints. Each role's config carries the override.
+    _writer_api = os.environ.get("WRITER_API_KEY", "").strip() or None
+    _writer_url = os.environ.get("WRITER_BASE_URL", "").strip() or None
+    _reader_api = os.environ.get("READER_API_KEY", "").strip() or None
+    _reader_url = os.environ.get("READER_BASE_URL", "").strip() or None
+    _judge_api = os.environ.get("JUDGE_API_KEY", "").strip() or None
+    _judge_url = os.environ.get("JUDGE_BASE_URL", "").strip() or None
+
+    # Reader (= main `config`).
+    if _reader_api:
+        config = dataclasses.replace(config, api_key=_reader_api, base_url=_reader_url)
+        logger.info(f"Reader → caller-supplied READER_API_KEY (base_url={_reader_url or 'OpenAI direct default'})")
+
     judge_config = config
     if args.judge_model:
         judge_config = dataclasses.replace(config, model_name=args.judge_model)
         logger.info(f"Using judge model: {args.judge_model} (separate from reader {config.model_name})")
+    if _judge_api:
+        judge_config = dataclasses.replace(judge_config, api_key=_judge_api, base_url=_judge_url)
+        logger.info(f"Judge → caller-supplied JUDGE_API_KEY (base_url={_judge_url or 'OpenAI direct default'})")
 
     # Separate config for the extraction (write) path. Defaults to the reader
     # config; override with --writer-model when the writer should differ from
@@ -1721,6 +1914,9 @@ def run_benchmark(args: argparse.Namespace) -> None:
     if args.writer_model:
         writer_config = dataclasses.replace(config, model_name=args.writer_model)
         logger.info(f"Using writer model: {args.writer_model} (separate from reader {config.model_name})")
+    if _writer_api:
+        writer_config = dataclasses.replace(writer_config, api_key=_writer_api, base_url=_writer_url)
+        logger.info(f"Writer → caller-supplied WRITER_API_KEY (base_url={_writer_url or 'OpenAI direct default'})")
     # W1: opt-in typed-attribute pass on the writer config.
     if getattr(args, "extract_typed_attributes", False):
         writer_config = dataclasses.replace(writer_config, extract_typed_attributes=True)
@@ -2002,48 +2198,45 @@ def run_benchmark(args: argparse.Namespace) -> None:
         )
         if _query_max_ctx:
             _query_kwargs["max_context_chars"] = _query_max_ctx
-        query_result = query_agent.query_for_qa(**_query_kwargs)
-        context_text = query_result.context
 
-        # Symbolic temporal layer: for time-ordering / interval / latest-fact
-        # questions, prepend a chronologically-sorted block of every dated
-        # node so the reader sees absolute dates without relying on retrieval
-        # to preserve them.
-        if args.symbolic_temporal:
+        # Tier 3 mode: skip retrieval entirely, build observations block.
+        _tier3 = os.environ.get("TIER3_OBSERVATIONS", "0") == "1"
+        if _tier3:
+            question_dt_t3 = _parse_longmemeval_date(item.get("question_date", ""))
+            obs_block = build_observations_block(graph, question_dt_t3)
+            context_text = obs_block + "\n" + _TIER3_READER_INSTRUCTIONS
+            # Stub for downstream logging.
+            class _T3Result:
+                context = obs_block
+                node_ids: list[str] = []
+                node_count = 0
+            query_result = _T3Result()
+        else:
+            query_result = query_agent.query_for_qa(**_query_kwargs)
+            context_text = query_result.context
+
+        # Symbolic temporal layer (skipped in Tier 3 — observations carry chronology).
+        if args.symbolic_temporal and not _tier3:
             temporal_block = build_temporal_block(graph, question)
             if temporal_block:
                 context_text = temporal_block + "\n" + context_text
 
-        # Recency injection: for "most recent / latest / current" style
-        # questions, sort the topic-matching nodes by date DESC and prepend.
-        # The first entry is the answer in 95% of cases — reduces the reader's
-        # job from "scan 10+ dates inside descriptions" to "copy bullet #1".
-        recency_block = build_recency_block(graph, question)
-        if recency_block:
-            context_text = recency_block + "\n" + context_text
+        if not _tier3:
+            recency_block = build_recency_block(graph, question)
+            if recency_block:
+                context_text = recency_block + "\n" + context_text
 
-        # Cluster E — Assistant-text recall. When the question explicitly
-        # references a prior assistant turn ("previous conversation about X",
-        # "you recommended/mentioned/listed Y"), the answer is in a raw
-        # assistant EVENT that distilled CONCEPT retrieval routinely buries.
-        # Surface it directly so the reader can copy the verbatim name/quote.
-        assistant_block = build_assistant_recall_block(graph, question)
-        if assistant_block:
-            context_text = assistant_block + "\n" + context_text
+            assistant_block = build_assistant_recall_block(graph, question)
+            if assistant_block:
+                context_text = assistant_block + "\n" + context_text
 
-        # R2 (Exp A) — Clock-time matches for "what time do I X" questions.
-        # Writer captures these but retrieval frequently buries them under
-        # generic topic concepts (photography / fishing / etc.).
-        time_block = build_time_of_day_block(graph, question)
-        if time_block:
-            context_text = time_block + "\n" + context_text
+            time_block = build_time_of_day_block(graph, question)
+            if time_block:
+                context_text = time_block + "\n" + context_text
 
-        # R3 (Exp A) — Proper-noun matches for "what's the name of X / which
-        # X / what breed" questions. Pins capitalized multi-word names from
-        # the graph to the top of context.
-        propnoun_block = build_proper_noun_block(graph, question)
-        if propnoun_block:
-            context_text = propnoun_block + "\n" + context_text
+            propnoun_block = build_proper_noun_block(graph, question)
+            if propnoun_block:
+                context_text = propnoun_block + "\n" + context_text
 
         # Symbolic deterministic resolver (ToMi-style): pattern-match the
         # question against the dated graph and compute an exact answer string.
@@ -2058,21 +2251,16 @@ def run_benchmark(args: argparse.Namespace) -> None:
             if symbolic_result is not None:
                 context_text = render_symbolic_block(symbolic_result) + "\n" + context_text
 
-        # iter15 — RECALL_TARGET_DATE for "X N weeks ago" Qs. Pin the
-        # absolute target date so reader prefers the right [YYYY-MM-DD]
-        # prefix even when the resolver doesn't bypass.
-        target_block = build_recall_target_date_block(question_dt, question)
-        if target_block:
-            context_text = target_block + "\n" + context_text
-
-        # iter16 — list all dated concepts within ±3 days of the target
-        # so the reader can scan and pick by topic match rather than
-        # relying on retrieval ranking that may have buried the right
-        # event. Fires for the same "X N weeks ago" Qs as the target
-        # block.
-        target_cands_block = build_target_date_concepts_block(graph, question_dt, question)
-        if target_cands_block:
-            context_text = target_cands_block + "\n" + context_text
+        # iter15-16 — RECALL_TARGET_DATE / CONCEPTS_NEAR_TARGET_DATE
+        # are retrieval-helpers; Tier 3 already gives reader full
+        # chronology so these are redundant.
+        if not _tier3:
+            target_block = build_recall_target_date_block(question_dt, question)
+            if target_block:
+                context_text = target_block + "\n" + context_text
+            target_cands_block = build_target_date_concepts_block(graph, question_dt, question)
+            if target_cands_block:
+                context_text = target_cands_block + "\n" + context_text
 
         # iter07 — TODAY anchor goes LAST in the prepend chain so it ends up
         # at the very top of context. Reader prompt then begins with a clear
