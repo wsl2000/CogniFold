@@ -2211,15 +2211,14 @@ def run_benchmark(args: argparse.Namespace) -> None:
         # AND short-circuit the LLM (`answer` = resolver answer verbatim) so
         # the reader can't unsort what we already sorted.
         question_dt = _parse_longmemeval_date(item.get("question_date", ""))
-        # iter29 D' — per-type W2 suppression: MS + TR questions get the
-        # resolver with event_date ignored (iter27 showed W2 hurt MS -4.5
-        # and TR -3 via noisy absolute date anchors); also strip the
-        # rendered `(meaning DATE)` suffix from context for these types.
+        # iter29 D' (revised iter30) — per-type W2 suppression in the
+        # RESOLVER only. iter27 showed W2 event_date hurt MS -4.5 and TR
+        # -3 when used by the resolver's _index_concepts (session-relative
+        # ordering matters for those types). The reader, however, BENEFITS
+        # from seeing the absolute (meaning DATE) anchor inline regardless
+        # of question type, so iter30 stops stripping the rendered suffix.
         _qtype = item.get("question_type", "") or ""
         _suppress_w2 = _qtype in ("multi-session", "temporal-reasoning")
-        if _suppress_w2:
-            import re as _re_meaning
-            context_text = _re_meaning.sub(r"\s*\(meaning \d{4}-\d{2}-\d{2}\)", "", context_text)
         symbolic_result = None
         if args.symbolic_resolver:
             resolver = LongMemEvalSymbolicResolver(
