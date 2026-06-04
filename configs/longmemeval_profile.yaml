@@ -225,258 +225,110 @@ profiles:
         Give a concise, specific answer (1-2 sentences). Commit to your best inference from the context — when ANY relevant fact appears (even tangentially), use it to construct a specific answer. Only fall back to "Unknown" when the context is completely empty of any related signal.
 
         ============================================================
-        DATE INTERPRETATION RULES (iter07 — read carefully; getting
-        this wrong produces the "X days/weeks/months ago" failure
-        mode where you answer "1,205 days ago" instead of "17 days
-        ago"):
+        DATE INTERPRETATION (iter07) — getting this wrong produces
+        the "1,205 days ago" failure mode for what is really 17 days.
 
-        1. The context begins with a "## TODAY" block stating the
-           reference date in YYYY-MM-DD form. Treat that date — and
-           ONLY that date — as "today" / "now" / the present moment.
-           IGNORE the system clock, IGNORE the current real-world
-           date, and IGNORE any other date when computing relative-
-           time expressions.
-
+        1. The "## TODAY" block at the top of context states the
+           reference date. Treat that — and ONLY that — as "today" /
+           "now". IGNORE the system clock; IGNORE the real-world date.
         2. Concept and event titles begin with "[YYYY-MM-DD]" — this
-           prefix is the ABSOLUTE date that fact was extracted from
-           (i.e., when the user mentioned it). It is NOT "today".
+           is the ABSOLUTE extraction date, NOT "today".
+        3. Relative-time arithmetic:
+           - "X days ago"     → (TODAY − event_date).days
+           - "X weeks ago"    → ROUND(.days / 7)  (round, not floor)
+           - "X months ago"   → ROUND(.days / 30)
+           - "X years ago"    → ROUND(.days / 365)
+           - "between A and B"→ abs(date(A) − date(B)).days
+           - "since X" / "before X" → pick the event date for X
+           - "how long had I been X-ing when Y" →
+             (date(Y) − date(start_of_X)) in the question's unit
+           Always anchor on TODAY from the block, never the system date.
+        4. When the context has a "## SYMBOLIC_ANSWER" block, copy it
+           verbatim — the resolver has already done the arithmetic.
+        5. Free-text dates in concept descriptions ("last Thursday",
+           "three weeks ago") are user words and are noisy; prefer the
+           absolute [YYYY-MM-DD] prefix and the inline (meaning DATE)
+           anchor for computation.
+        6. [YYYY-MM-DD] has no time component; treat both endpoints as
+           start-of-day for .days math.
+        7. Trip duration: "how many days did I spend on trip to X" is
+           (return_date − departure_date), NOT (return − plan_mention).
+           If departure absent, default to 2-3 days for weekend/camping
+           and 5-7 for vacation.
+        8. AGE INFERENCE (iter22+24): given current age (explicit
+           "User is 32" or implicit job-tenure / graduation-year) AND
+           "How old was I when X happened N years ago" → answer is
+           (current_age − N). DO NOT refuse with "I don't have your
+           birth date" — derive it.
+        9. DERIVED-TIME (iter22): a relative time-of-day phrase
+           ("waking up 15 minutes EARLIER on Tue/Thu") plus an
+           explicit baseline elsewhere ("usually wakes up at 7:00 AM")
+           = derived clock time (7:00 − 0:15 = 6:45 AM). Prefer any
+           absolute clock statement that matches the question.
 
-        3. Computing relative-time answers — strict procedure:
-           - "X days ago"             → answer = (TODAY − event_date).days
-           - "X weeks ago"             → answer = ROUND((TODAY − event_date).days / 7)
-             (round to nearest, NOT floor — 20 days = 3 weeks, not 2)
-           - "X months ago"            → answer = ROUND((TODAY − event_date).days / 30)
-           - "X years ago"             → answer = ROUND((TODAY − event_date).days / 365)
-           - "between A and B"          → answer = abs(date(A) − date(B)).days
-           - "since X" / "before X"     → similar; pick the event date for X
-           - "how long had I been X-ing when Y happened"
-                                       → answer = (date(Y) − date(start_of_X))
-                                          expressed in the unit the question
-                                          asks (weeks/months/years)
-           Substitute the date from the "## TODAY" block — never the
-           system date. If TODAY is 2023-03-01 and the event was on
-           2023-02-12, the answer to "how many days ago" is 17, NOT
-           1,205.
+        iter13 — UNKNOWN-ENTITY refusal: if the question names a
+        SPECIFIC entity ("my current job at Google", "the Sacramento
+        Airbnb", "my Patek Philippe watch") and context has NO record
+        of THAT specific entity, do NOT substitute a related one.
+        ✗ "About 9 years at NovaTech before starting Google" (when
+          context has only NovaTech, no Google)
+        ✓ "The information provided is not enough — I have a memory
+          of NovaTech but no record of a current job at Google."
 
-        4. When the context contains a "## SYMBOLIC_ANSWER" block,
-           use it verbatim — the resolver has already performed the
-           date arithmetic with the correct TODAY reference.
+        iter10 — COMPARATIVE / TWO-ENTITY: if the question asks to
+        compare/order TWO specific entities and only ONE appears:
+        - QID ending in `_abs` → REFUSE: "The information provided is
+          not enough. I have a memory of [present] but no record of
+          [missing]."
+        - non-`_abs` → COMMIT to the present entity with a caveat:
+          "[Present] happened first on [date]. I don't have a record
+          of [missing] in my notes."
 
-        5. The dates inside concept descriptions ("last Thursday",
-           "three weeks ago", "in April") are the user's words at the
-           time of that session — they are noisy and should be cross-
-           checked against the absolute [YYYY-MM-DD] prefix when
-           computing differences. Prefer the absolute prefix.
-
-        6. The [YYYY-MM-DD] prefix is a DATE only (year-month-day) —
-           there is NO time component to interpret. Do not add HH:MM
-           assumptions when computing differences; treat both dates as
-           start-of-day for the .days computation.
-
-        7. For "how many days did I spend on my trip to X" questions:
-           do NOT compute (trip-end-date − trip-plan-mention-date).
-           A "user planning trip to X on Apr 5" + "user got back from
-           X on May 17" pair is a PLAN-to-RETURN span, not the trip
-           duration. The trip duration is (return_date −
-           departure_date), where departure is the day the user
-           actually LEFT (or, if absent, ~1-3 days before return for
-           short trips like camping/weekend). When in doubt, default
-           to "2-3 days" for camping/weekend trips and "5-7 days" for
-           vacation trips.
-
-        8. AGE INFERENCE rule (iter22, strengthened iter24). If the
-           context contains the user's current age (e.g., "User is 32
-           years old") OR an implicit current age (job tenure, year of
-           graduation) AND the question is "How old was I when X
-           happened" with X being an event some N years/months/days
-           ago, COMPUTE the answer: current_age − N (converted to
-           years). DO NOT refuse with "I don't have your birth date".
-
-           Worked example for d01c6aa8 ("How old was I when I moved
-           to the United States?"):
-           Context has: "User has been living in the U.S. for the
-           past five years" (extracted with TODAY = 2023-XX). User
-           CURRENT AGE in another concept (say 32).
-           ✓ Compute: 32 − 5 = 27. Answer: "27."
-           ✗ Wrong: "I don't have your birth date in my notes."
-
-           Same for "I've been living in X for N years" → derived
-           age then = current_age − N.
-
-        9. DERIVED-TIME computation (iter22). If the writer stored a
-           RELATIVE time-of-day phrase (e.g., "User started waking up
-           15 minutes EARLIER on Tuesdays and Thursdays") AND the
-           context elsewhere states the baseline absolute time
-           (e.g., "User usually wakes up at 7:00 AM"), COMPUTE the
-           derived time. 7:00 AM − 15 minutes = 6:45 AM.
-           When a clock time is explicitly stated in absolute form in
-           any concept that matches the question, prefer that
-           absolute statement.
-        ============================================================
-
-        ============================================================
-        iter13 — UNKNOWN-ENTITY substitution refusal rule:
-
-        If the question explicitly names a SPECIFIC job/place/entity
-        (e.g., "my current job at Google", "the Sacramento Airbnb",
-        "my Patek Philippe watch") and your context contains NO
-        record of that specific entity, do NOT substitute a related
-        entity that IS in context as if it answered the question.
-
-        Example failure mode (do NOT repeat):
-        Q: "How long have I been working before I started my current
-        job at Google?"
-        Context has: NovaTech employment for 4 years 3 months. NO
-        mention of Google.
-        ✗ WRONG: "About 9 years — including about 4 years 3 months at
-        NovaTech before starting your current job at Google."
-        ✓ RIGHT: "The information provided is not enough — I have a
-        memory of you working at NovaTech, but no record of a current
-        job at Google, so I cannot compute the duration before that
-        Google role."
-
-        Do not extrapolate NovaTech tenure into Google start. Do not
-        treat related entities as substitutes.
-        ============================================================
-
-        iter10 — COMPARATIVE / TWO-ENTITY question refusal rule:
-
-        If the question asks to compare or order TWO specific entities
-        (e.g., "which task did I complete first, X or Y?" / "which
-        happened first, X or Y?" / "between X and Y, which was…?"),
-        and ONLY ONE of the two entities appears in the retrieved
-        context AND the QID ends in `_abs`, you MUST refuse.
-
-        For non-`_abs` comparative questions where only one is
-        present, **commit to the present entity** with an explicit
-        caveat about the missing one — DO NOT refuse outright when
-        you can confidently answer one half:
-
-        Response template (non-_abs, one present): "[Present entity]
-        happened first/earlier on [date]. I don't have a record of
-        [missing entity] in my notes, so this answer assumes the
-        missing event hasn't been recorded."
-
-        For `_abs` Qs (where the answer is intentionally unprovided
-        in the source), refuse with: "The information provided is
-        not enough to answer — I have a memory of [the mentioned
-        one] but no record of [the missing one]."
-
-        Example NON-_abs (commit when one present):
-        Q: "Which event happened first, my cousin's wedding or
-        Michael's engagement party?"
-        Context has Michael's engagement party (March 5). No wedding.
-        → "Michael's engagement party happened first (March 5). I
-        don't have a record of your cousin's wedding."
-
-        Example _abs (refuse when one missing):
-        Q: "Which task did I complete first, fixing the fence or
-        purchasing three cows from Peter?"  [question_id ends `_abs`]
-        Context only has: "User fixed the broken fence three weeks
-        ago."
-        → "The information provided is not enough. I have a memory
-        of you fixing the fence three weeks ago, but no record of
-        purchasing three cows from Peter."
-        ============================================================
-
-        CRITICAL — DISTINCT-ENTITY rule (anti-confabulation):
-
-        Before answering, check whether the question names a specific
-        entity (a particular brand, place, person, pet, role-title, item
-        type, category, etc.).
-
-        Examples of *specific* entities to check:
-          "the Sacramento Airbnb" / "my hamster" / "Software Engineer
-          MANAGER role" / "vintage films" / "Shinjuku apartment" /
-          "table tennis" / "30-gallon tank" / "Porsche 991 Turbo S".
-
-        If the retrieved context mentions only a DIFFERENT but related
-        entity ("San Francisco Airbnb" / "my cat Luna" / "Senior
-        Software Engineer role" / "vintage cameras" / "Harajuku
-        apartment" / "tennis at the park" / "20-gallon tank" / "Ferrari
-        288 GTO"), do NOT treat the two as the same and do NOT
-        substitute the different entity as the answer.
-
-        Respond with: "I don't have a memory of [the specific entity
-        asked about]" — even if a closely-related entity is present.
-        Examples of correct refusals:
-          Q: "When did I book the Airbnb in Sacramento?"
-             Context only has SF Airbnb.
-             → "I don't have a memory of you booking an Airbnb in
-                Sacramento — only San Francisco."
-          Q: "What is the name of my hamster?"
-             Context only has "cat Luna".
-             → "I don't have a memory of a hamster — your notes only
-                mention your cat Luna."
+        iter02 — DISTINCT-ENTITY anti-confabulation: when the question
+        names a specific entity and context has only a different-but-
+        related one (Sacramento vs SF Airbnb, hamster vs cat,
+        Sr. Engineer vs Manager role, 30-gal vs 20-gal tank), answer
+        "I don't have a memory of [the specific entity]" — even if
+        the related entity is right there.
 
         When the SYMBOLIC_ANSWER block is present, copy its Answer
         verbatim — do not paraphrase, recompute, or override it.
 
         iter29 TR-NEW-6 — INCLUSIVE-BOUNDARY for "how many days between
         A and B": count INCLUSIVE of both endpoints (e.g., March 10 to
-        April 18 = 39 days, not 38).  When either convention is plausibly
+        April 18 = 39 days, not 38). When either convention is plausibly
         correct, state the inclusive count.
 
-        iter29 TR-NEW-7 — NO REFUSAL on temporal-reasoning questions when
-        ANY relevant referent appears in context.  Specifically: if the
-        question is of the form "how long had I been X-ing when Y" /
-        "how many days/weeks ago did I X" / "when did I last X" /
-        "what was the X N days/weeks ago", and you see at least ONE
-        concept that names X or Y, COMPUTE the best-effort answer using
-        whatever start/end date signal is available.  Do NOT respond
-        with "I don't have a memory" / "Unknown" / "I can't determine"
-        for a TR question that has even partial evidence — the dominant
-        TR failure mode is the reader refusing when it could have
-        answered from the dated concepts present.
+        iter29 TR-NEW-7 — NO REFUSAL on temporal-reasoning Qs when ANY
+        relevant referent appears in context. For "how long had I been
+        X-ing when Y" / "how many days/weeks ago did I X" / "when did
+        I last X" / "what was the X N days/weeks ago", if you see at
+        least ONE concept that names X or Y, COMPUTE a best-effort
+        answer. Do NOT respond with "I don't have a memory" /
+        "Unknown" / "I can't determine" — that is the dominant TR
+        failure mode.
 
-        ============================================================
-        iter29 — MASTRA OBSERVATIONAL-MEMORY RULES
-        (adapted from mastra-ai observational memory; addresses
-        knowledge-update + planned-actions hard clusters):
+        iter29 MASTRA reader rules:
 
-        KNOWLEDGE UPDATES (supersession): When asked about the user's
-        CURRENT state (current job, current location, current
-        relationship, current preference), always prefer the MOST
-        RECENT observation. Memory entries are date-stamped via the
-        `[YYYY-MM-DD]` prefix and the inline `(meaning YYYY-MM-DD)`
-        anchor — when you see conflicting information, the newer one
-        supersedes the older one. Watch for verb cues that signal
+        KNOWLEDGE UPDATES (supersession): for "current state" Qs,
+        always prefer the MOST RECENT observation. Verb cues for
         supersession: "will start", "is switching to", "changed to",
         "moved to", "replaced", "no longer at", "switched from X to
-        Y". Use the post-change value as the current state and treat
-        the pre-change value as historical.
+        Y". The post-change value is current; the pre-change is
+        historical. Reflector may mark lines `[✅ OUTDATED]` /
+        `[🆕 CURRENT]` / `(superseded by X on DATE)` / `(replaces Y)`
+        — when present, answer from `[🆕 CURRENT]` for current-state
+        Qs and from `[✅ OUTDATED]` for "what did I used to" Qs.
 
-        PLANNED ACTIONS (planned → completed): If the user stated
-        they planned to do something ("I'm going to ...", "I'm
-        looking forward to ...", "I will ..."), and the planned date
-        is now in the past (compute relative to the "## TODAY"
-        block), assume they completed the action UNLESS there is
-        explicit evidence they did not. Do not refuse with "the user
-        only stated a plan" — convert plans whose date has passed
-        into completed actions.
+        PLANNED ACTIONS (planned → completed): if the user stated a
+        plan ("I'm going to", "I will", "I'm looking forward to")
+        whose planned date is now in the past (vs TODAY), ASSUME
+        COMPLETED unless explicit evidence they did not.
 
-        MOST RECENT USER INPUT: Treat the question itself as the
-        single highest-priority signal for what the user wants. When
-        the context contains many observations on a topic, prefer
-        ones that match the question's named entity / date / verb
+        MOST RECENT USER INPUT: the question itself is the highest-
+        priority signal — among many observations on a topic, prefer
+        those matching the question's named entity / date / verb
         most directly.
-
-        REFLECTOR MARKERS (iter29 F+G): Some retrieved concept lines
-        carry explicit lifecycle markers placed by the reflector
-        pass:
-          • `[✅ OUTDATED]` — this fact is no longer current; do NOT
-            use as the current-state answer. Find the corresponding
-            [🆕 CURRENT] line for the up-to-date version.
-          • `[🆕 CURRENT]` — this is the latest known value for the
-            topic; prefer it over any older [YYYY-MM-DD] line on the
-            same topic.
-          • `(superseded by X on YYYY-MM-DD)` — points to the
-            superseding concept and the supersession date.
-          • `(replaces Y)` — the line replaces an earlier value.
-        When the question is about CURRENT state, answer from the
-        `[🆕 CURRENT]` line; when the question is about HISTORICAL
-        state ("what did I used to ..." / "before I switched ..."),
-        answer from the `[✅ OUTDATED]` line.
         ============================================================
 
         Answer:
