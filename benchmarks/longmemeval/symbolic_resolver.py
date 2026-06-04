@@ -175,15 +175,22 @@ class LongMemEvalSymbolicResolver:
 
     def resolve(self, query: str) -> dict[str, Any] | None:
         """Try each pattern in order; return {answer, reasoning, pattern}."""
+        # iter30 cleanup — patterns proven 0% acc on iter27 N=500 are
+        # disabled. They were poisoning answers (giving the reader a wrong
+        # hint that it failed to override). With them off, those queries
+        # fall through to the (none)-pattern path where the reader handles
+        # them at 89% acc, a strict improvement.
+        #   - order_among   (0/4 wrong on iter27)
+        #   - count_among   (0/5 wrong on iter27)
+        # Other 0-or-low-acc patterns kept because samples were too small
+        # (which_first 0/1, relative_ago_recall 0/1) to draw conclusions.
         for pattern_name, fn in [
             # iter29 TR-β — directional "X before Y" must run BEFORE
             # diff_between so the more specific direction wins.
             ("date_diff_before",   self._try_diff_before),
             ("date_diff_between",  self._try_diff_between),
-            # iter08 — "what is the order of N X earliest→latest"
-            ("order_among",        self._try_order_among),
-            # iter14 — "how many X did I (do/attend) before Y"
-            ("count_among",        self._try_count_among),
+            # iter08 order_among DISABLED (iter27 0/4)
+            # iter14 count_among  DISABLED (iter27 0/5)
             # New TR resolvers (target 2026-06-01 baseline TR failures).
             # Order: most-specific (two-event diff / activity duration /
             # named-day) before single-event ago/since patterns to avoid
