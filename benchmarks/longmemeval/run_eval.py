@@ -795,8 +795,12 @@ def build_observations_block(
         if n.id.startswith("evt-"):
             continue
         ctype = (n.data.get("concept_type") or "").lower()
-        if ctype.startswith("typed_"):
-            continue
+        # Tier 3: KEEP typed_attribute nodes — these carry the verbatim
+        # values the assistant generated ("Plesiosaur color", "Nu, pogodi!",
+        # "Fissionator") that the main extractor paraphrases away. SSA
+        # questions specifically test recall of these. (The old skip was
+        # because BM25 retrieval over typed_attr nodes was noisy; Tier 3
+        # dumps everything to context anyway, so noise concern is moot.)
         date_str = n.data.get("date") or n.data.get("creation_date") or n.data.get("extracted_at")
         if not date_str:
             continue

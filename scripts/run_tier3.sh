@@ -123,6 +123,7 @@ for ((i=0; i<N_PARALLEL; i++)); do
         --writer-model openai:openai/gpt-4o-mini \
         --judge-model openai:gpt-4o \
         --embedding openai:text-embedding-3-small \
+        --extract-typed-attributes \
         --no-symbolic-temporal \
         --symbolic-resolver --symbolic-bypass \
         --question-ids "$IDS_CSV" \
