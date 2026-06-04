@@ -43,6 +43,14 @@ class AgentConfig:
     # so resolvers/readers can use the true event date instead of the
     # session-extraction date. Borrowed from Chronos/Mem0.
     resolve_event_dates: bool = False
+    # W3 (iter30): opt-in focused per-session pass that explicitly
+    # extracts ACTIVITY START events (e.g. "I started bird watching",
+    # "I bought my new running shoes") and stamps the resulting concept
+    # with is_start=true + activity. Lets the duration_activity resolver
+    # find a reliable START anchor for "how long had I been X-ing when
+    # Y happened" questions. Replaces the unreliable iter29 TR-NEW-1
+    # writer-prompt rule that gpt-5.4-mini low effort often skipped.
+    extract_start_events: bool = False
     # Forwarded to OpenAI Responses API when set (gpt-5-class models only).
     reasoning_effort: str | None = None
     # Per-role API key / base URL override. When set, the OpenAI client built

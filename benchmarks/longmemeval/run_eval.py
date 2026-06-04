@@ -1438,6 +1438,149 @@ def _typed_attribute_pass(
             continue
 
 
+# ----------------------- W3 START extraction (iter30) -----------------------
+
+_START_EXTRACT_PROMPT = """You are detecting ACTIVITY START events in a single chat session. Identify cases where the USER explicitly reports they have JUST STARTED / began / joined / got their first / acquired a new ongoing activity, hobby, membership, possession, or commitment.
+
+Output a JSON object with a "starts" list. Each entry:
+- "activity": short lowercase noun phrase naming what was started (e.g. "guitar lessons", "bird watching", "stand-up comedy", "book lovers unite membership", "adidas running shoes", "exchange program at TU Berlin")
+- "trigger": the verbatim short user-text phrase that signaled the start (max 80 chars), so we can verify against the session
+- "kind": one of {{"activity","membership","acquisition","start_of_role"}}
+
+Detection rules — only emit when the user STARTS something for the first time in this session. Strong start signals:
+- "I started X / began X / picked up X / took up X"
+- "I joined / signed up for / enrolled in / was accepted into X"
+- "I got my new X / bought my first X / picked up my new X / received my new X"
+- "I had my first lesson / first day / first class of X"
+- "I just moved to X / relocated to X" (start of living-at-place)
+- "I started a new job at X / new role as X"
+DO NOT emit for:
+- ongoing-state mentions ("I've been doing X for a year"  ← this is duration, not a new start)
+- generic interest ("I'm interested in X"  ← not a start)
+- planned but not yet done ("I'm going to start X next week"  ← not yet started)
+- assistant suggestions
+
+Output strictly valid JSON. If no start events, return {{"starts": []}}.
+
+Messages:
+{user_messages}
+"""
+
+
+def _extract_start_events_pass(
+    session: list[dict],
+    timestamp: datetime,
+    graph: ConceptGraph,
+    config: AgentConfig,
+    time_node_id: str,
+) -> None:
+    """W3 (iter30) — focused per-session pass that extracts explicit
+    activity START events. Mirrors W1/W2 design: small focused prompt
+    on user-role turns only, JSON output, one extra LLM call per session.
+
+    For each detected start, adds a CONCEPT node with `is_start=true,
+    activity="<phrase>"` keyed on the session date. The
+    symbolic_resolver `_find_is_start_concept` picks these up to anchor
+    `_try_duration_activity` (the "how long had I been X-ing when Y"
+    pattern). iter29 evidence showed embedding the rule in the main
+    BATCH_SYSTEM_PROMPT was unreliable (gpt-5.4-mini low effort would
+    skip rules in the back half of a long prompt); a focused dedicated
+    pass is much more compliant.
+    """
+    user_messages = [
+        (t.get("content") or "").strip()
+        for t in session
+        if t.get("role") == "user" and (t.get("content") or "").strip()
+    ]
+    if not user_messages:
+        return
+    text = "\n\n---\n".join(user_messages)
+    if len(text) < 60:
+        return
+
+    session_date_str = timestamp.date().isoformat()
+    session_datetime_iso = timestamp.isoformat()
+
+    prompt = _START_EXTRACT_PROMPT.format(user_messages=text)
+    try:
+        raw = call_llm(prompt, config, json_mode=True)
+    except Exception as e:
+        logger.error(f"W3 start-extraction LLM call failed: {e}")
+        return
+    if not raw:
+        return
+    if "```json" in raw:
+        raw = raw.split("```json", 1)[1].split("```", 1)[0].strip()
+    elif "```" in raw:
+        raw = raw.split("```", 1)[1].split("```", 1)[0].strip()
+    try:
+        data = json.loads(raw)
+    except Exception as e:
+        logger.error(f"W3 start-extraction JSON parse failed: {e}")
+        return
+
+    starts = data.get("starts", []) if isinstance(data, dict) else []
+    if not isinstance(starts, list):
+        return
+
+    for s in starts[:6]:  # cap at 6 per session to bound noise
+        if not isinstance(s, dict):
+            continue
+        activity = (s.get("activity") or "").strip().lower()
+        trigger = (s.get("trigger") or "").strip()[:120]
+        kind = (s.get("kind") or "").strip().lower()
+        if not activity or len(activity) > 80:
+            continue
+        # Verbatim guard: at least one content token from the trigger
+        # phrase must appear in the user text, to suppress hallucinated
+        # starts.
+        trigger_tokens = {
+            t.lower() for t in re.findall(r"[A-Za-z][A-Za-z0-9'-]+", trigger)
+            if len(t) >= 4
+        }
+        if trigger and trigger_tokens and not any(
+            t in text.lower() for t in trigger_tokens
+        ):
+            continue
+
+        start_node_id = f"c-start-{uuid.uuid4().hex[:8]}"
+        title = f"[{session_date_str}] User started {activity}"
+        desc = (
+            f"User reported starting {activity} in this session "
+            f"({kind or 'activity'}). Trigger: \"{trigger}\""
+            if trigger else
+            f"User reported starting {activity} in this session "
+            f"({kind or 'activity'})."
+        )
+        try:
+            graph.add_node(
+                Node(
+                    id=start_node_id,
+                    type=NodeType.CONCEPT,
+                    data={
+                        "title": title,
+                        "description": desc,
+                        "strength": 0.8,
+                        "concept_type": "activity_start",
+                        "extracted_at": session_datetime_iso,
+                        "date": session_datetime_iso,
+                        "is_start": True,
+                        "activity": activity,
+                    },
+                    reasoning=f"W3 START extraction on {session_date_str}",
+                    created_at=timestamp,
+                )
+            )
+            try:
+                graph.add_edge(
+                    Edge(source=start_node_id, target=time_node_id, created_at=timestamp)
+                )
+            except Exception:
+                pass
+        except Exception:
+            continue
+
+
 def process_session_batch(
     session: list[dict],
     timestamp: datetime,
@@ -1667,6 +1810,17 @@ Output JSON format:
         except Exception as e:
             logger.error(f"Error in typed-attribute pass: {e}")
 
+    # ---- W3 (iter30): focused START-event extraction ----
+    # Replaces the unreliable iter29 TR-NEW-1 writer-prompt rule that
+    # gpt-5.4-mini low effort frequently skipped. Adds is_start=true
+    # concept nodes that the resolver's `_find_is_start_concept` uses
+    # to anchor `_try_duration_activity`.
+    if getattr(config, "extract_start_events", False):
+        try:
+            _extract_start_events_pass(session, timestamp, graph, config, time_node_id)
+        except Exception as e:
+            logger.error(f"Error in W3 start-event pass: {e}")
+
     # ---- Patch B: dated-anchor regex pass over user-role turns ----
     # The LLM extraction paraphrases away dated lifecycle anchors
     # ("started ukulele lessons" → "user is learning ukulele"), which
@@ -1848,7 +2002,11 @@ def run_benchmark(args: argparse.Namespace) -> None:
     # W2 (iter18): opt-in event_date resolution pass.
     if getattr(args, "resolve_event_dates", False):
         writer_config = dataclasses.replace(writer_config, resolve_event_dates=True)
-        logger.info("W2 event_date resolution pass: ENABLED")
+        logger.info("W2 event_date pass: ENABLED")
+    # W3 (iter30): opt-in START-event extraction pass.
+    if getattr(args, "extract_start_events", False):
+        writer_config = dataclasses.replace(writer_config, extract_start_events=True)
+        logger.info("W3 START-extraction pass: ENABLED")
     # iter23: writer-specific reasoning_effort so a gpt-5 writer can run
     # at a different effort level than the reader.
     if getattr(args, "writer_reasoning_effort", None):
@@ -2574,6 +2732,19 @@ if __name__ == "__main__":
             "concept.data so the reader sees [✅ OUTDATED]/[🆕 CURRENT] "
             "tags in the rendered context — directly addresses KU and "
             "MS hard cases."
+        ),
+    )
+    parser.add_argument(
+        "--extract-start-events",
+        action="store_true",
+        help=(
+            "W3 (iter30) — per-session focused pass that explicitly "
+            "extracts ACTIVITY START events ('I started bird watching', "
+            "'I bought my new running shoes') and stamps the resulting "
+            "concept with is_start=true + activity. Lets the resolver's "
+            "`duration_activity` pattern actually fire (iter29 evidence "
+            "showed embedding the rule in the main BATCH_SYSTEM_PROMPT "
+            "was unreliable). Adds ~1 cheap LLM call per session."
         ),
     )
     parser.add_argument(

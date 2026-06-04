@@ -51,24 +51,18 @@ You receive a list of concepts, each with:
   title       — short concept title
   description — one-sentence concept body
 
-Your job has THREE outputs:
+Your job has TWO outputs:
 
 A. SUPERSESSIONS — pairs that share a SAME SUBJECT (same job, same
    address, same pet, same preference, same plan/task) where the
-   content has CHANGED, REPLACED, COMPLETED, or been MARKED UNDONE.
+   content has CHANGED, REPLACED, or been MARKED UNDONE.
 
 B. COMPLETIONS — planned actions with later evidence of completion.
 
-C. STARTS (iter29 L) — concepts that mark the START of an ongoing
-   activity / membership / acquisition / hobby / project. These are
-   crucial for "how long had I been X-ing when Y happened" temporal
-   reasoning. A start concept is the EARLIEST concept on a given
-   activity that uses verbs like "started", "began", "joined",
-   "signed up for", "bought my first", "picked up", "got my new",
-   "started taking ... lessons", "started watching ... regularly".
-   For each detected start, output the activity phrase (lowercase,
-   noun-phrase form so the resolver can match) that the user is
-   beginning.
+(START detection is handled separately by the W3 per-session pass —
+do NOT emit starts here. iter30 moved that responsibility out of the
+Reflector because per-session focused calls proved more reliable than
+asking one big consolidator to do everything.)
 
 Output a JSON object with this shape:
 
@@ -86,16 +80,6 @@ Output a JSON object with this shape:
       "id": "c-...",
       "completion_on": "YYYY-MM-DD"
     }
-  ],
-  "starts": [
-    {
-      "id": "c-...",                  // the concept that marks the start
-      "activity": "<noun phrase>"      // e.g. "guitar lessons",
-                                      //   "bird watching",
-                                      //   "stand-up comedy",
-                                      //   "Adidas running shoes",
-                                      //   "Book Lovers Unite"
-    }
   ]
 }
 
@@ -106,10 +90,6 @@ RULES:
   (NOT {A,C}).
 - COMPLETIONS: only when later concept references the planned action
   as done/finished/back from. Habits/recurring are not completed.
-- STARTS: pick the EARLIEST concept per activity. If user mentions
-  the same activity multiple times, only the first (oldest) entry is
-  the START. Skip generic concepts ("user is interested in X"); only
-  mark explicit beginning verbs.
 - Output strictly valid JSON. No markdown fences. No trailing commas.
 - If no entries for a section, return its empty array — never omit
   the key.
@@ -287,31 +267,12 @@ def run_reflector(
             graph.update_node(cid, done_patch)
             n_done += 1
 
-    # iter29 L — START detection. Backfills `is_start` + `activity`
-    # fields on concept nodes that the writer either skipped or didn't
-    # mark explicitly. The TR-NEW-2 resolver (`_find_is_start_concept`)
-    # uses these to anchor duration-since-start questions.
-    starts = parsed.get("starts", []) or []
-    n_start = 0
-    for s in starts:
-        cid = s.get("id")
-        activity = (s.get("activity") or "").strip().lower()
-        if not cid or not graph.has_node(cid) or not activity:
-            continue
-        start_patch: dict[str, Any] = {
-            "is_start": True,
-            "activity": activity,
-        }
-        graph.update_node(cid, start_patch)
-        n_start += 1
-
     logger.info(
         f"Reflector: concepts={len(concepts)} "
-        f"supersessions={n_sup} completions={n_done} starts={n_start}"
+        f"supersessions={n_sup} completions={n_done}"
     )
     return {
         "concepts": len(concepts),
         "supersessions": n_sup,
         "completions": n_done,
-        "starts": n_start,
     }
