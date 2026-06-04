@@ -264,11 +264,6 @@ class ContextAssembler:
             time_phrase = node.data.get("time_phrase")
             if time_phrase:
                 lines.append(f"  _user said: \"{time_phrase}\"_")
-            assistant_said = node.data.get("assistant_said")
-            if assistant_said:
-                # Truncate to avoid blowing up context
-                quote = str(assistant_said)[:200]
-                lines.append(f"  _assistant quote: \"{quote}\"_")
 
         # Description if available
         if node.description:
