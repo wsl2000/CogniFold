@@ -772,88 +772,6 @@ def build_today_block(question_date: datetime | None) -> str:
     )
 
 
-def build_calendar_block(
-    session_dates: list[str],
-    question_date: datetime | None,
-    max_rows: int = 80,
-) -> str:
-    """iter29 H — session-date calendar at the top of context.
-
-    Renders every session date the haystack contains, annotated with
-    ``(N days ago)`` relative to TODAY. Gives the reader a single
-    look-up table to anchor "when did session N happen" questions
-    without scanning the entire context.
-    """
-    if question_date is None or not session_dates:
-        return ""
-    today = question_date.date()
-    rows: list[tuple[int, str]] = []
-    seen: set[str] = set()
-    for raw in session_dates:
-        # session_dates entries look like "2023/05/20 (Sat) 02:21".
-        m = re.match(r"(\d{4})[/-](\d{2})[/-](\d{2})", raw)
-        if not m:
-            continue
-        try:
-            d = datetime(int(m.group(1)), int(m.group(2)), int(m.group(3))).date()
-        except Exception:
-            continue
-        iso = d.isoformat()
-        if iso in seen:
-            continue
-        seen.add(iso)
-        delta = (today - d).days
-        rows.append((delta, iso))
-    if not rows:
-        return ""
-    rows.sort(key=lambda x: -x[0])  # oldest first
-    rows = rows[:max_rows]
-    lines = ["## SESSION_CALENDAR (haystack dates, anchored to TODAY)"]
-    for days, iso in rows:
-        if days == 0:
-            tag = "TODAY"
-        elif days == 1:
-            tag = "1 day ago"
-        else:
-            tag = f"{days} days ago"
-        lines.append(f"- {iso}  →  {tag}")
-    return "\n".join(lines) + "\n"
-
-
-def build_days_ago_chart(
-    question: str, question_date: datetime | None, max_rows: int = 30
-) -> str:
-    """iter29 TR-ι — days-ago lookup chart.
-
-    For TR questions containing "X days/weeks/months ago" phrasing,
-    render an explicit calendar fragment (1 day ago = …, 2 days ago = …,
-    …, 30 days ago = …) so the reader can map a duration answer onto a
-    specific absolute date without arithmetic.
-    """
-    if question_date is None:
-        return ""
-    if not re.search(r"\b(?:day|week|month|year)s?\s+ago\b", question, re.IGNORECASE):
-        return ""
-    today = question_date.date()
-    lines = ["## DAYS_AGO_CHART (use to anchor 'N days/weeks/months ago' answers)"]
-    lines.append(f"- TODAY  →  {today.isoformat()}")
-    for n in range(1, max_rows + 1):
-        target = today - timedelta(days=n)
-        if n == 1:
-            tag = "1 day ago"
-        else:
-            tag = f"{n} days ago"
-        lines.append(f"- {tag}  →  {target.isoformat()}")
-    # Weeks/months annotations for common round buckets.
-    for wks in (1, 2, 3, 4, 6, 8, 12):
-        target = today - timedelta(days=wks * 7)
-        lines.append(f"- {wks} week{'s' if wks > 1 else ''} ago  →  {target.isoformat()}")
-    for mo in (1, 2, 3, 4, 6, 9, 12):
-        target = today - timedelta(days=mo * 30)
-        lines.append(f"- ~{mo} month{'s' if mo > 1 else ''} ago  →  {target.isoformat()}")
-    return "\n".join(lines) + "\n"
-
-
 _TIMELINE_STOPWORDS = {
     "the", "a", "an", "and", "or", "but", "of", "to", "in", "on", "at",
     "for", "with", "by", "from", "as", "is", "are", "was", "were", "be",
@@ -964,67 +882,6 @@ def build_topic_timeline_block(
         else:
             tag = f"in {-delta} day{'s' if -delta != 1 else ''}"
         lines.append(f"- [{dt.date().isoformat()} • {tag}] {title_disp[:160]}")
-    return "\n".join(lines) + "\n"
-
-
-def build_structured_question_parse(
-    question: str, question_date: datetime | None
-) -> str:
-    """iter29 TR-ξ — regex-based structured parse of TR questions.
-
-    Extracts (direction, time_unit, target_phrase, reference_phrase) when
-    the question matches one of the common TR templates. Outputs a small
-    PARSED_QUESTION block the reader can lean on. Pure regex — no LLM
-    call, so cost is zero.
-    """
-    if question_date is None:
-        return ""
-    q = question.strip()
-    today = question_date.date()
-    fields: list[tuple[str, str]] = []
-
-    # how many X (days/weeks/months/years) (ago|before|after|since) Y
-    m = re.search(
-        r"how\s+many\s+(day|week|month|year)s?\s+"
-        r"(ago|before|after|since|between|until)\b",
-        q, re.IGNORECASE,
-    )
-    if m:
-        fields.append(("time_unit", m.group(1).lower()))
-        fields.append(("direction", m.group(2).lower()))
-
-    # how long had I been (X-ing) when (Y happened)
-    m2 = re.search(
-        r"how\s+long\s+(?:had|have)\s+i\s+been\s+(\w+(?:ing|ed))\s+"
-        r"when\s+(.{4,120}?)(?:\?|$)",
-        q, re.IGNORECASE,
-    )
-    if m2:
-        fields.append(("template", "duration_since_start"))
-        fields.append(("activity", m2.group(1)))
-        fields.append(("reference_event", m2.group(2).strip()))
-
-    # how many days/weeks before X did Y happen
-    m3 = re.search(
-        r"how\s+many\s+(day|week|month|year)s?\s+before\s+"
-        r"i?\s*(.{4,80}?)\s+did\s+i?\s*(.{4,80}?)(?:\?|$)",
-        q, re.IGNORECASE,
-    )
-    if m3:
-        fields.append(("template", "date_diff_before"))
-        fields.append(("time_unit", m3.group(1).lower()))
-        fields.append(("reference_event", m3.group(2).strip()))
-        fields.append(("target_event", m3.group(3).strip()))
-
-    # what / when did I X (named entity)
-    if not fields:
-        return ""
-    lines = [
-        "## PARSED_QUESTION (structured cues — do not blindly trust; verify against context)",
-        f"- today: {today.isoformat()}",
-    ]
-    for k, v in fields:
-        lines.append(f"- {k}: {v}")
     return "\n".join(lines) + "\n"
 
 
@@ -2390,33 +2247,12 @@ def run_benchmark(args: argparse.Namespace) -> None:
         if target_cands_block:
             context_text = target_cands_block + "\n" + context_text
 
-        # iter29 TR-ξ — structured PARSED_QUESTION block (pure-regex, free).
-        if getattr(args, "tr_structured_parse", False) and _qtype == "temporal-reasoning":
-            parsed_block = build_structured_question_parse(question, question_dt)
-            if parsed_block:
-                context_text = parsed_block + "\n" + context_text
-
         # iter29 TR-α — topic timeline for TR questions (chronological
         # list of topic-matching events with absolute date + N days ago).
         if getattr(args, "tr_topic_timeline", False) and _qtype == "temporal-reasoning":
             topic_tl = build_topic_timeline_block(graph, question, question_dt)
             if topic_tl:
                 context_text = topic_tl + "\n" + context_text
-
-        # iter29 TR-ι — days-ago calendar chart for TR questions whose
-        # text mentions "N days/weeks/months ago".
-        if getattr(args, "tr_calendar_chart", False) and _qtype == "temporal-reasoning":
-            chart_block = build_days_ago_chart(question, question_dt)
-            if chart_block:
-                context_text = chart_block + "\n" + context_text
-
-        # iter29 H — session calendar (opt-in via --session-calendar).
-        # Was always-on but iter29a evidence showed it pushed retrieval
-        # rows out of top-K → ~12pp regression on MS. Keep code, gate it.
-        if getattr(args, "session_calendar", False):
-            cal_block = build_calendar_block(session_dates, question_dt)
-            if cal_block:
-                context_text = cal_block + "\n" + context_text
 
         # iter07 — TODAY anchor goes LAST in the prepend chain so it ends up
         # at the very top of context. Reader prompt then begins with a clear
@@ -2442,69 +2278,12 @@ def run_benchmark(args: argparse.Namespace) -> None:
             if should_bypass:
                 answer = symbolic_result["answer"]
             else:
-                # iter29 TR-κ — 2-pass reader for TR questions.
-                # Pass 1: list candidates + reasoning + tentative answer.
-                # Pass 2: verify TODAY usage, inclusive/exclusive
-                # boundary, direction; emit the FINAL answer.
-                if (
-                    getattr(args, "tr_two_pass", False)
-                    and _qtype == "temporal-reasoning"
-                ):
-                    pass1_template = (
-                        "You are answering a temporal-reasoning question. "
-                        "DO NOT give a final answer yet. Instead:\n"
-                        "  (a) List every concept in the context whose [YYYY-MM-DD] "
-                        "prefix could plausibly be a referent of this question. "
-                        "Quote each as 'date — title'.\n"
-                        "  (b) For each referent, state which role it plays in the "
-                        "arithmetic (target event / reference event / start of "
-                        "duration / endpoint).\n"
-                        "  (c) Compute the answer step by step, showing the "
-                        "subtraction.\n"
-                        "  (d) State a TENTATIVE answer in 1 sentence at the very "
-                        "end, prefixed with 'TENTATIVE:'.\n\n"
-                        "Question: {question}\n\nMemory Context:\n{context}\n\n"
-                        "Reasoning + tentative answer:"
-                    )
-                    pass1 = generate_answer(
-                        question=question,
-                        context=context_text,
-                        config=config,
-                        qa_template=pass1_template,
-                    )
-                    pass2_template = (
-                        "You previously analyzed a temporal-reasoning question. "
-                        "Your prior reasoning + tentative answer is below.\n"
-                        "VERIFY:\n"
-                        "  (a) Did you use the TODAY block as the reference for "
-                        "any 'X ago' phrasing? Not the system clock?\n"
-                        "  (b) Inclusive vs exclusive boundary on the day count?\n"
-                        "  (c) Direction: 'X before Y' means X is EARLIER; "
-                        "'since X' means X is the START; 'between A and B' is "
-                        "the absolute interval.\n"
-                        "  (d) If your tentative answer implies a future date, "
-                        "you've reversed direction — flip.\n"
-                        "Now give the FINAL answer in 1-2 concise sentences. "
-                        "Do NOT include 'TENTATIVE:' or chain-of-thought in the "
-                        "final answer.\n\n"
-                        "Question: {question}\n\n"
-                        "Memory Context (same as before):\n{context}\n\n"
-                        "Prior reasoning:\n" + (pass1 or "(no prior reasoning)") +
-                        "\n\nFinal answer:"
-                    )
-                    answer = generate_answer(
-                        question=question,
-                        context=context_text,
-                        config=config,
-                        qa_template=pass2_template,
-                    )
-                else:
-                    answer = generate_answer(
-                        question=question,
-                        context=context_text,
-                        config=config,
-                        qa_template=templates.get("qa_answer"),
-                    )
+                answer = generate_answer(
+                    question=question,
+                    context=context_text,
+                    config=config,
+                    qa_template=templates.get("qa_answer"),
+                )
         except Exception as e:
             logger.error(f"Error generating answer for {question_id}: {e}")
             answer = "Error generating answer."
@@ -2799,65 +2578,12 @@ if __name__ == "__main__":
         ),
     )
     parser.add_argument(
-        "--tr-cot",
-        action="store_true",
-        help=(
-            "iter29 TR-η — for temporal-reasoning questions, prepend an "
-            "explicit chain-of-thought prefix that forces the reader to "
-            "(1) name the referent event, (2) cite its absolute date, "
-            "(3) compute the arithmetic step by step, (4) only then give "
-            "the final answer."
-        ),
-    )
-    parser.add_argument(
-        "--session-calendar",
-        action="store_true",
-        help=(
-            "iter29 H — prepend a SESSION_CALENDAR table (every haystack "
-            "date with N-days-ago anchor) to the context. Was always-on "
-            "in iter29a but evidence shows it displaces top-K retrievals "
-            "and regresses MS — keep opt-in."
-        ),
-    )
-    parser.add_argument(
-        "--tr-calendar-chart",
-        action="store_true",
-        help=(
-            "iter29 TR-ι — prepend a 'days ago' calendar chart "
-            "(TODAY=YYYY-MM-DD, 1 day ago=..., 2 days ago=..., ...) to "
-            "the context for TR questions, so the reader can directly "
-            "look up the absolute date for an N-days-ago answer."
-        ),
-    )
-    parser.add_argument(
         "--tr-topic-timeline",
         action="store_true",
         help=(
             "iter29 TR-α — for TR questions, prepend a topic-focused "
             "chronological timeline of all events matching the question's "
-            "key noun phrases, with absolute date + (N days ago) anchors. "
-            "Solves order_among / multi-event aggregation failures."
-        ),
-    )
-    parser.add_argument(
-        "--tr-two-pass",
-        action="store_true",
-        help=(
-            "iter29 TR-κ — for TR questions only, run the reader twice. "
-            "Pass 1: list candidate events with dates, propose answer, "
-            "show reasoning. Pass 2: verify TODAY usage, inclusive/"
-            "exclusive boundary, direction; return final answer. "
-            "Doubles TR reader cost (~+$3-5)."
-        ),
-    )
-    parser.add_argument(
-        "--tr-structured-parse",
-        action="store_true",
-        help=(
-            "iter29 TR-ξ — for TR questions, run a small parser that "
-            "extracts (target_event, reference_event, time_unit, "
-            "direction) from the question and injects them as a "
-            "structured PARSED_QUESTION block at the top of context."
+            "key noun phrases, with absolute date + (N days ago) anchors."
         ),
     )
 
