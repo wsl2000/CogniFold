@@ -34,6 +34,90 @@ valid fallback is "wait for commonstack" or "run on the subset that
 already completed."
 </PROVIDER-ROUTING-HARD-RULE>
 
+<OPERATIONAL-HABITS>
+These are user-imposed habits, repeated across many sessions. Mirrored in
+the `feedback-lme-*` memory entries. Skim them every time before starting
+an iter — forgetting any of these costs the user time and money.
+
+**Branch discipline (`feedback-lme-branch`)**
+- All iter work commits to the `longmemeval-iter` branch.
+- Do NOT create per-iter branches (`iter29_*`, `tier3`, `iter32-dev`)
+  except for BIG risky surgery (writer/reader model swap, retrieval
+  rewrite). When you do branch, name it semantically (e.g.
+  `tr-only-optimization`, `iter30_cleanup`), not by iter number.
+- Default action: `git checkout longmemeval-iter` before editing.
+
+**Iter folder convention (`feedback-lme-iter-folder`)**
+- Every run output lives in `benchmarks/longmemeval/runs/iter<NN>_<label>/`.
+  Example: `runs/iter31_tr_round1/`, `runs/iter27_gpt54mini_full_n500_W1W2/`.
+- Each iter folder MUST contain a `CHANGES.md` with:
+  - one-paragraph summary of what changed
+  - the score and per-type breakdown
+  - any regressions called out in plain text
+  - the launcher invocation used
+- `iter_history.py` (Step 0) parses this folder layout; deviating
+  breaks the per-iter timeline view.
+
+**Batching discipline (`feedback-batch-edits`, `feedback-batch-full-coverage`)**
+- Do NOT trickle one tiny code change per failure case. Bundle all
+  per-cluster fixes into ONE commit per cluster (`Step 4`).
+- BEFORE running, present in chat the FULL per-case fix table (every
+  wrong qid, every proposed change). User reviews once, approves
+  once, then we run once.
+- After each cluster's commit, smoke ONE representative qid (Step
+  5) before continuing to the next cluster.
+
+**Audit discipline (`feedback-full-audit`)**
+- When asked to audit a case, STORE the full `full_context` —
+  never the truncated `[:120]` preview that ends up in console
+  output. The audit file must let the user re-grep months later
+  without having to re-run the eval.
+- Format: `audits/<qid>_<iter>.md` with the question, GT, HY, full
+  context, and your reasoning.
+
+**Issue → PR version management**
+- Every iter cycle gets:
+  1. A GitHub issue describing the cluster being targeted + the
+     hypothesis ("Fix TR-A duration_since_start, target +5 cases").
+  2. A draft PR on a dedicated branch, linked to the issue via
+     `Closes #<n>` in the PR body.
+  3. Per-cluster commits pushed to the PR's branch.
+  4. PR merged to `longmemeval-iter` (NOT `main`) when N=133/N=500
+     verifies the delta. Issue auto-closes.
+- Do NOT use long-lived feature branches as a stash for unproven
+  experiments — make it an issue + draft PR so the user can review.
+
+**Doc-guard sentinel**
+- The repo has a PreToolUse hook (`doc-guard`) that intercepts
+  `git commit` when `src/` is staged AND the doc sentinel is stale.
+- Refresh the sentinel before any commit that touches `src/`,
+  `benchmarks/`, `configs/`, or `scripts/`:
+  ```bash
+  date +%s > .claude/docguard_last_run
+  git add -f .claude/docguard_last_run
+  ```
+- Do NOT skip with `--no-verify` — fix the underlying staleness
+  instead.
+
+**Subagent-driven implementation (Step 4)**
+- For multi-cluster iter changes, spawn one `general-purpose`
+  subagent per cluster. Each subagent's prompt should:
+  - Name the cluster + qids
+  - Cite the file path + line range to edit
+  - Include the rule style guide (`references/rule-style-guide.md`)
+  - Forbid `_internal` / `_helper` refactors outside the cluster scope
+  - Return a one-paragraph summary of what was changed
+- After each subagent returns, do the import sanity check (Step
+  4 below), commit immediately, then move to the next cluster.
+
+**N=133 ≠ N=500**
+- A green TR-only N=133 is necessary but NOT sufficient. Some
+  fixes that help TR cluster A hurt MS cluster B in ways that
+  only show up on N=500. Always re-run on N=500 before claiming
+  a win — and re-run apples-compare on N=500 too (the regression
+  list often grows from TR-only → full).
+</OPERATIONAL-HABITS>
+
 <HARD-GATE>
 Before proposing or implementing ANY code change, you MUST:
 1. Pull the most recent `wrong_cases.json` for the iter we are
