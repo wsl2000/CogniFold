@@ -257,45 +257,94 @@ graph.
 
 ```bash
 bash scripts/run_iter31.sh benchmarks/longmemeval/qid_sets/tr_only.txt \
-    iter32_tr_only 5
+    iter32_tr_only 10
 ```
 
-Wallclock at writer effort=medium, 5 parallel commonstack:
-- TR-only N=133: ~3h
-- MS-only N=133: ~3h
-- Full N=500: ~10h
+**Parallel = 10** (was 5; bumped 2026-06-05 after empirical
+verification that commonstack-with-healthy-balance handles 10p
+cleanly when paired with the Step 6.5 health-check). If empty rate
+> 20% by the first 10-check, the monitor auto-kills and the user
+should drop to 5p for the recovery run.
 
-### Step 6.5 — Liveness check every 10 results (MANDATORY)
+The launcher (`scripts/run_iter31.sh`) bakes these flags in, and
+this list IS the canonical config — match it when writing any
+recovery / smoke script:
 
-While Step 6 is running, the workflow MUST poll
-`scripts/health_check.py` every time 10 new results land in the
-batch dirs. If it prints `STOP — ...` on the last line, immediately
-`pkill` workers and inspect — DO NOT let the run continue with a
-broken stack producing empty hypotheses.
+```
+--model openai:openai/gpt-5.4-mini
+--writer-model openai:openai/gpt-5.4-mini
+--writer-reasoning-effort medium
+--judge-model openai:openai/gpt-4o
+--embedding openai:openai/text-embedding-3-small
+--symbolic-resolver --symbolic-temporal --symbolic-bypass
+--tr-topic-timeline                    # TR-α block (TR-only Qs)
+--llm-rerank
+--rerank-model openai:openai/gpt-5.4-mini
+--rerank-reasoning-effort low
+--rerank-pool 100                      # rerank candidates from BM25 top-100
+--agg-max-context-chars 15000          # reader context budget
+--batch-mode --llm-eval
+```
 
-Recommended monitor body (Bash, persistent):
+Wallclock at writer effort=medium, 10 parallel commonstack:
+- TR-only N=133: ~75-90 min
+- MS-only N=133: ~75-90 min
+- Full N=500: ~5h
+
+Cost (commonstack rate ≈ $50/hr observed 2026-06-05):
+- TR-only N=133: ~$60-100
+- Full N=500: ~$200-300
+
+### Step 6.5 — Liveness check every 10 results (MANDATORY at 10p)
+
+At 10p the provider can fall over in 10-15 min (the 25p storm on
+2026-06-05 burned $45 in 30 min before being noticed). The
+mandatory monitor pattern is: **every 10 results, run
+`health_check.py`. If STOP on last line, immediately pkill the
+workers.** The user has been explicit on this — do not skip and
+do not extend the interval beyond 10.
+
+Recommended monitor body (Bash, persistent — drop into `Monitor`
+or background loop). 10p version with 429-storm early-stop:
 
 ```bash
-prev=0
+prev_done=$(wc -l < benchmarks/longmemeval/runs/iter32_tr_only/hypothesis.jsonl 2>/dev/null || echo 0)
+last_check=$prev_done
 while true; do
-  N=$(cat benchmarks/longmemeval/output_i31_b*/hypothesis.jsonl 2>/dev/null | wc -l)
-  N=$(( N + $(wc -l < runs/iter32_tr_only/hypothesis.jsonl 2>/dev/null || echo 0) ))
-  if [ "$N" -ge $(( prev + 10 )) ]; then
-    OUT=$(.venv/bin/python .claude/skills/lme-auto-optimize/scripts/health_check.py \
-            --run-dir runs/iter32_tr_only \
+  N_BATCH=$(cat benchmarks/longmemeval/output_i31_b*/hypothesis.jsonl 2>/dev/null | wc -l)
+  N_FINAL=$(wc -l < benchmarks/longmemeval/runs/iter32_tr_only/hypothesis.jsonl 2>/dev/null || echo 0)
+  TOTAL=$(( N_BATCH + N_FINAL ))
+  ACTIVE=$(pgrep -af "run_eval.*output_i31_b" | wc -l)
+  ERR_429=$(grep -hc "HTTP/1.1 429\|balance" logs/iter31_b*.log 2>/dev/null | awk '{s+=$1}END{print s+0}')
+
+  # Mandatory: every 10 results, run health_check
+  if [ "$TOTAL" -ge $(( last_check + 10 )) ]; then
+    HC=$(.venv/bin/python .claude/skills/lme-auto-optimize/scripts/health_check.py \
+            --run-dir benchmarks/longmemeval/runs/iter32_tr_only \
             --batch-glob "benchmarks/longmemeval/output_i31_b*" \
-            --baseline runs/iter27_gpt54mini_full_n500_W1W2 \
-            --type temporal-reasoning)
-    echo "$OUT" | tail -8
-    if echo "$OUT" | tail -1 | grep -q "^STOP"; then
+            --baseline benchmarks/longmemeval/runs/iter27_gpt54mini_full_n500_W1W2 \
+            --type temporal-reasoning 2>&1)
+    LAST=$(echo "$HC" | tail -1)
+    echo "[hc done=$TOTAL active=$ACTIVE 429=$ERR_429] $LAST"
+    if echo "$LAST" | grep -q "^STOP"; then
       pkill -KILL -f "run_eval.*output_i31_b"
-      pkill -KILL -f "run_iter.*.sh"
-      echo "TERMINATED-BAD" && break
+      pkill -KILL -f "run_iter31.sh"
+      echo "TERMINATED-BAD: $LAST" && break
     fi
-    prev=$N
+    last_check=$TOTAL
   fi
-  [ "$N" -ge 133 ] && break
-  sleep 60
+
+  # Early-stop on 429 storm before health_check would fire
+  if [ "$ERR_429" -gt 100 ] && [ "$TOTAL" -lt $(( last_check + 5 )) ]; then
+    pkill -KILL -f "run_eval.*output_i31_b"
+    pkill -KILL -f "run_iter31.sh"
+    echo "EARLY-STOP-429-STORM 429=$ERR_429" && break
+  fi
+
+  if [ "$TOTAL" -ge 133 ] || [ "$ACTIVE" -eq 0 ]; then
+    echo "TERMINAL: done=$TOTAL active=$ACTIVE 429=$ERR_429" && break
+  fi
+  sleep 120
 done
 ```
 
