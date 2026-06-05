@@ -9,6 +9,31 @@ A repeatable workflow for one iter cycle on LongMemEval. Built on top
 of `superpowers` skills (`systematic-debugging`, `writing-plans`,
 `verification-before-completion`, `subagent-driven-development`).
 
+<PROVIDER-ROUTING-HARD-RULE>
+This is a HARD constraint, encoded in `feedback-lme-routing` memory and
+repeated by the user multiple times. Violating it wastes the user's
+prepaid commonstack credit and/or burns OpenRouter spend:
+
+- **gpt-5.4-mini → commonstack** (writer / reader / rerank — only
+  commonstack serves this exact model SKU)
+- **judge `gpt-4o` → OpenRouter** (commonstack lacks it)
+- **embed `text-embedding-3-small` → OpenRouter** (commonstack has no
+  `/embeddings` endpoint)
+- **ANY other chat model** (gpt-4o-mini, gpt-5-mini, gpt-5, claude, etc.)
+  → OpenRouter. **NEVER commonstack.**
+
+When probing commonstack health, use `openai/gpt-5.4-mini` —
+probing with `openai/gpt-4o-mini` against commonstack is wrong (we
+do not route 4o-mini through commonstack and the probe result is
+misleading about the provider's state for our workload).
+
+When commonstack breaks, do NOT propose "route reader to OR gpt-5-mini"
+as a fallback. gpt-5-mini ≠ gpt-5.4-mini — the swap changes the model
+and invalidates all comparisons against the iter27 baseline. The only
+valid fallback is "wait for commonstack" or "run on the subset that
+already completed."
+</PROVIDER-ROUTING-HARD-RULE>
+
 <HARD-GATE>
 Before proposing or implementing ANY code change, you MUST:
 1. Pull the most recent `wrong_cases.json` for the iter we are
