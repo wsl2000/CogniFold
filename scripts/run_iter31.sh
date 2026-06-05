@@ -65,7 +65,7 @@ export JUDGE_BASE_URL="https://openrouter.ai/api/v1"
 export EMBEDDING_API_KEY="$OPENROUTER_API_KEY"
 export EMBEDDING_BASE_URL="https://openrouter.ai/api/v1"
 
-export WRITER_REASONING_EFFORT="low"
+export WRITER_REASONING_EFFORT="medium"
 # Pacing no longer needed — commonstack 2026-06-05 update raised RPM
 # cap and max_completion_tokens limit; 5-thread burst of 50 × 24K
 # calls now succeeds 100%. Leave the hook in run_eval.py for future

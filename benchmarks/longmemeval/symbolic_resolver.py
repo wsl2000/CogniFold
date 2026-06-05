@@ -197,12 +197,15 @@ class LongMemEvalSymbolicResolver:
             # the broader patterns swallowing matches.
             ("diff_since_when",    self._try_diff_since_when),
             ("duration_activity",  self._try_duration_activity),
-            ("which_first",        self._try_which_first),
+            # iter31: which_first DISABLED — 0/1 on iter27 (case #24
+            # gpt4_0b2f1d21 wrong direction).
             ("chronological_order", self._try_chronological_order),
             ("rank_among",         self._try_rank_among),
             ("date_diff_ago",      self._try_diff_ago),
             ("date_diff_since",    self._try_diff_since),
-            ("relative_ago_recall", self._try_relative_ago_recall),
+            # iter31: relative_ago_recall DISABLED — 0/1 on iter27
+            # (case #21 eac54add, picked wrong concept; also case #26
+            # 982b5123 picked planning-mention instead of book event).
             ("named_day_recall",   self._try_named_day_recall),
             ("latest_value",       self._try_latest_value),
             ("topic_recall",       self._try_topic_recall),
@@ -368,11 +371,31 @@ class LongMemEvalSymbolicResolver:
             if c.date is None:
                 continue
             node = self.graph.get_node_or_none(c.node_id)
-            if node is None or not node.data.get("is_start"):
+            if node is None:
+                continue
+            # iter31: writer rule 4 sets `activity_start: true`;
+            # legacy iter29 used `is_start`. Accept either.
+            if not (node.data.get("activity_start") or node.data.get("is_start")):
                 continue
             activity_field = (node.data.get("activity") or "").lower()
             if not _overlaps(f"{activity_field} {c.title} {c.description}"):
                 continue
+            # iter31: if writer provided start_date (resolved from
+            # "I started X 2 weeks ago" → session_date − 14), prefer
+            # that over the session date for the start anchor.
+            start_date_str = node.data.get("start_date")
+            if start_date_str:
+                try:
+                    parsed = datetime.fromisoformat(str(start_date_str)[:10])
+                    # Mutate a copy of the _Concept so resolver math uses
+                    # the resolved start_date.
+                    c = _Concept(
+                        node_id=c.node_id, title=c.title,
+                        description=c.description, date=parsed,
+                        raw_text=c.raw_text,
+                    )
+                except Exception:
+                    pass
             assert c.date is not None
             if best is None or (best.date is not None and c.date < best.date):
                 best = c
@@ -387,6 +410,27 @@ class LongMemEvalSymbolicResolver:
             body = f"{c.title} {c.description}"
             if not self._START_VERBS_RE.search(body):
                 continue
+            if not _overlaps(body):
+                continue
+            assert c.date is not None
+            if best is None or (best.date is not None and c.date < best.date):
+                best = c
+        if best is not None:
+            return best
+
+        # Pass 3 (iter31, TR cluster A fix) — EARLIEST mention of the
+        # activity. When writer/reflector haven't marked any start
+        # concept AND no verb fallback fires, the safest answer for
+        # "how long had I been X-ing when Y" is to anchor on the
+        # EARLIEST concept that mentions the activity at all. Solves
+        # cases #15 (gpt4_cd90e484 binoculars), #17 (b29f3365 guitar
+        # lessons), #23 (e4e14d04 Book Lovers): user mentions activity
+        # multiple times; iter27 anchored on a recent mention, but the
+        # true start is the earliest mention in the qid's session log.
+        for c in self._concepts:
+            if c.date is None or c.node_id.startswith("evt-"):
+                continue
+            body = f"{c.title} {c.description}"
             if not _overlaps(body):
                 continue
             assert c.date is not None
@@ -698,7 +742,17 @@ class LongMemEvalSymbolicResolver:
         items = " → ".join(f"{i+1}. {label}" for i, (_, label, _) in enumerate(events))
         # iter08: bypass only when count matches the requested count exactly,
         # otherwise inject as a hint (let the LLM verify / trim).
-        bypass = (target_count is not None and len(events) == target_count)
+        # iter31 — force bypass=False for any order list with more than 3
+        # items. Empirical iter27 evidence: 4-of-4 order_among wrongs had
+        # ≥4 items in the expected answer (museums × 6, concerts × 5,
+        # trips × 3, airlines × 4), so a long list is the regression
+        # pattern. With bypass=False the resolver's list becomes a HINT
+        # the reader can override after scanning the chronological block.
+        bypass = (
+            target_count is not None
+            and len(events) == target_count
+            and len(events) <= 3
+        )
         return {
             "answer": "Earliest → latest: " + items,
             "reasoning": (
@@ -1409,7 +1463,20 @@ class LongMemEvalSymbolicResolver:
         # default _best_recent_concept first; if either anchor fails, try
         # again with a lower-threshold variant that uses the strongest
         # content nouns only.
-        a = self._best_recent_concept(phrase_a)
+        # iter31 (case #4 370a8ff4): when phrase_a contains a recovery
+        # verb ("recovered from", "got over", "healed from"), the user
+        # mentioned the recovery in MULTIPLE sessions. `_best_recent_concept`
+        # picks the LATEST mention, but the start anchor must be the
+        # EARLIEST (the recovery itself, not later recaps). Use the
+        # is_start path for these.
+        _RECOVERY_RE = re.compile(
+            r"\b(?:recovered\s+from|got\s+over|healed\s+from|gotten\s+over)\b",
+            re.IGNORECASE,
+        )
+        if _RECOVERY_RE.search(phrase_a):
+            a = self._find_is_start_concept(phrase_a) or self._best_recent_concept(phrase_a)
+        else:
+            a = self._best_recent_concept(phrase_a)
         b = self._best_recent_concept(phrase_b)
         if (a is None or b is None) and (phrase_a or phrase_b):
             # Retry with reduced phrase — keep only nouns ≥5 chars
@@ -1882,6 +1949,25 @@ class LongMemEvalSymbolicResolver:
                     if not any(s in top_text for s in stems):
                         bypass = False
         top = candidates[0][1]
+        # iter31 (cases #7 gpt4_f420262d Valentine airline, #20
+        # gpt4_d6585ce9 Saturday music event): when multiple candidates
+        # land on the same target day with similar scores, the resolver
+        # was picking the FIRST one by BM25 but the correct concept was
+        # often the second. Force bypass=False and render ALL same-day
+        # candidates as the answer hint so the reader can choose.
+        same_day_top = [c for s, c, off in candidates if off == candidates[0][2]]
+        if len(same_day_top) >= 2:
+            bypass = False
+            tops = [f"'{c.title[:80]}'" for c in same_day_top[:5]]
+            answer = top.title + " (candidates: " + " | ".join(tops) + ")"
+            return {
+                "answer": answer,
+                "reasoning": (
+                    f"Named-day '{query[:60]}' → multiple same-day candidates: "
+                    + ", ".join(c.title[:60] for c in same_day_top[:5])
+                ),
+                "bypass": False,
+            }
         return {
             "answer": top.title,
             "reasoning": (

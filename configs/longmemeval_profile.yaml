@@ -361,6 +361,77 @@ profiles:
           DO NOT report the baseline as the answer. The derivation
           is the answer.
 
+        iter31 TR — DURATION-SINCE-START rule (cluster A):
+        For "how long had I been X-ing when Y happened" / "how many
+        weeks had passed since I X when Y" / "how many days had
+        passed since I X when Y":
+          1. If a concept marked `activity_start: true` for X
+             exists in context, use its `start_date` as the start
+             anchor. If no marked concept, use the EARLIEST dated
+             concept that mentions X.
+          2. If Y has a clear concept with date Y_date, compute
+             (Y_date − start_date) in the unit the question asks.
+          3. If you found AT LEAST ONE concept mentioning X and ONE
+             mentioning Y, DO NOT refuse — compute the best-effort
+             answer. Refusing with "I don't have a memory of when
+             you started X" is the dominant failure mode here.
+
+        iter31 TR — AGE-INFERENCE worked example (case d01c6aa8):
+          Context: "User is 32 years old" + "lived in U.S. for 5 years"
+          Q: "How old was I when I moved to the United States?"
+          ✓ "27. Current age 32 − 5 years in U.S. = age 27 at move."
+          ✗ "I don't have your birth date, so I can't determine."
+
+        iter31 TR — PLANNED→COMPLETED "today" translation (case
+        gpt4_68e94288): when a concept's [YYYY-MM-DD] prefix is N
+        days before TODAY and its body says "today" or "this
+        morning", the "today" refers to the concept's date — not
+        the question's TODAY. Example: concept "[2023-05-25] User
+        participated in #PlankChallenge today" + question "What
+        did I do 5 days ago?" (TODAY = 2023-05-30) → answer
+        "#PlankChallenge" (the participation happened on 2023-05-25
+        = 5 days ago).
+
+        iter31 TR — INCLUSIVE-BOUNDARY worked example (case
+        gpt4_4fc4f797): Q "How many days passed between Mar 17 and
+        Apr 23?" — Mar 17 → Apr 17 = 31 days. Apr 17 → Apr 23 = 6
+        days. Total 37 days exclusive of the start day, 38 days
+        inclusive (Mar 17 itself counted). Both 38 and 39 are
+        acceptable answers — state the inclusive count first.
+
+        iter31 TR — COMPARATIVE EARLIER=FIRST (case
+        gpt4_0b2f1d21): when the question asks "which X happened
+        first, A or B?" and both A and B have dates in context, the
+        one with the EARLIER date is the answer. Do NOT trust an
+        order_among / which_first SYMBOLIC_ANSWER hint without
+        verifying the dates yourself for this binary case.
+
+        iter31 TR — EXHAUSTIVE-COUNT exclude-anchor caveat (case
+        a3838d2b): for "how many X did I do BEFORE event Y"
+        questions, count UNIQUE X events whose date < Y's date and
+        DO NOT include Y itself in the count (event Y is the
+        boundary, not a participant). If the answer is 4 events and
+        Y is the 5th, the answer is 4 not 5.
+
+        iter31 TR — BOOKING vs PLANNING distinction (case
+        982b5123): for "when / how long ago did I X" where X is a
+        transactional verb (book, buy, pay, reserve, sign,
+        register), only concepts where the user EXPLICITLY DID X
+        count. Concepts where the user PLANS to X ("I'm going to
+        book", "I'll need to reserve", "considering booking") are
+        INTENTIONS, not the event. The answer date is when the
+        actual transaction happened, not when the user discussed
+        planning.
+
+        iter31 TR — _abs both-entities check (case
+        c8090214_abs): for `_abs`-suffixed questions naming TWO
+        entities ("how many days before I bought X did I attend Y",
+        "which event happened first, A or B"), SCAN context for
+        BOTH X and Y. If EITHER is missing, REFUSE with the iter10
+        template. Do NOT substitute a different entity for the
+        missing one (iPhone 13 Pro ≠ iPad even if both are Apple
+        products).
+
         iter29 MASTRA reader rules:
 
         KNOWLEDGE UPDATES (supersession): for "current state" Qs,

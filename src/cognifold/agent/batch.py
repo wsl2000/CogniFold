@@ -96,6 +96,34 @@ IMPORTANT:
    is the total" question — the writer must produce enumerable
    per-instance concepts, not one aggregate "User bought several
    bike items" concept.
+
+4. **START events (iter31 TR fix)** — when the user FIRST mentions
+   an ongoing activity, hobby, membership, possession, or job
+   transition with a starting verb, create a concept that records
+   the start explicitly. Triggers:
+   - "I started X-ing", "I began X", "I just started X"
+   - "I joined X", "I signed up for X", "I enrolled in X"
+   - "I picked up X" (hobby), "I got into X"
+   - "I got my new X", "I bought my new/first X"
+   - "I'm a member of X" (first mention)
+   - "I started taking X lessons / classes"
+   - "first time I did X", "my first X"
+   Set on `data`:
+       activity_start: true
+       activity:       "<verb+object phrase, lowercase>"
+                       e.g. "bird watching", "guitar lessons",
+                       "Book Lovers Unite", "Adidas running shoes",
+                       "exchange program at TU"
+       start_date:     "<the absolute date of the START — if user
+                       said 'I started X 2 weeks ago' resolve to
+                       session_date − 14 days; if 'I started X
+                       today' use session_date; if 'I started X
+                       in March' use that month's mid-day>"
+   Even if the user only IMPLIES a start ("I've been bird watching
+   for two months"), back-derive the start_date = session_date −
+   the duration, and emit the concept. This is the SINGLE most
+   important field for "how long had I been X-ing when Y happened"
+   temporal-reasoning questions.
 """
 
 
