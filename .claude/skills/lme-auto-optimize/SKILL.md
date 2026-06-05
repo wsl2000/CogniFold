@@ -156,6 +156,55 @@ Wallclock at writer effort=medium, 5 parallel commonstack:
 - MS-only N=133: ~3h
 - Full N=500: ~10h
 
+### Step 6.5 — Liveness check every 10 results (MANDATORY)
+
+While Step 6 is running, the workflow MUST poll
+`scripts/health_check.py` every time 10 new results land in the
+batch dirs. If it prints `STOP — ...` on the last line, immediately
+`pkill` workers and inspect — DO NOT let the run continue with a
+broken stack producing empty hypotheses.
+
+Recommended monitor body (Bash, persistent):
+
+```bash
+prev=0
+while true; do
+  N=$(cat benchmarks/longmemeval/output_i31_b*/hypothesis.jsonl 2>/dev/null | wc -l)
+  N=$(( N + $(wc -l < runs/iter32_tr_only/hypothesis.jsonl 2>/dev/null || echo 0) ))
+  if [ "$N" -ge $(( prev + 10 )) ]; then
+    OUT=$(.venv/bin/python .claude/skills/lme-auto-optimize/scripts/health_check.py \
+            --run-dir runs/iter32_tr_only \
+            --batch-glob "benchmarks/longmemeval/output_i31_b*" \
+            --baseline runs/iter27_gpt54mini_full_n500_W1W2 \
+            --type temporal-reasoning)
+    echo "$OUT" | tail -8
+    if echo "$OUT" | tail -1 | grep -q "^STOP"; then
+      pkill -KILL -f "run_eval.*output_i31_b"
+      pkill -KILL -f "run_iter.*.sh"
+      echo "TERMINATED-BAD" && break
+    fi
+    prev=$N
+  fi
+  [ "$N" -ge 133 ] && break
+  sleep 60
+done
+```
+
+Danger thresholds (any → STOP):
+- empty hypothesis rate > 20% (provider 429 / timeout cascade)
+- accuracy more than 10pp below baseline on common qids
+- median `graph_node_count` < 300 (writer dropping events)
+- `verdict=="ERROR"` rate > 5%
+
+**Empirical provider limits (commonstack, 2026-06-05)**:
+- 1 parallel: 0% empty
+- 5 parallel writer-medium + reader max_tokens=24K: ~25% empty
+- 25 parallel: ~70% empty
+
+Conclusion: the empty rate is TPM-dominated, not RPM. To run > 3
+parallel safely on commonstack, lower reader `max_completion_tokens`
+to 8K and/or use a separate provider for reader.
+
 ### Step 7 — Apples-to-apples vs baseline
 
 ```bash
