@@ -332,7 +332,52 @@ right but we got wrong), improvements list. Decision:
 Before claiming the iter is done, you MUST:
 1. Re-run apples-to-apples to confirm the saved metrics match
 2. Verify the iter folder has a CHANGES.md with score + per-type breakdown
-3. Verify the GitHub issue is closed and the PR is updated
+3. **Write a new section in `benchmarks/longmemeval/HISTORY.md`** for this iter (see below — MANDATORY, not optional)
+4. **Update the Score summary table at the top of HISTORY.md** with the iter's row
+5. **Update the Trajectory summary at the bottom of HISTORY.md** if this iter shifts the trajectory line
+6. Verify the GitHub issue is closed and the PR is updated
+
+### Step 8.1 — HISTORY.md update (MANDATORY)
+
+`benchmarks/longmemeval/HISTORY.md` is the canonical hand-curated
+record of every iter. `iter_history.py` (Step 0) generates a
+machine-parsed timeline view, but the narrative — *why* each iter
+was tried, what regressed, what the decision was — only lives in
+HISTORY.md. If you do not write the section, future iters will
+re-invent the same regression.
+
+The section MUST include:
+
+```markdown
+## iterNN — <one-line title>
+
+- **Score**: NN.N% strict (X/Y), partial N.N% — KEEP or REVERT?
+- **NET vs <previous SOTA>**: ±N cases (±N.N pts)
+- **Stack changes vs <baseline>**:
+  - <bullet 1>
+  - ...
+- **By type vs <baseline>**:
+
+  | type | this iter | baseline | Δ |
+  |---|---|---|---|
+  | ... | ... | ... | ... |
+
+- **Key findings** (numbered, 3-5 items):
+  1. <finding with case-level evidence>
+  2. ...
+- **Operational notes** (rate limits hit, provider issues, etc.)
+- **Decision**: KEEP / REJECT / REVERT — and *why*
+- **Branch state**: which branch, pushed or not
+```
+
+If the iter is REVERTED, still write a section (shorter) — the
+revert reason is what future iters need to avoid re-introducing
+the same change.
+
+If the iter is partial / blocked (provider down, budget exhausted),
+record the partial result and the block reason. Do NOT skip the
+section — partial data is what flagged commonstack-balance-0 as a
+recurring failure mode.
 
 ## Failure taxonomy
 

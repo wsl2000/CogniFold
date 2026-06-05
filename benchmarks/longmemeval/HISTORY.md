@@ -32,8 +32,14 @@ Full chronological record of every iteration. Each iteration documents: code/pro
 | 13 | noun_fallback_abs_unknown (TR-only) | 133 | — | **78.9%** | TR +1.5 vs iter12 | KEEP | local |
 | 14 | relago55_count_among (TR-only) | 133 | — | 78.2% | TR -0.7 vs iter13 | partial revert | local |
 | 15 | target_date_block (TR-only) | 133 | — | **78.9%** | TR +0.7 vs iter14 | KEEP — pushed in PR #3 | pushed `37c4aa1` |
+| 19 | full validation (iter17 + W1 ON) | 500 | **86.8%** ★ | 78.9% | +3.6 vs iter02 | **KEEP — new SOTA on N=500** | `37c4aa1+` |
+| 27 | gpt-5.4-mini + W1+W2 | 500 | **86.8%** | **80.5%** | net 0 vs iter19, MS −4.5 | NEUTRAL — W2 rejected for default | `iter27` folder |
+| 28a/b | Mastra triple-date / priority | partial | — | — | — | REVERT — broke MS / SSA | local only |
+| 29c | qa_answer compression | 500 partial | 62.5% | 57.x% | MS catastrophic | REVERT | local only |
+| 30 | W3 START + qa-compress | 500 partial | 62.5% | 41.x% | TR catastrophic | REVERT | `iter30_cleanup` |
+| 31 | resolver TR fixes (round 1) | 34/133 partial | — | 85.3% (34 healthy) | TR +8.8 vs iter27 on same qids | IN PROGRESS — provider blocked | `tr-only-optimization` |
 
-★ = current prod on `opennorve/longmemeval-iter`. iter16 (`target_cands_block`) in flight at time of writing.
+★ = current prod on `opennorve/longmemeval-iter` (iter19). iter27 in `longmemeval-iter-experimental`. iter31 in flight blocked on commonstack balance.
 
 ## Hardcore-49
 
@@ -332,12 +338,105 @@ iter18 plan: borrow Chronos+Mem0's approach — add a writer pass that resolves 
 - **Note**: 3 qids initially failed due to OpenRouter transient errors; resumed and merged. Final count = 500/500.
 - **Decision**: KEEP — current best. Submitted as PR update.
 
+## iter20-26 — TR-only refinement loop (not snapshotted on N=500)
+
+A series of small TR-only N=133 iterations between iter19 and iter27,
+exploring writer-side EVENT/CONCEPT date precision tweaks and
+resolver pattern hardening. Each iter committed individual code
+changes to `longmemeval-iter-experimental`; none were promoted as
+an SOTA replacement because the TR-only delta did not survive
+when re-checked on N=500. Detailed CHANGES.md per iter in
+`runs/iter2*/`. Net effect rolled forward into iter25 resolver
+stack (count_among verb-hard + opinion filter + lowercase-title
+filter for order_among), which seeded iter27.
+
+## iter27 — gpt-5.4-mini + W1+W2 full N=500 validation
+
+- **Score**: **86.80%** strict (434/500), 86.90% partial — tied iter19 SOTA on overall, +1.5 on TR
+- **NET vs iter19 (86.72%)**: 0 cases (434 = 434). The expected lift from new model + W1 + W2 did not materialise.
+- **Stack changes vs iter19**:
+  - Reader / writer / rerank: `openai/gpt-5-mini` → **`openai/gpt-5.4-mini`** (newer family, same parameter class)
+  - Writer reasoning_effort: high → **low** (cost optimisation; no TR-only quality penalty observed in pilot)
+  - W1 typed-attribute extraction: **ON** (was OFF in iter19) — extracts per-concept structured fields
+  - W2 event_date resolution: **ON** (was OFF in iter19; opt-in since iter18) — second LLM pass writes per-concept absolute date
+  - Symbolic stack: iter25 (count_among verb-hard + opinion filter + lowercase-title order_among filter)
+  - Embedding routing: OpenAI direct (`sk-proj-*`), NOT OpenRouter — added `EMBEDDING_API_KEY` / `EMBEDDING_BASE_URL` plumbing
+  - `AGG_MAX_CONTEXT_CHARS=15000`
+- **By type vs iter19**:
+
+  | type | iter27 | iter19 | Δ |
+  |---|---|---|---|
+  | single-session-assistant | 56/56 (100.0%) | 51/56 (91.1%) | **+8.9** |
+  | single-session-preference | 28/30 (93.3%) | 27/30 (90.0%) | +3.3 |
+  | temporal-reasoning | 107/133 (80.5%) | 105/133 (78.9%) | +1.5 |
+  | knowledge-update | 73/78 (93.6%) | 74/78 (94.9%) | -1.3 |
+  | single-session-user | 67/70 (95.7%) | 68/70 (97.1%) | -1.4 |
+  | multi-session | 103/133 (77.4%) | 109/133 (82.0%) | **-4.5** |
+
+- **Key findings**:
+  1. **Net zero overall** — model upgrade + W1 + W2 cancel out.
+  2. **MS regression real (-4.5pp = ~6 cases)** — hypothesis: W2's noisy absolute date anchors conflict with MS questions whose GT depends on session-relative ordering.
+  3. **SSA perfect (56/56)** — W1 typed-attribute extraction is highly effective on single-session-assistant questions; reader cleanly finds structured fields. +8.9pp over iter19.
+  4. **gpt-5.4-mini ≈ gpt-5-mini** — newer SKU offers no measurable advantage in this pipeline at low writer effort.
+  5. **W2 net effect negative** — TR gain (+1.5pp on 133 = ~2 cases) does NOT offset MS loss (-4.5pp on 133 = ~6 cases). W2 must not enable globally.
+
+- **Operational notes**:
+  - 100-way launch hit OpenAI embed TPM 429 (1M TPM limit) — 55 of 100 batches failed. Required two resume rounds (55-way, then 12-way) to reach 500/500.
+  - **Lesson for future**: with W1+W2 + per-session embedding at scale, OpenAI embed TPM is the bottleneck. Cap at ≤30 concurrent for full N=500 on direct OpenAI embed, or route to OpenRouter.
+- **Decision**:
+  - REJECT for default stack — iter19 remains PR-quality baseline.
+  - W1: KEEP as opt-in (helps SSA materially).
+  - W2: REJECT for global use — keep behind flag, investigate question-type gating.
+  - gpt-5.4-mini: NEUTRAL.
+- **Branch state**: local-only on `longmemeval-iter-experimental` (NOT pushed to public). iter19 remains the public SOTA on PR #3.
+
+## iter28a / iter28b — Mastra triple-date / priority tagging (REVERTED)
+
+Two parallel experiments inspired by iter27's findings:
+- **iter28a**: Mastra-style triple-date observation format
+  (`creation_date` / `referenced_date` / `relative_offset_days`) on
+  EVENT/CONCEPT nodes, replacing W2.
+- **iter28b**: priority tagging (🔴🟡🟢) on writer output + use in
+  `AGG_MAX_CONTEXT_CHARS` truncation.
+
+Both regressed badly on partial N=133 runs (iter28a KU −27, MU −25; iter28b TR −70). REVERTED — no kept code.
+
+## iter29 / iter29a / iter29c — qa_answer rule expansion (REVERTED)
+
+Successive attempts to fix TR clusters by adding rules to
+`qa_answer` reader prompt:
+- iter29a added 7 rules totalling **+200 lines** → MS −27pp on N=500 (catastrophic — reader over-applied rules to unrelated questions). REVERTED in iter29b.
+- iter29c trimmed to fewer rules → still MS 57% on partial 96/500. REVERTED.
+
+**Lesson** (captured in `references/rule-style-guide.md`): hard 12-line ceiling per rule. Beyond ~20 total rules in qa_answer, accuracy degrades from rule misapplication.
+
+## iter30 / iter30b — W3 START extraction + qa_answer compression (REVERTED)
+
+Combined attempt to fix TR-A duration_since_start by adding a third writer pass (W3 START_EVENT extraction) plus compressing iter27's qa_answer worked examples.
+
+- **iter30 partial 96/500**: MS 48% (-29pp vs iter27), TR 57% (-23pp).
+- W3 START pass added noise to writer output that broke retrieval.
+- qa_answer compression removed iter02/10/13 worked examples that were actively firing for unrelated cases (MS −1.5pp from those alone).
+- REVERTED. `iter30_cleanup` branch retained for partial code state.
+
+## iter31 — resolver TR fixes round 1 (IN PROGRESS)
+
+- **Targeted clusters**: TR-A duration_since_start (10), TR-B order_among (4), TR-D date_diff (3), TR-G \_abs (1), MS-A undercount, MS-B refusal — 15 base + 2 round-1.5 (X1 + X4) fixes.
+- **Stack**: iter19 writer (no W1/W2/W3/Reflector) + iter27 reader effort=high + iter25 symbolic stack + TR-α topic timeline + CHRONOLOGICAL-SCAN qa_answer rule.
+- **Run state (2026-06-05)**: 34/133 healthy results (commonstack provider depleted balance mid-run, 79 qids returned empty hypothesis). On the 34 common qids: iter31 = 29/34 = **85.3%** vs iter27 = 26/34 = **76.5%** → **+8.8pp** delta on the healthy subset.
+- **Blocked**: commonstack account balance → 0 despite user $500 top-up. 99 qids remain unrun; user in contact with commonstack support. OR fallback declined as too expensive (~$135 for 99 qids on gpt-5.4-mini).
+- **Branch**: `tr-only-optimization` (PR #5, issue #4).
+- **Decision**: pending — awaiting full 133/133 to confirm signal holds.
+
 ## Trajectory summary (overall strict on N=500)
 
 ```
 iter00 (df644ee)  80.0%
 iter02 (f5ec922)  83.2%  ★ previous prod
 iter05            84.2%  +1.0 (TR -8.3 regression hidden in overall +1.0)
-iter19 (37c4aa1+) 86.8%  +3.6 vs iter02, +2.6 vs iter05, TR recovered
+iter19 (37c4aa1+) 86.8%  +3.6 vs iter02, +2.6 vs iter05, TR recovered  — current public SOTA
+iter27 (local)    86.8%  net zero vs iter19 (W2 −MS, W1 +SSA cancel out); TR 80.5% (+1.5)
+iter28-30         REVERTED — see entries above for failure modes
+iter31 (partial)  85.3% on 34/133 healthy TR-only subset (+8.8 vs iter27 on same qids); full 133 blocked on provider
 ```
 
