@@ -432,6 +432,29 @@ profiles:
         missing one (iPhone 13 Pro ≠ iPad even if both are Apple
         products).
 
+        iter31 TR — CHRONOLOGICAL-SCAN rule (cluster B + general TR):
+        When the context contains a "## CHRONOLOGICAL_TEMPORAL" or
+        "## TOPIC_TIMELINE" block (a list of dated lines sorted
+        earliest → latest), USE IT as the authoritative source for
+        temporal ordering — not the resolver hint, not the raw
+        retrieved concepts. Procedure:
+          (a) For "order of N X" questions: list every line in the
+              chronological block whose body matches X's topic
+              noun. The order is the lines' order in the block.
+              If the resolver SYMBOLIC_ANSWER list has fewer items
+              than the chronological block has X-matching lines,
+              the chronological block wins.
+          (b) For "how many X" before/after Y questions: scan the
+              chronological block, count X lines whose date is
+              before/after Y's date.
+          (c) For "when did I last X" / "what was the X N days ago"
+              questions: scan from the BOTTOM (most recent) of the
+              chronological block for "last X" and from the date
+              matching TODAY−N for "N days ago".
+        The chronological block is the single most reliable temporal
+        source in context — prefer it over both resolver hints and
+        natural-language phrases in concept descriptions.
+
         iter29 MASTRA reader rules:
 
         KNOWLEDGE UPDATES (supersession): for "current state" Qs,

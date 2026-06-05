@@ -85,7 +85,8 @@ echo "  W1:        OFF (was iter27 +; iter27 CHANGES self-noted MS −4.6)"
 echo "  W2:        OFF (same)"
 echo "  W3:        OFF (iter30 partial showed MS −29)"
 echo "  Reflector: OFF (unproven net gain; possible MS over-mark)"
-echo "  TR-α:      OFF (was iter30 +; TR-only block, drop for clarity)"
+echo "  TR-α:      ON (TR-only chronological topic-timeline block,"
+echo "             targets order_among + duration_since_start clusters)"
 echo "  output:    $FINAL_DIR"
 
 TODO_FILE=$(mktemp)
@@ -143,6 +144,7 @@ for ((i=0; i<N_PARALLEL; i++)); do
         --embedding openai:openai/text-embedding-3-small \
         --writer-reasoning-effort low \
         --symbolic-resolver --symbolic-temporal --symbolic-bypass \
+        --tr-topic-timeline \
         --llm-rerank --rerank-model openai:openai/gpt-5.4-mini \
         --rerank-reasoning-effort low --rerank-pool 100 \
         --agg-max-context-chars 15000 \
