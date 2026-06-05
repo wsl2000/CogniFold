@@ -189,7 +189,7 @@ def call_llm(prompt: str, config: AgentConfig, json_mode: bool = False) -> str:
             return ""
         from openai import OpenAI
 
-        client_kwargs: dict = {"api_key": openai_key}
+        client_kwargs: dict = {"api_key": openai_key, "max_retries": 4}
         if cfg_url:
             client_kwargs["base_url"] = cfg_url
         client = OpenAI(**client_kwargs)
@@ -1089,7 +1089,7 @@ Evaluation:"""
         if judge_api_key:
             from openai import OpenAI
 
-            client_kwargs: dict = {"api_key": judge_api_key}
+            client_kwargs: dict = {"api_key": judge_api_key, "max_retries": 4}
             if judge_base_url:
                 client_kwargs["base_url"] = judge_base_url
             else:
@@ -2154,6 +2154,16 @@ def run_benchmark(args: argparse.Namespace) -> None:
                     config=writer_config,
                     batch_template=templates.get("batch_extraction"),
                 )
+                # iter31: optional per-session pacing for rate-limited
+                # chat providers (e.g. commonstack 50 RPM aggregate cap).
+                # Set CHAT_PACE_SECONDS=1.2 in the launcher env to throttle
+                # writer to ~30 RPM (cap/2 margin).
+                _pace = os.environ.get("CHAT_PACE_SECONDS")
+                if _pace:
+                    try:
+                        time.sleep(float(_pace))
+                    except (ValueError, TypeError):
+                        pass
             else:
                 for turn in session:
                     if turn["role"] == "user":

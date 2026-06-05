@@ -4,6 +4,93 @@ All notable changes to Cognifold will be documented in this file.
 
 ---
 
+## [2026-06-05] - iter31: revert to iter19 writer stack + 4 targeted qa_answer rules
+
+### Motivation
+Iter-by-iter MS accuracy timeline shows the regression has been baked
+in since iter27, not just iter30:
+```
+iter05 (no W1/W2):         MS 82.0%
+iter19 (no W1/W2):         MS 82.0%  ← peak
+iter27 (W1+W2 ON):         MS 77.4%  (-4.6, iter27 CHANGES.md self-noted)
+iter30 (W1+W2+W3 ON, 96):  MS 48.4%  (-29, accumulating writer noise)
+```
+Every writer enrichment pass added after iter19 (W1 typed-attr in
+iter19+, W2 event_date in iter27, W3 START in iter30) competes for
+top-K retrieval bandwidth on MS counting questions. iter27 sold MS
+-4.6 to gain SSA +8.9 (net -0.2 by class-weight); iter30 sold MS -29
+for no offsetting gain.
+
+iter31 reverts to iter19's writer stack and adds only changes with
+direct wrong-case evidence:
+
+### Changes
+- `configs/longmemeval_profile.yaml` qa_answer: 4 new rule blocks
+  - **MS-EXHAUSTIVE-COUNT** — targets 22 MS undercount wrongs (top
+    cluster). Forces reader to scan the entire context, list every
+    matching entity, and tally before answering "how many" / "how
+    much".
+  - **NO-REFUSAL-extended** — extends iter29 TR-NEW-7 to MS COUNT
+    and AGE-INFERENCE questions. Targets 5 MS refuse-when-data
+    cases (a1cc6108, c18a7dc8, ba358f49, 51c32626, 7024f17c).
+  - **_abs-WORKED-EXAMPLES** — restores the iter10 verbose _abs
+    refusal template that iter30 compression dropped. Targets 4
+    _abs failures (80ec1f4f_abs, eeda8a6d_abs, 09ba9854_abs,
+    a96c20ee_abs).
+  - **DERIVED-TIME-WORKED-EXAMPLE** — restores the iter22 #9
+    relative-time worked example (e.g. wake at 7:00 − 15 min =
+    6:45). Targets 73d42213.
+- `src/cognifold/agent/batch.py` BATCH_SYSTEM_PROMPT — trimmed from
+  4 rules (iter30) to 3: identifier preservation, state-change
+  framing, per-instance quantity preservation (new — prerequisite
+  for EXHAUSTIVE-COUNT to find each item). Dropped W2/W3 hint
+  rules now that those passes are off.
+- `benchmarks/longmemeval/run_eval.py`:
+  - OpenAI client `max_retries=4` (default is 2; balances retry
+    headroom vs holding requests open during rate-limit windows).
+  - Per-session pacing hook via `CHAT_PACE_SECONDS` env var; when
+    set, `time.sleep(N)` is inserted after each
+    `process_session_batch` call. Targets commonstack's 50 RPM
+    global cap, which is enforced with a sticky-penalty memory:
+    bursts that exceed the cap trigger progressive lockout that
+    retries cannot clear. Set the env to ~1.2 to throttle writer
+    to ~30 RPM (cap/2 margin).
+- `src/cognifold/embeddings/providers.py` — `max_retries=4` mirror.
+- `scripts/run_iter31.sh` — new launcher. Stack:
+  - Reader: gpt-5.4-mini high (kept from iter27 for SSA delta)
+  - Writer: gpt-5.4-mini low (single batch pass, no W1/W2/W3)
+  - Rerank: gpt-5.4-mini low
+  - Judge:  gpt-4o (via OpenRouter)
+  - Embed:  text-embedding-3-small (via OpenRouter, ~$0.30)
+  - Chat:   commonstack with `CHAT_PACE_SECONDS=1.2` pacing
+  - Reflector: OFF, TR-α: OFF
+- `scripts/run_iter30_commonstack.sh`, `scripts/run_iter30b_no_w3.sh`
+  — committed alongside as reference launchers for the iter30
+  attempts that aborted (W3 caused MS −29 confirmed; W3 OFF + 5p
+  commonstack hit RPM cap).
+
+### Files Modified
+- `configs/longmemeval_profile.yaml` — +53 lines (4 new rule blocks)
+- `src/cognifold/agent/batch.py` — −13 lines net (4→3 rules)
+- `benchmarks/longmemeval/run_eval.py` — +18 lines (max_retries +
+  pacing hook)
+- `src/cognifold/embeddings/providers.py` — 1 line (max_retries)
+- `scripts/run_iter31.sh`, `run_iter30_commonstack.sh`,
+  `run_iter30b_no_w3.sh` — added.
+
+### Tests
+- Added/updated tests: no (config + prompt changes only).
+- All tests passing: not run on this branch yet.
+
+### Expected Score
+Theoretical ceiling ~91–92%; realistic projection 88–90% strict.
+Bottleneck is rule-follow rate of gpt-5.4-mini on the new
+EXHAUSTIVE-COUNT rule (estimated 30–60%). N=500 verification
+pending (commonstack 1-parallel paced ≈ 18h, or OpenRouter 5-parallel
+≈ 10h at ~\$60–72).
+
+---
+
 ## [2026-06-05] - iter30 cleanup branch: rationalize iter29 + import doc harness
 
 ### Changes

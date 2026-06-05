@@ -87,21 +87,15 @@ IMPORTANT:
    "User moved from X to Y", "User switched from X to Y",
    "User completed X". Lets the reflector mark the replacement.
 
-3. **Verbatim temporal phrases** — preserve relative-time phrases
-   ("last week", "three weeks ago", "back in March", "yesterday")
-   VERBATIM in `data.time_phrase`. The W2 resolver needs the
-   original phrase to compute event_date.
-
-4. **Activity start markers (TR-NEW-1)** — when the user reports
-   STARTING a new ongoing activity / membership / acquisition
-   ("I started X-ing", "I joined Y", "I got my new Z", "I signed
-   up for W", "first time I did V", "I picked up bird watching",
-   "I bought my new running shoes"), set on `data`:
-       is_start: true
-       activity: "<verb+object phrase, lowercase>"
-   Pick the EARLIEST such mention as THE start. This is the single
-   most important field for "how long had I been X-ing when Y
-   happened" temporal-reasoning questions.
+3. **Preserve specific verbs and quantities** — when the user lists
+   multiple instances of the same kind of event ("I bought lights
+   for $40, the chain for $25, helmet for $80, and a tune-up for
+   $40"), extract EACH instance as a separate concept that
+   preserves the verb, the named item, AND the quantity / price
+   verbatim. This is the prerequisite for any "how many" or "what
+   is the total" question — the writer must produce enumerable
+   per-instance concepts, not one aggregate "User bought several
+   bike items" concept.
 """
 
 

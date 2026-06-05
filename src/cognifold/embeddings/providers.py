@@ -260,7 +260,7 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
         try:
             from openai import OpenAI
 
-            client_kwargs: dict = {"api_key": self.api_key}
+            client_kwargs: dict = {"api_key": self.api_key, "max_retries": 4}
             # iter27 fix: when EMBEDDING_API_KEY is set, we want to route
             # embeddings to a DIFFERENT endpoint than chat. Without an
             # explicit EMBEDDING_BASE_URL we MUST force the OpenAI default

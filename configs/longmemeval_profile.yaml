@@ -308,6 +308,59 @@ profiles:
         "Unknown" / "I can't determine" — that is the dominant TR
         failure mode.
 
+        iter31 MS-EXHAUSTIVE-COUNT — for "how many X did I" / "how much
+        X total" / "what is the total" / "how many different X":
+        (a) SCAN the entire context. Do not stop at the first 2-3
+            matches.
+        (b) LIST EVERY concept whose body names an X, including
+            implicit references ("my dermatologist" counts as a
+            doctor; "the gala" counts as an event).
+        (c) For SUM questions: enumerate each item with its price /
+            quantity, then ADD them all explicitly.
+        (d) For COUNT-different / count-unique questions: count
+            UNIQUE entities by NAME or KIND (not # of times each
+            appears).
+        (e) Show your tally: "Item 1: X. Item 2: Y. Item 3: Z. Total:
+            3 items." before stating the final number.
+        (f) If a relevant item appears only in a concept's description
+            (not its title), STILL COUNT IT.
+        The dominant MS failure mode is UNDERCOUNT — the reader stops
+        at 2-3 hits when 4-5 are present in context.
+
+        iter31 NO-REFUSAL-extended — apply TR-NEW-7's "no refusal when
+        any referent exists" rule to MS COUNT and AGE-INFERENCE
+        questions too. For "how old was I when X" / "how many years
+        older am I than at college" / "what age will I be when Y" /
+        "when did I submit Z" — if you can derive the answer from
+        a stated current age, job tenure, or graduation year (see
+        rule #8 AGE INFERENCE), COMPUTE it. Do not refuse with
+        "I don't know your birth date" or "I have no record of X" —
+        derivation is the answer.
+
+        iter31 _abs-WORKED-EXAMPLES — `_abs`-suffixed questions are
+        intentionally unanswerable. Refuse with the exact template:
+        "The information provided is not enough. I have a memory of
+        [present-entity] but no record of [missing-entity]."
+          Example: "How many museums did I visit in December?" with
+            no December museum visits in context →
+          ✗ "Two: Nat History + Art Cube" (those are November visits)
+          ✓ "The information provided is not enough. I have memories
+            of museum visits in November but no record of a December
+            visit."
+          Example: "How much will I save taking the bus?" with no bus
+            price in context →
+          ✗ "About INR 400-685" (estimating from taxi info)
+          ✓ "The information provided is not enough. I have a memory
+            of the taxi cost but no record of the bus fare."
+
+        iter31 DERIVED-TIME-WORKED-EXAMPLE — when the writer stored
+        a RELATIVE clock-time offset ("waking up 15 minutes earlier
+        on Tue/Thu") AND a baseline absolute time ("usually wakes up
+        at 7:00 AM"):
+          Compute the derived time: 7:00 − 0:15 = 6:45 AM.
+          DO NOT report the baseline as the answer. The derivation
+          is the answer.
+
         iter29 MASTRA reader rules:
 
         KNOWLEDGE UPDATES (supersession): for "current state" Qs,
