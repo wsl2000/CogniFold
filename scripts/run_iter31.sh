@@ -142,7 +142,7 @@ for ((i=0; i<N_PARALLEL; i++)); do
         --writer-model openai:openai/gpt-5.4-mini \
         --judge-model openai:openai/gpt-4o \
         --embedding openai:openai/text-embedding-3-small \
-        --writer-reasoning-effort low \
+        --writer-reasoning-effort medium \
         --symbolic-resolver --symbolic-temporal --symbolic-bypass \
         --tr-topic-timeline \
         --llm-rerank --rerank-model openai:openai/gpt-5.4-mini \
