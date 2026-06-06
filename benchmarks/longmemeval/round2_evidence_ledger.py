@@ -862,46 +862,40 @@ def build_evidence_ledger(
 
 
 def answer_from_ledger(question: str, ledger: dict[str, Any]) -> str | None:
-    """Emit a deterministic answer when the ledger has decisive evidence."""
-    del question
-    if ledger.get("missing_required_anchor") or ledger.get("operand_mismatch"):
-        return "The information provided is not enough."
-    shape = ledger.get("shape")
-    if shape == "count" and ledger.get("final_count") is not None:
-        return str(ledger["final_count"])
-    if shape == "order" and ledger.get("ordered"):
-        ordered = ledger["ordered"]
-        if len(ordered) == 2:
-            return f"First {ordered[0]}, then {ordered[1]}."
-        if len(ordered) >= 3:
-            mid = ", ".join(ordered[1:-1])
-            if mid:
-                return f"First {ordered[0]}, then {mid}, and finally {ordered[-1]}."
-            return f"First {ordered[0]}, then {ordered[-1]}."
-    if shape == "duration_since" and ledger.get("value") is not None and ledger.get("unit"):
-        return f"{ledger['value']} {ledger['unit']}"
-    if shape == "date_diff" and ledger.get("answer"):
-        return ledger["answer"]
-    if shape == "derived_time" and ledger.get("result") is not None:
-        unit = ledger.get("unit")
-        return f"{ledger['result']} {unit}".strip() if unit else str(ledger["result"])
-    if shape == "abs_value" and ledger.get("answer"):
-        return str(ledger["answer"])
+    """Per Codex round 6 review (after v2 smoke 0/10 disaster):
+
+    The deterministic fillers emit confidently-wrong answers — cardinality
+    thresholds can't measure semantic correctness, and synonym-expanded
+    acceptance lets unrelated rows in (e.g. `Spirit` from airline synonym
+    list landing in the order ledger). For round 2, neuter the direct
+    answer path entirely.
+
+    The ledger still produces:
+    - normalized `rows` (chunk fusion + planning filter) → seen by
+      `assemble_ledger_context`, prepended to reader context
+    - shape-specific diagnostic fields (`final_count`, `ordered`, etc.) →
+      retained for debug / future analysis
+
+    All emit is deferred to the reader. The chunk fusion benefit remains.
+    """
+    del question, ledger
     return None
 
 
 def assemble_ledger_context(ledger: dict[str, Any]) -> str:
-    """Format the ledger as a prepended block for the reader prompt."""
-    parts: list[str] = []
-    parts.append(f"## EVIDENCE_LEDGER (shape={ledger.get('shape')})")
-    for row in ledger.get("candidates", [])[:10]:
+    """Format the ledger as a prepended block for the reader prompt.
+
+    Per Codex round 6: do NOT show shape-specific candidates — those came
+    from the over-eager fillers and bias the reader toward the same wrong
+    direction. Show the raw fused rows only, so the chunk-fusion benefit
+    reaches the reader without the planning/advice noise.
+    """
+    rows = ledger.get("rows", [])
+    if not rows:
+        return ""
+    parts: list[str] = [f"## EVIDENCE_LEDGER_RAW (shape={ledger.get('shape')})"]
+    for row in rows[:10]:
         ds = _date_str(row.get("date")) or "?"
-        text = (row.get("text") or "")[:200].replace("\n", " ")
+        text = (row.get("text") or "")[:240].replace("\n", " ")
         parts.append(f"- [{ds}] {text}")
-    if not ledger.get("candidates"):
-        # Show raw rows as fallback context
-        for row in ledger.get("rows", [])[:10]:
-            ds = _date_str(row.get("date")) or "?"
-            text = (row.get("text") or "")[:200].replace("\n", " ")
-            parts.append(f"- [{ds}] {text}")
     return "\n".join(parts) + "\n"
