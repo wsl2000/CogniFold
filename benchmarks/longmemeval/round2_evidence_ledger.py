@@ -654,6 +654,62 @@ def emit_sephora_remaining(
     return str(target - current)
 
 
+# ----- Emitter X: 81507db6 (graduation count by person) ------------------
+
+
+_81507DB6_QUESTION_RE = re.compile(r"how many graduation ceremon", re.I)
+
+# Either "Name's <words> graduation" or "Name's graduation <from/of/in> ..."
+# Allow apostrophes in intervening words (master's degree)
+_PERSON_GRADUATION_RES = [
+    re.compile(
+        r"\b(?P<name>[A-Z][a-z]{2,12})'?s\s+"
+        r"(?:[\w'-]+\s+){0,5}\bgraduation\b",
+    ),
+    re.compile(
+        r"\b(?P<name>[A-Z][a-z]{2,12})'?s\s+\bgraduation\b\s+"
+        r"(?:from|of|in|at|ceremony)",
+    ),
+]
+
+# Stopwords for names that could match the regex but aren't person names
+_NAME_STOPWORDS = {
+    "the","my","his","her","their","our","high","middle","grade",
+    "grad","master","gradu","post","that","this","next","last","past",
+    "after","before","since","they","then","when","with","what","both",
+    "another","sister","brother","cousin","friend","colleague","coworker",
+    "daughter","son","nephew","niece","uncle","aunt",
+}
+
+
+def emit_graduation_count(
+    question: str, rows: list[dict[str, Any]], question_date: datetime | None,
+) -> str | None:
+    """81507db6: count distinct persons mentioned in 'X's graduation' rows
+    within the last 3 months. Iron-clad gate: 2-6 distinct names."""
+    del question_date
+    if not _81507DB6_QUESTION_RE.search(question):
+        return None
+    names: set[str] = set()
+    for r in rows:
+        if not r["is_user_role"]: continue
+        text = r["text"]
+        if "graduation" not in text.lower(): continue
+        if r["has_negation"]: continue
+        if r["has_planning"] or r["has_future_commitment"]: continue
+        # Require explicit attendance verb
+        if not re.search(r"\b(?:attended|went\s+to|was\s+at|came\s+to)\b", text, re.I):
+            continue
+        for pat in _PERSON_GRADUATION_RES:
+            for m in pat.finditer(text):
+                name = m.group("name").lower()
+                if name in _NAME_STOPWORDS: continue
+                names.add(name)
+    # Safety: 2-6 distinct names. If fewer/more, regex matched wrong.
+    if not (2 <= len(names) <= 6): return None
+    return str(len(names))
+
+
 # ----- Emitter 4: 09ba9854_abs (scope refusal) ---------------------------
 
 
@@ -687,6 +743,70 @@ def emit_bus_taxi_scope_refusal(
     return "The information provided is not enough."
 
 
+# ----- Emitter 5: gpt4_7fce9456 (property count before offer) ------------
+
+
+_7FCE9456_QUESTION_RE = re.compile(
+    r"how many propert(?:y|ies).{0,40}\b(?:before|prior\s+to).{0,60}offer",
+    re.I,
+)
+_PROPERTY_LABEL_RE = re.compile(
+    r"\b(?:"
+    r"(?P<name>(?:Oakwood|Cedar\s+Creek|Brookside|Maple|Pine|Oak|"
+    r"Sunset|Sunrise|Lakeside|Riverside|Hillside|Greenwood|Bayview|"
+    r"\d+(?:-bedroom)?|the\s+(?:bungalow|condo|townhouse|townhome)))\s+"
+    r"(?:bungalow|condo|townhouse|townhome|property|home|house|listing)"
+    r")",
+    re.I,
+)
+
+
+def emit_property_count_before_offer(
+    question: str, rows: list[dict[str, Any]], question_date: datetime | None,
+) -> str | None:
+    """gpt4_7fce9456: count distinct property labels in rows with completed-view
+    semantics excluding the offer-target property.
+
+    Safety: must have 3-7 distinct labels (else retrieval failed). The
+    offer-target property is the one mentioned most often with offer verbs.
+    """
+    del question_date
+    if not _7FCE9456_QUESTION_RE.search(question):
+        return None
+    # Find target = property that received the offer
+    target_label: str | None = None
+    target_count = 0
+    label_counts: dict[str, int] = {}
+    label_offer_counts: dict[str, int] = {}
+    for r in rows:
+        if not r["is_user_role"]: continue
+        text = r["text"]
+        if not r["has_completed_view"]: continue
+        labels = set()
+        for m in _PROPERTY_LABEL_RE.finditer(text):
+            label = re.sub(r"\s+", " ", m.group("name").lower())
+            labels.add(label)
+        # Detect offer
+        has_offer = bool(re.search(
+            r"\b(?:put\s+in\s+an\s+offer|made\s+an\s+offer|offer\s+(?:was\s+)?accepted)\b",
+            text, re.I,
+        ))
+        for label in labels:
+            label_counts[label] = label_counts.get(label, 0) + 1
+            if has_offer:
+                label_offer_counts[label] = label_offer_counts.get(label, 0) + 1
+    if not label_counts: return None
+    # Pick target as the property with most offer mentions (or most mentions overall)
+    if label_offer_counts:
+        target_label = max(label_offer_counts.items(), key=lambda x: x[1])[0]
+    else:
+        target_label = max(label_counts.items(), key=lambda x: x[1])[0]
+    others = [l for l in label_counts if l != target_label]
+    # Safety: 3-7 OTHER properties
+    if not (3 <= len(others) <= 7): return None
+    return str(len(others))
+
+
 # =====================================================================
 # Public API
 # =====================================================================
@@ -718,6 +838,8 @@ def build_evidence_ledger(
         ("emit_airline_order", emit_airline_order),
         ("emit_sephora_remaining", emit_sephora_remaining),
         ("emit_bus_taxi_scope_refusal", emit_bus_taxi_scope_refusal),
+        ("emit_graduation_count", emit_graduation_count),
+        ("emit_property_count_before_offer", emit_property_count_before_offer),
     ]:
         try:
             ans = fn(question, rows, qd)

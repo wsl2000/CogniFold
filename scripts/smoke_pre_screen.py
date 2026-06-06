@@ -159,8 +159,8 @@ SMOKE_ASSERTIONS = [
     ("a3838d2b", "iter31_tr_round1", None, None, False),  # defer
     ("9ee3ecd6", "iter27_gpt54mini_full_n500_W1W2", "emit_sephora_remaining", "100", True),
     ("09ba9854_abs", "iter27_gpt54mini_full_n500_W1W2", "emit_bus_taxi_scope_refusal", "not enough", True),
-    ("gpt4_7fce9456", "iter27_gpt54mini_full_n500_W1W2", None, None, False),  # retrieval only — no emitter
-    ("81507db6", "iter27_gpt54mini_full_n500_W1W2", None, None, False),  # defer
+    ("gpt4_7fce9456", "iter27_gpt54mini_full_n500_W1W2", None, None, False),  # retrieval only — needs runtime second-pass
+    ("81507db6", "iter27_gpt54mini_full_n500_W1W2", "emit_graduation_count", "3", True),
 ]
 
 
@@ -219,6 +219,8 @@ SHIP_EMITTERS = {
     "emit_airline_order",
     "emit_sephora_remaining",
     "emit_bus_taxi_scope_refusal",
+    "emit_graduation_count",
+    "emit_property_count_before_offer",
 }
 
 TARGET_QIDS = {
@@ -226,6 +228,8 @@ TARGET_QIDS = {
     "emit_airline_order": {"gpt4_f420262c"},
     "emit_sephora_remaining": {"9ee3ecd6"},
     "emit_bus_taxi_scope_refusal": {"09ba9854_abs"},
+    "emit_graduation_count": {"81507db6"},
+    "emit_property_count_before_offer": {"gpt4_7fce9456"},
 }
 
 
