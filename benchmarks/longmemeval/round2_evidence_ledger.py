@@ -605,10 +605,24 @@ def emit_sephora_remaining(
     if "sephora" not in question.lower(): return None
     targets: set[int] = set()
     current_with_date: list[tuple[datetime, int]] = []
-    target_re = re.compile(
-        r"\b(\d{2,4})\s+points?\s+(?:to\s+(?:redeem|reach|get|earn)|for\s+(?:a\s+)?free|needed|required)",
-        re.I,
-    )
+    # Target patterns — value of points needed to reach the redemption goal.
+    # "300 points to redeem" / "need a total of 300 points" / "redeem with N points"
+    target_res = [
+        re.compile(
+            r"\b(\d{2,4})\s+points?\s+(?:to\s+(?:redeem|reach|get|earn)|"
+            r"for\s+(?:a\s+)?free|needed|required)",
+            re.I,
+        ),
+        re.compile(
+            r"\bneed(?:s|ed)?\s+(?:a\s+total\s+of\s+|just\s+|to\s+(?:earn|get|reach)\s+)?"
+            r"(\d{2,4})\s+points?",
+            re.I,
+        ),
+        re.compile(
+            r"\b(?:redeem|redeeming).{0,80}?\bwith\s+(\d{2,4})\s+points?",
+            re.I,
+        ),
+    ]
     current_res = [
         re.compile(r"\b(?:I\s+have|i'?m\s+at|my\s+balance\s+is|currently\s+at|"
                    r"current\s+balance(?:\s+of)?|got|brought.*total\s+to|"
@@ -619,9 +633,10 @@ def emit_sephora_remaining(
         if not r["is_user_role"]: continue
         text = r["text"]
         if "sephora" not in text.lower(): continue
-        for m in target_re.finditer(text):
-            try: targets.add(int(m.group(1)))
-            except: pass
+        for tre in target_res:
+            for m in tre.finditer(text):
+                try: targets.add(int(m.group(1)))
+                except: pass
         for cre in current_res:
             for m in cre.finditer(text):
                 try:
