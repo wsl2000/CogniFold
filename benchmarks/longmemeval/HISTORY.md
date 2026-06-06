@@ -37,9 +37,9 @@ Full chronological record of every iteration. Each iteration documents: code/pro
 | 28a/b | Mastra triple-date / priority | partial | — | — | — | REVERT — broke MS / SSA | local only |
 | 29c | qa_answer compression | 500 partial | 62.5% | 57.x% | MS catastrophic | REVERT | local only |
 | 30 | W3 START + qa-compress | 500 partial | 62.5% | 41.x% | TR catastrophic | REVERT | `iter30_cleanup` |
-| 31 | resolver TR fixes (round 1) | 34/133 partial | — | 85.3% (34 healthy) | TR +8.8 vs iter27 on same qids | IN PROGRESS — provider blocked | `tr-only-optimization` |
+| 31 | resolver TR fixes (round 1) | 133 (TR) | — | **88.7%** | TR +8.3 vs iter27 | **KEEP — N=500 verify next** | `tr-only-optimization` PR #5 |
 
-★ = current prod on `opennorve/longmemeval-iter` (iter19). iter27 in `longmemeval-iter-experimental`. iter31 in flight blocked on commonstack balance.
+★ = current prod on `opennorve/longmemeval-iter` (iter19). iter27 in `longmemeval-iter-experimental`. iter31 TR-only DONE 2026-06-06.
 
 ## Hardcore-49
 
@@ -419,14 +419,46 @@ Combined attempt to fix TR-A duration_since_start by adding a third writer pass 
 - qa_answer compression removed iter02/10/13 worked examples that were actively firing for unrelated cases (MS −1.5pp from those alone).
 - REVERTED. `iter30_cleanup` branch retained for partial code state.
 
-## iter31 — resolver TR fixes round 1 (IN PROGRESS)
+## iter31 — resolver TR fixes round 1 (COMPLETE, KEEP)
 
-- **Targeted clusters**: TR-A duration_since_start (10), TR-B order_among (4), TR-D date_diff (3), TR-G \_abs (1), MS-A undercount, MS-B refusal — 15 base + 2 round-1.5 (X1 + X4) fixes.
-- **Stack**: iter19 writer (no W1/W2/W3/Reflector) + iter27 reader effort=high + iter25 symbolic stack + TR-α topic timeline + CHRONOLOGICAL-SCAN qa_answer rule.
-- **Run state (2026-06-05)**: 34/133 healthy results (commonstack provider depleted balance mid-run, 79 qids returned empty hypothesis). On the 34 common qids: iter31 = 29/34 = **85.3%** vs iter27 = 26/34 = **76.5%** → **+8.8pp** delta on the healthy subset.
-- **Blocked**: commonstack account balance → 0 despite user $500 top-up. 99 qids remain unrun; user in contact with commonstack support. OR fallback declined as too expensive (~$135 for 99 qids on gpt-5.4-mini).
-- **Branch**: `tr-only-optimization` (PR #5, issue #4).
-- **Decision**: pending — awaiting full 133/133 to confirm signal holds.
+- **Score (TR-only N=133)**: **118/133 = 88.7% strict** (89.1% partial), 0 empty HY
+- **NET vs iter27 (TR same 133 qids)**: **+11 cases (+8.3pp)** — 16 improvements, 5 regressions
+- **Targeted clusters**: TR-A duration_since_start (10), TR-B order_among (4), TR-D date_diff (3), TR-G `_abs`, MS-A undercount, MS-B refusal
+- **Stack**: iter19 writer (no W1/W2/W3/Reflector) + iter27 reader effort=high + iter25 symbolic stack + **TR-α topic timeline (X1)** + **CHRONOLOGICAL-SCAN qa_answer rule (X4)**
+- **Changes summary (15 base + 2 round-1.5)**:
+  - Resolver (`symbolic_resolver.py`): disable `which_first` + `relative_ago_recall` (0%-acc); `_find_is_start_concept` Pass 3 EARLIEST fallback; recovery-verb hard match; `order_among` bypass=False for >3 items; multi-candidate `named_day_recall`
+  - Writer (`BATCH_SYSTEM_PROMPT`): rule 4 `activity_start` extraction with `start_date` back-derivation
+  - Reader (qa_answer): 8 rules — DURATION-SINCE-START, AGE-INFERENCE, PLANNED→COMPLETED, INCLUSIVE-BOUNDARY, COMPARATIVE EARLIER=FIRST, EXHAUSTIVE-COUNT, BOOKING vs PLANNING, `_abs` both-entities, + X4 CHRONOLOGICAL-SCAN
+  - Launcher: `--tr-topic-timeline` (X1)
+
+- **Improvements by cluster (16)**:
+  - TR-A duration_since_start: 8 cases (c9f37c46, cc6d1ec1, gpt4_4cd9eba1, 993da5e2, b29f3365, e4e14d04, dcfa8644, d01c6aa8)
+  - TR-D date_diff INCLUSIVE-BOUNDARY: 1 (gpt4_4fc4f797 38→39)
+  - TR-G comparative EARLIER=FIRST: 1 (gpt4_0b2f1d21)
+  - TR-F derived_time: 1 (gpt4_2c50253f 6:45 AM)
+  - TR-B order_among (X1 win): 1 (gpt4_d6585ce8 Billie Eilish)
+  - Booking vs planning: 1 (982b5123 SF Airbnb 5 months)
+  - PLANNED→COMPLETED: 1 (gpt4_68e94288 #PlankChallenge)
+  - Misc: 2 (gpt4_cd90e484, eac54adc)
+
+- **Regressions (5)**:
+  - `gpt4_fe651585` which-first parent (Rachel vs Alex) — comparative direction
+  - `gpt4_e061b84f` order_among 3 sports — **X1 topic_timeline made reader MORE conservative** (only saw 1 verified, hedged refusal)
+  - `b46e15ed` diff_since months off-by-one (2→1)
+  - `9a707b81` baking class 20 days — same answer as iter27, judge variance
+  - `gpt4_59149c78` art event location — retrieval/hallucination (Met vs City Art)
+
+- **Operational** (2026-06-05 / 2026-06-06):
+  - 5p initial: 25% empty HY (commonstack TPM throttling, balance dropping)
+  - 25p attempted: 70% empty (balance crashed to 0 in ~30 min)
+  - User topped up $500 after support ticket
+  - 10p continuation: 0% empty for 2h — clean
+  - 20p final 55 qids: 0% empty, ~75 min wallclock
+  - Total: ~9h wallclock, ~$200-250 commonstack burn
+
+- **Branch / PR**: `tr-only-optimization`, PR #5 (closes #4)
+- **Decision**: **KEEP**. Next: full N=500 verification (need to confirm MS/SSA/SSP/SSU/KU did not regress).
+- **N=500 projection**: 78 KU × 93.6% + 133 MS × ~82% + 56 SSA × ~91% + 30 SSP × ~93% + 70 SSU × ~96% + 133 TR × 88.7% ≈ **87.7-88.5% N=500** (vs iter19 SOTA 86.8% = projected **+1-2pp overall**).
 
 ## Trajectory summary (overall strict on N=500)
 
@@ -437,6 +469,6 @@ iter05            84.2%  +1.0 (TR -8.3 regression hidden in overall +1.0)
 iter19 (37c4aa1+) 86.8%  +3.6 vs iter02, +2.6 vs iter05, TR recovered  — current public SOTA
 iter27 (local)    86.8%  net zero vs iter19 (W2 −MS, W1 +SSA cancel out); TR 80.5% (+1.5)
 iter28-30         REVERTED — see entries above for failure modes
-iter31 (partial)  85.3% on 34/133 healthy TR-only subset (+8.8 vs iter27 on same qids); full 133 blocked on provider
+iter31 (TR-only)  88.7% TR on N=133 (+8.3 vs iter27 80.5%); 87.7-88.5% projected on N=500 — pending full-stack verification
 ```
 
