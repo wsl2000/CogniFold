@@ -46,6 +46,13 @@ from benchmarks.longmemeval.symbolic_resolver import (
     LongMemEvalSymbolicResolver,
     render_symbolic_block,
 )
+from benchmarks.longmemeval.round2_evidence_ledger import (
+    answer_from_ledger,
+    assemble_ledger_context,
+    build_evidence_ledger,
+    detect_question_shape,
+    late_fusion_retrieve,
+)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -959,9 +966,56 @@ def build_assistant_recall_block(
 
 
 def generate_answer(
-    question: str, context: str, config: AgentConfig, qa_template: str | None = None
+    question: str,
+    context: str,
+    config: AgentConfig,
+    qa_template: str | None = None,
+    *,
+    graph: ConceptGraph | None = None,
+    query_nodes: "list | None" = None,
+    question_date: datetime | None = None,
 ) -> str:
-    """Generate an answer using the LLM based on context."""
+    """Generate an answer using the LLM based on context.
+
+    Iter32 round 2 gated path: if the question shape is count/order/
+    duration/date_diff/derived_time/abs_value AND graph + query_nodes
+    are provided, route through the evidence ledger. The ledger
+    returns a deterministic answer only for high-confidence shapes;
+    otherwise the reader sees a fused context (chunk-level late fusion)
+    that surfaces missing raw event facts.
+    """
+    # Iter32 ledger route — gated, conservative
+    if graph is not None and query_nodes is not None:
+        shape = detect_question_shape(question)
+        if shape != "other":
+            fused_graph_hits, raw_hits = late_fusion_retrieve(
+                question,
+                graph,
+                query_nodes,
+                question_date=question_date,
+            )
+            ledger = build_evidence_ledger(
+                question,
+                shape,
+                {
+                    "question_date": question_date,
+                    "graph_hits": fused_graph_hits,
+                    "raw_hits": raw_hits,
+                },
+            )
+            ledger_answer = answer_from_ledger(question, ledger)
+            if ledger_answer is not None:
+                logger.info(
+                    "Ledger-direct answer for shape=%s (qid context not shown): %r",
+                    shape, ledger_answer[:80],
+                )
+                return ledger_answer
+            # Ledger didn't decide deterministically — prepend the fused
+            # evidence block to the reader context so chunk fusion still
+            # helps (this is the partial-confidence path from Codex round 4).
+            if raw_hits:
+                context = assemble_ledger_context(ledger) + "\n" + context
+
     if qa_template:
         prompt = qa_template.format(question=question, context=context)
     else:
@@ -2450,6 +2504,9 @@ def run_benchmark(args: argparse.Namespace) -> None:
                     context=context_text,
                     config=config,
                     qa_template=templates.get("qa_answer"),
+                    graph=graph,
+                    query_nodes=getattr(query_result, "nodes", None),
+                    question_date=question_dt,
                 )
         except Exception as e:
             logger.error(f"Error generating answer for {question_id}: {e}")

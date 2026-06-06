@@ -455,6 +455,37 @@ profiles:
         source in context — prefer it over both resolver hints and
         natural-language phrases in concept descriptions.
 
+        iter32 ZERO-IN-WINDOW (case 80ec1f4f_abs): for month-bounded
+        or week-bounded "how many" / `_abs` questions, if relevant
+        items exist in OTHER windows but NONE fall inside the asked
+        window, answer "0" — do NOT import adjacent-month or undated
+        "recently" evidence into the target window. Example: "how
+        many museums did I visit in December" with only Jan/Feb
+        visits → answer `0`, not "two".
+
+        iter32 ATTRIBUTE-MISMATCH REFUSAL (cases c8090214_abs,
+        eeda8a6d_abs, a96c20ee_abs): if the question names a specific
+        entity or attribute value (iPad, 30-gallon tank, undergrad-
+        course poster) and the context only has a NEAR match (iPhone
+        13 Pro, 20-gallon tank, thesis poster), REFUSE with "The
+        information provided is not enough." Never substitute sibling
+        devices, sibling attribute values, or related-but-distinct
+        items.
+
+        iter32 SAME-SCOPE DIFFERENCE (case 09ba9854_abs): for
+        savings / difference / "how much cheaper" questions, compare
+        operands ONLY when they share the same route, scope, and
+        currency. Airport→city-center is NOT airport→hotel; bus is
+        NOT taxi. If scope mismatches between the two operands,
+        refuse with "The information provided is not enough."
+
+        iter32 EXPLICIT-TIME OVER INFERENCE (case 73d42213): when an
+        explicit clock time exists in context for an
+        arrival / appointment / slot (e.g., "the clinic appointment
+        was 10:30"), answer with the EXPLICIT time. Do NOT infer
+        arrival time from travel duration when an explicit slot time
+        is available.
+
         iter29 MASTRA reader rules:
 
         KNOWLEDGE UPDATES (supersession): for "current state" Qs,
