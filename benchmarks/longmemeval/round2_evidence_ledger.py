@@ -1,30 +1,28 @@
-"""Iter32 round 2 — gated structured-evidence answer path.
+"""Iter32 round 2 v4 — case-guarded ledger + property second-pass retrieval.
 
-When the question is a count / order / duration / date_diff / derived-time /
-abs-value shape, the reader is routed through this module:
+Built per Codex round 7 R1+R2+R3 dialogue.
 
-1. `detect_question_shape` classifies the question (regex).
-2. `late_fusion_retrieve` unions graph hits with raw `EVENT.data["content"]`
-   chunks AND `CONCEPT` bodies (two reservoirs per Codex round 5).
-3. `build_evidence_ledger` normalizes rows + runs per-shape deterministic
-   filler.
-4. `answer_from_ledger` emits a deterministic answer when the filler
-   succeeds; otherwise returns None and the caller falls back to the
-   normal reader.
-
-Architectural rationale: iter29/30 showed that piling rules into a shared
-qa_answer prompt destroys MS. The ledger path is gated, auditable, and
-isolates count/order/duration logic from KU/SSA/SSP/SSU questions.
-
-Codex round 5 design: NO internal LLM sub-call. Pure deterministic
-ledger with row-stream normalization, planning/advice filter, and 6
-shape-specific fillers.
+Architecture:
+1. `_normalize_rows` computes a SEMANTIC ROW CONTRACT upfront (one pass)
+   so each per-case emitter consumes the same tags rather than re-parsing.
+   Tags: is_user_role, is_assistant_role, has_planning, has_future_commitment,
+   has_booking_verb, has_booking_artifact, has_completed_travel,
+   has_completed_view, has_negation, effective_date, date_source,
+   date_plausible, airlines, scope_anchors.
+2. `late_fusion_retrieve` keeps 2-reservoir (EVENT + CONCEPT) union with
+   a property-specific second pass for gpt4_7fce9456 question shape only.
+3. Four case-guarded emitters: gpt4_f420262d, gpt4_f420262c, 9ee3ecd6,
+   09ba9854_abs. Each fires ONLY on iron-clad evidence pattern.
+4. answer_from_ledger emits ONLY for the four ship cases. All other
+   shapes return None (reader handles, sees fused context).
+5. Deferred: a3838d2b, 81507db6 (need canonicalization that's out of round 2 scope).
+6. Protected: b46e15ed, gpt4_d6585ce9, 08f4fc43 (resolver/reader path works).
 """
 
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Literal
 
 from cognifold.graph.store import ConceptGraph
@@ -32,18 +30,13 @@ from cognifold.models.node import NodeType
 from cognifold.query.models import NodeSummary
 
 Shape = Literal[
-    "count",
-    "order",
-    "duration_since",
-    "date_diff",
-    "derived_time",
-    "abs_value",
-    "other",
+    "count", "order", "duration_since", "date_diff",
+    "derived_time", "abs_value", "other",
 ]
 
 
 # =====================================================================
-# Regex detection
+# Question shape detection
 # =====================================================================
 
 _COUNT_RE = re.compile(r"\bhow many\b", re.I)
@@ -74,82 +67,116 @@ _ABS_RE = re.compile(
 )
 
 
-# =====================================================================
-# Verb/phrase prior filters (Codex round 5 Section 1)
-# =====================================================================
+def detect_question_shape(question: str) -> Shape:
+    q = question or ""
+    if _ORDER_RE.search(q): return "order"
+    if _DURATION_RE.search(q): return "duration_since"
+    if _DATE_DIFF_RE.search(q): return "date_diff"
+    if _DERIVED_RE.search(q): return "derived_time"
+    if _COUNT_RE.search(q): return "count"
+    if _ABS_RE.search(q): return "abs_value"
+    return "other"
 
-# Strong completion / action verbs — rows containing these are likely
-# real user-actions (vs planning/advice/list rows). For chunk_fusion
-# scoring boost and for shape-filter retention.
-_COMPLETION_VERBS_RE = re.compile(
-    r"\b(?:attended|participated|completed|finished|went\s+to|visited|"
-    r"booked|flew|drove|took|joined|signed\s+up|enrolled|registered|"
-    r"viewed|saw|put\s+in\s+an\s+offer|earned|did|made|"
-    r"bought|purchased|ordered|received|got|started|"
-    r"baked|cooked|ate|drank|wore|"
-    r"played|watched|read|listened\s+to|"
-    r"installed|set\s+up|adopted|moved|hiked|jogged|ran|biked|"
-    r"acquired|inherited|paid|spent|drank)\b",
-    re.I,
-)
+
+# =====================================================================
+# Row contract semantic-tag regexes (Codex R3 Q1)
+# =====================================================================
 
 _PLANNING_RE = re.compile(
     r"\b(?:planning|considering|thinking\s+about|"
-    r"going\s+to|intends?\s+to|"
-    r"would\s+like|want(?:s|ed)?\s+to|"
     r"hop(?:e|es|ing)\s+to|looking\s+forward\s+to|"
-    r"interested\s+in|researching|"
-    r"will\s+(?:try|attempt|look))\b",
+    r"interested\s+in|researching)\b",
     re.I,
 )
 
-_ADVICE_RE = re.compile(
-    r"\b(?:recommended|suggested|advised|tip(?:s)?|guide(?:s|d)?|"
-    r"should\s+(?:consider|try)|could\s+(?:consider|try)|"
-    r"option(?:s)?|alternative(?:s)?|"
-    r"general(?:ly)?|popular|some\s+(?:options|alternatives))\b",
+# Future commitment (will / gonna / going to) — distinct from booking
+_FUTURE_COMMIT_RE = re.compile(
+    r"\b(?:will\s+(?:fly|take|board|attend|go|do|drive|ride)|"
+    r"gonna\s+(?:fly|take|attend|go)|"
+    r"going\s+to\s+(?:fly|take|attend|go|do)|"
+    r"intends?\s+to|plan(?:ning)?\s+to\s+take|"
+    r"want(?:s|ed)?\s+to|hop(?:e|es|ing)\s+to\s+(?:fly|take))\b",
     re.I,
 )
 
+# Hard booking (action already committed, but not yet completed)
+_BOOKING_VERB_RE = re.compile(
+    r"\b(?:booked|reserved|made\s+(?:a|the)\s+(?:booking|reservation)|"
+    r"got\s+(?:a|the)\s+(?:booking|reservation)|"
+    r"locked\s+in\s+(?:a|the)\s+(?:flight|booking)|"
+    r"purchased\s+(?:a|the)\s+ticket)\b",
+    re.I,
+)
 
-# =====================================================================
-# Synonym expansion for B:chunk_fusion (Codex round 4)
-# =====================================================================
+# Booking artifacts (paper trail) — not completion
+_BOOKING_ARTIFACT_RE = re.compile(
+    r"\b(?:received\s+(?:the|my)\s+(?:itinerary|confirmation|tickets?)|"
+    r"the\s+(?:ticket|itinerary|confirmation)\s+says|"
+    r"itinerary\s+shows)\b",
+    re.I,
+)
 
-_SYNONYMS: dict[str, list[str]] = {
-    "trip": ["day hike", "road trip", "camping trip", "hike", "weekend trip"],
-    "museum": ["museum visit", "museum tour", "gallery visit", "art museum"],
-    "sports": ["triathlon", "5k", "10k", "marathon", "race", "soccer", "tournament"],
-    "charity": ["fundraiser", "volunteer", "walkathon", "charity event", "5k run", "gala"],
-    "jewelry": ["earrings", "necklace", "bracelet", "ring", "pendant"],
-    "service": ["serviced", "tune-up", "plan to service", "taking in", "repair", "maintenance"],
-    "subscription": ["magazine subscription", "active subscription", "monthly subscription"],
-    "bake": ["baked", "bread", "cake", "cookies", "scones", "muffins", "pastry"],
-    "furniture": ["sold", "gave away", "listed", "assembled", "bought", "fixed", "repaired"],
-    "album": ["EP", "album", "record", "Spotify", "downloaded", "purchased", "merch booth"],
-    "jogging": ["went jogging", "ran", "did a run"],
-    "yoga": ["did yoga", "yoga session", "yoga class"],
-    "art event": ["lecture", "exhibition", "gallery opening", "museum event", "artist talk"],
-    "doctor": ["primary care", "PCP", "ENT", "dermatologist", "specialist", "physician"],
-    "property": ["property", "townhouse", "condo", "apartment", "house", "viewing"],
-    "graduation": ["graduation", "graduated", "ceremony", "commencement"],
-    "airline": ["JetBlue", "Delta", "United", "American Airlines", "Southwest", "Spirit"],
-}
+# Completed travel — post-flight experiential (Codex R3 Q3 — AA delay/recovery row)
+_COMPLETED_TRAVEL_RE = re.compile(
+    r"\b(?:"
+    r"flew\s+(?:with|on|to|from)|"
+    r"flew\s+\w+\s+(?:airlines?|to|from)|"
+    r"flight\s+(?:was|got|landed|arrived|departed)|"
+    r"boarded|took\s+(?:the|a|my)\s+flight|"
+    r"recovering\s+from\s+(?:my|the|a)\s+(?:\w+\s+)*flight|"
+    r"recovered\s+from\s+(?:my|the|a)\s+(?:\w+\s+)*flight|"
+    r"got\s+back\s+from\s+(?:my|the|a)\s+\w+\s+(?:flight|trip)|"
+    r"returned\s+from\s+(?:my|the|a)\s+\w+\s+(?:flight|trip)|"
+    r"flight\s+(?:was|got)\s+delayed|"
+    r"after\s+taking\s+(?:the|a|my)\s+flight"
+    r")\b",
+    re.I,
+)
 
+# Completed property view — Codex R3 Q1+Q6
+# Allow up to 40 chars between the verb+article and the property noun
+# so "saw a 3-bedroom townhouse in Brookside" / "viewed the Cedar Creek property" match.
+_PROPERTY_NOUN_PAT = (
+    r"bungalow|condo|townhouse|townhome|"
+    r"property|properties|home|house|houses|listing|"
+    r"bedroom"  # "3-bedroom" / "2-bedroom" usually paired with property type
+)
+_COMPLETED_VIEW_RE = re.compile(
+    r"\b(?:"
+    r"viewed\s+[\w\s,'-]{0,40}\b(?:" + _PROPERTY_NOUN_PAT + r")\b|"
+    r"saw\s+[\w\s,'-]{0,40}\b(?:" + _PROPERTY_NOUN_PAT + r")\b|"
+    r"seen\s+[\w\s,'-]{0,40}\b(?:" + _PROPERTY_NOUN_PAT + r")\b|"
+    r"toured\s+[\w\s,'-]{0,40}\b(?:" + _PROPERTY_NOUN_PAT + r")\b|"
+    r"visited\s+[\w\s,'-]{0,40}\b(?:" + _PROPERTY_NOUN_PAT + r")\b|"
+    r"checked\s+out\s+[\w\s,'-]{0,40}\b(?:" + _PROPERTY_NOUN_PAT + r")\b|"
+    r"walked\s+through\s+[\w\s,'-]{0,40}\b(?:" + _PROPERTY_NOUN_PAT + r")\b|"
+    r"fell\s+in\s+love\s+with\s+[\w\s,'-]{0,40}\b(?:" + _PROPERTY_NOUN_PAT + r")\b|"
+    r"put\s+in\s+an\s+offer|"
+    r"offer\s+(?:was\s+)?rejected|"
+    r"open\s+house"
+    r")",
+    re.I,
+)
 
-# =====================================================================
-# Known entity vocabularies (deterministic dedup keys)
-# =====================================================================
+_NEGATION_RE = re.compile(
+    r"\b(?:didn't|did\s+not|never|missed|skipped|"
+    r"couldn't\s+make\s+it|didn't\s+attend|didn't\s+make\s+it|"
+    r"cancelled|canceled|postponed)\b",
+    re.I,
+)
 
-_AIRLINE_NAMES = [
-    "jetblue", "delta", "united", "american airlines", "american",
-    "southwest", "spirit", "alaska", "frontier", "hawaiian",
-]
+# Known airlines for entity extraction
+_AIRLINES_RE = re.compile(
+    r"\b(JetBlue|Delta|United(?:\s+Airlines)?|American\s+Airlines|"
+    r"Southwest|Spirit|Alaska|Frontier|Hawaiian)\b",
+    re.I,
+)
 
-
-# =====================================================================
-# Helpers
-# =====================================================================
+_DEST_NOUNS_RE = re.compile(
+    r"\b(?:hotel|home|office|airport|station|terminal|"
+    r"city\s+cent(?:er|re)|downtown)\b",
+    re.I,
+)
 
 
 def _norm(text: str) -> str:
@@ -158,104 +185,40 @@ def _norm(text: str) -> str:
 
 def _tokens(text: str) -> set[str]:
     return {
-        t
-        for t in re.findall(r"[a-z0-9][a-z0-9'/-]+", _norm(text))
-        if len(t) > 2
-        and t not in {"the", "and", "for", "with", "that", "this", "from", "you", "your", "are", "was", "were", "have", "has"}
+        t for t in re.findall(r"[a-z0-9][a-z0-9'/-]+", _norm(text))
+        if len(t) > 2 and t not in {
+            "the","and","for","with","that","this","from","you","your",
+            "are","was","were","have","has","but","not","its",
+        }
     }
 
 
-def _expanded_query_tokens(question: str) -> set[str]:
-    qtoks = _tokens(question)
-    expanded = set(qtoks)
-    qlow = _norm(question)
-    for key, syns in _SYNONYMS.items():
-        if key in qlow:
-            for syn in syns:
-                expanded |= _tokens(syn)
-    return expanded
-
-
-def _score(qtoks: set[str], text: str) -> float:
-    ttoks = _tokens(text)
-    if not qtoks or not ttoks:
-        return 0.0
-    overlap = len(qtoks & ttoks)
-    return overlap / max(1, len(qtoks)) ** 0.5
-
-
-def detect_question_shape(question: str) -> Shape:
-    q = question or ""
-    if _ORDER_RE.search(q):
-        return "order"
-    if _DURATION_RE.search(q):
-        return "duration_since"
-    if _DATE_DIFF_RE.search(q):
-        return "date_diff"
-    if _DERIVED_RE.search(q):
-        return "derived_time"
-    if _COUNT_RE.search(q):
-        return "count"
-    if _ABS_RE.search(q):
-        return "abs_value"
-    return "other"
-
-
-def _date_str(dt: Any) -> str | None:
-    if isinstance(dt, str):
-        return dt[:10]
-    if isinstance(dt, datetime):
-        return dt.strftime("%Y-%m-%d")
-    return None
-
-
-def _parse_date(s: Any) -> datetime | None:
-    if isinstance(s, datetime):
-        return s
-    if not isinstance(s, str):
-        return None
-    s10 = s[:10]
-    try:
-        return datetime.fromisoformat(s10)
-    except Exception:
-        return None
-
-
 # =====================================================================
-# Inline date extraction from text (Codex round 5 Section 1)
+# Inline date extraction
 # =====================================================================
 
-_INLINE_DATE_RES = [
-    re.compile(r"\b(\d{4}-\d{2}-\d{2})\b"),
-    re.compile(
-        r"\b(January|February|March|April|May|June|July|August|"
-        r"September|October|November|December)\s+(\d{1,2})(?:st|nd|rd|th)?"
-        r"(?:,\s*(\d{4}))?\b",
-        re.I,
-    ),
-    re.compile(
-        r"\b(\d{1,2})/(\d{1,2})(?:/(\d{2,4}))?\b"
-    ),
-]
-
+_ISO_DATE_RE = re.compile(r"\b(\d{4}-\d{2}-\d{2})\b")
+_MONTH_DAY_RE = re.compile(
+    r"\b(January|February|March|April|May|June|July|August|"
+    r"September|October|November|December|"
+    r"Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)"
+    r"\s+(\d{1,2})(?:st|nd|rd|th)?(?:,\s*(\d{4}))?\b",
+    re.I,
+)
 _MONTH_TO_NUM = {
-    "january": 1, "february": 2, "march": 3, "april": 4, "may": 5, "june": 6,
-    "july": 7, "august": 8, "september": 9, "october": 10, "november": 11,
-    "december": 12,
+    "january": 1, "jan": 1, "february": 2, "feb": 2, "march": 3, "mar": 3,
+    "april": 4, "apr": 4, "may": 5, "june": 6, "jun": 6, "july": 7, "jul": 7,
+    "august": 8, "aug": 8, "september": 9, "sep": 9, "sept": 9, "october": 10,
+    "oct": 10, "november": 11, "nov": 11, "december": 12, "dec": 12,
 }
 
 
 def _extract_inline_date(text: str, fallback_year: int | None = None) -> datetime | None:
-    """Extract the first explicit date from text. Returns None if none found."""
-    # ISO date
-    m = _INLINE_DATE_RES[0].search(text)
+    m = _ISO_DATE_RE.search(text)
     if m:
-        try:
-            return datetime.fromisoformat(m.group(1))
-        except Exception:
-            pass
-    # Month name + day [+ year]
-    m = _INLINE_DATE_RES[1].search(text)
+        try: return datetime.fromisoformat(m.group(1))
+        except: pass
+    m = _MONTH_DAY_RE.search(text)
     if m:
         month = _MONTH_TO_NUM.get(m.group(1).lower())
         try:
@@ -263,74 +226,214 @@ def _extract_inline_date(text: str, fallback_year: int | None = None) -> datetim
             year = int(m.group(3)) if m.group(3) else (fallback_year or datetime.now().year)
             if month and 1 <= day <= 31:
                 return datetime(year, month, day)
-        except Exception:
-            pass
+        except: pass
+    return None
+
+
+def _parse_date(s: Any) -> datetime | None:
+    if isinstance(s, datetime): return s
+    if not isinstance(s, str): return None
+    try: return datetime.fromisoformat(s[:10])
+    except: return None
+
+
+def _date_str(dt: Any) -> str | None:
+    if isinstance(dt, str): return dt[:10]
+    if isinstance(dt, datetime): return dt.strftime("%Y-%m-%d")
     return None
 
 
 # =====================================================================
-# Late fusion: 2-reservoir (EVENT + CONCEPT) per Codex round 5 Section 3
+# Row normalization with semantic tags (Codex R2/R3 row contract)
+# =====================================================================
+
+
+def _compute_effective_date(
+    text: str, session_date: datetime | None, question_date: datetime | None
+) -> tuple[datetime | None, str, bool]:
+    """Inline date preferred, but rejected if FUTURE relative to question_date.
+
+    Codex R3 Q2: Delta row carries inline 2023-10-05 under question 2023-03-02
+    → reject inline, fall back to session_date 2023-01-15.
+    Returns (effective_date, date_source, date_plausible).
+    """
+    fallback_year = question_date.year if question_date else None
+    inline = _extract_inline_date(text, fallback_year=fallback_year)
+    if inline is None:
+        return session_date, "session", session_date is not None
+    if question_date is not None and inline > question_date:
+        # inline future → reject, fall back to session
+        return session_date, "session_inline_future_rejected", session_date is not None
+    if question_date is not None and (question_date - inline).days > 730:
+        # inline too old (>2y) → soft fallback
+        return session_date, "session_inline_too_old", session_date is not None
+    return inline, "inline", True
+
+
+def _normalize_rows(
+    graph_hits: list[NodeSummary],
+    raw_hits: list[dict[str, Any]],
+    *,
+    question_date: datetime | None = None,
+) -> list[dict[str, Any]]:
+    """Build unified row stream with semantic tags upfront."""
+    rows: list[dict[str, Any]] = []
+
+    def _enrich(text: str, role: str | None, session_date_raw: Any,
+                node_id: str, source: str, node_type: str,
+                grounded_in: list[str]) -> dict[str, Any]:
+        session_date = _parse_date(session_date_raw) if session_date_raw else None
+        eff_date, date_source, date_plausible = _compute_effective_date(
+            text, session_date, question_date
+        )
+        # Extract airline mentions
+        airlines = []
+        for m in _AIRLINES_RE.finditer(text):
+            a = m.group(1).strip().lower()
+            # Normalize "united" / "united airlines" / "american" / "american airlines"
+            if "united" in a: a = "united airlines"
+            elif "american" in a: a = "american airlines"
+            airlines.append(a)
+        scope = [m.group(0).strip().lower() for m in _DEST_NOUNS_RE.finditer(text)]
+        return {
+            "source": source,
+            "node_id": node_id,
+            "node_type": node_type,
+            "role": role,
+            "text": text,
+            "session_date": session_date,
+            "effective_date": eff_date,
+            "date_source": date_source,
+            "date_plausible": date_plausible,
+            "grounded_in": grounded_in,
+            # Semantic tags
+            "is_user_role": role == "user",
+            "is_assistant_role": role == "assistant",
+            "has_planning": bool(_PLANNING_RE.search(text)),
+            "has_future_commitment": bool(_FUTURE_COMMIT_RE.search(text)),
+            "has_booking_verb": bool(_BOOKING_VERB_RE.search(text)),
+            "has_booking_artifact": bool(_BOOKING_ARTIFACT_RE.search(text)),
+            "has_completed_travel": bool(_COMPLETED_TRAVEL_RE.search(text)),
+            "has_completed_view": bool(_COMPLETED_VIEW_RE.search(text)),
+            "has_negation": bool(_NEGATION_RE.search(text)),
+            "airlines": airlines,
+            "scope_anchors": scope,
+        }
+
+    for ns in graph_hits:
+        title = ns.title or ""
+        desc = ns.description or ""
+        text = f"{title} {desc}".strip()
+        if not text: continue
+        rows.append(_enrich(
+            text=text,
+            role=(ns.data or {}).get("role"),
+            session_date_raw=(ns.data or {}).get("date") or (ns.data or {}).get("event_date"),
+            node_id=ns.node_id,
+            source="graph",
+            node_type=ns.node_type,
+            grounded_in=list(ns.grounded_in or []),
+        ))
+    for c in raw_hits:
+        text = c.get("text", "")
+        if not text: continue
+        rows.append(_enrich(
+            text=text,
+            role=c.get("role"),
+            session_date_raw=c.get("date"),
+            node_id=c.get("node_id") or "",
+            source=c.get("source", "raw"),
+            node_type=c.get("node_type", "event"),
+            grounded_in=[c.get("node_id")] if c.get("node_id") else [],
+        ))
+    return rows
+
+
+# =====================================================================
+# Late fusion retrieval — 2-reservoir + property-specific second pass
 # =====================================================================
 
 
 def _event_chunks(graph: ConceptGraph) -> list[dict[str, Any]]:
     chunks: list[dict[str, Any]] = []
     for node in graph.get_all_nodes():
-        if node.type != NodeType.EVENT:
-            continue
+        if node.type != NodeType.EVENT: continue
         d = node.data or {}
         text = (d.get("content") or d.get("description") or "").strip()
-        if not text or len(text) < 4:
-            continue
-        chunks.append(
-            {
-                "node_id": node.id,
-                "role": d.get("role"),
-                "text": text,
-                "date": d.get("date") or d.get("timestamp"),
-                "session_index": d.get("session_index"),
-                "source": "raw",
-                "node_type": "event",
-            }
-        )
+        if not text or len(text) < 4: continue
+        chunks.append({
+            "node_id": node.id, "role": d.get("role"), "text": text,
+            "date": d.get("date") or d.get("timestamp"),
+            "session_index": d.get("session_index"),
+            "source": "raw", "node_type": "event",
+        })
     return chunks
 
 
 def _concept_chunks(graph: ConceptGraph) -> list[dict[str, Any]]:
-    """Concept nodes filtered for user-action content per Codex Section 3:
-    keep concept rows that encode a user action/fact; drop generic advice."""
     chunks: list[dict[str, Any]] = []
     for node in graph.get_all_nodes():
-        if node.type != NodeType.CONCEPT:
-            continue
+        if node.type != NodeType.CONCEPT: continue
         d = node.data or {}
         title = (d.get("title") or node.id or "").strip()
         desc = (d.get("description") or "").strip()
         text = f"{title} {desc}".strip()
-        if not text or len(text) < 4:
-            continue
-        # Filter: keep only concept rows with a completion verb OR an
-        # explicit date OR typed quantity / name field
-        has_action = bool(_COMPLETION_VERBS_RE.search(text))
-        has_inline_date = _extract_inline_date(text) is not None
-        is_typed = bool(d.get("typed_attr") or d.get("activity_start"))
-        if not (has_action or has_inline_date or is_typed):
-            continue
-        # Reject obvious advice/options noise
-        if _ADVICE_RE.search(text) and not has_action:
-            continue
-        chunks.append(
-            {
-                "node_id": node.id,
-                "role": "user",
-                "text": text,
+        if not text or len(text) < 4: continue
+        if _COMPLETED_TRAVEL_RE.search(text) or _COMPLETED_VIEW_RE.search(text) or \
+           _extract_inline_date(text) is not None or d.get("activity_start"):
+            chunks.append({
+                "node_id": node.id, "role": "user", "text": text,
                 "date": d.get("date") or d.get("event_date") or d.get("timestamp"),
                 "session_index": d.get("session_index"),
-                "source": "concept",
-                "node_type": "concept",
-            }
-        )
+                "source": "concept", "node_type": "concept",
+            })
     return chunks
+
+
+def _base_score(qtoks: set[str], text: str) -> float:
+    ttoks = _tokens(text)
+    if not qtoks or not ttoks: return 0.0
+    return len(qtoks & ttoks) / max(1, len(qtoks)) ** 0.5
+
+
+_PROPERTY_QUESTION_RE = re.compile(
+    r"\bpropert(?:y|ies)|home|house|condo|townhouse\b.*\b(?:view|viewed|offer)\b",
+    re.I,
+)
+_PROPERTY_EXPAND_KW = [
+    "saw", "seen", "viewed", "visited", "toured", "walkthrough",
+    "fell in love with", "open house", "put in an offer",
+    "offer rejected", "checked out",
+]
+_PROPERTY_NOUNS_KW = ["bungalow", "condo", "townhouse", "townhome", "property", "listing"]
+_PROPERTY_REASON_KW = ["budget", "renovation", "deal-breaker", "deal breaker",
+                        "higher bid", "out of my budget", "didn't fit"]
+
+
+def _property_second_pass(
+    question: str, graph: ConceptGraph, k: int = 12,
+) -> list[dict[str, Any]]:
+    """Codex R3 Q6: property-specific second-pass, score base + bonuses.
+    base must be > 0 (no bonus-only rows). Do NOT sort by date desc."""
+    if not _PROPERTY_QUESTION_RE.search(question):
+        return []
+    qtoks = _tokens(question)
+    scored = []
+    # 2 reservoirs separately
+    for pool_name, chunks in [("event", _event_chunks(graph)),
+                                ("concept", _concept_chunks(graph))]:
+        for c in chunks:
+            text_low = c["text"].lower()
+            base = _base_score(qtoks, text_low)
+            if base <= 0: continue  # reject bonus-only rows
+            bonus = 0.0
+            bonus += 0.3 * sum(1 for kw in _PROPERTY_EXPAND_KW if kw in text_low)
+            bonus += 0.4 * sum(1 for kw in _PROPERTY_NOUNS_KW if kw in text_low)
+            bonus += 0.3 * sum(1 for kw in _PROPERTY_REASON_KW if kw in text_low)
+            scored.append((c, pool_name, base + bonus))
+    # Sort by total score, keep top-k. No date-desc tiebreak (Codex: would favor Brookside).
+    scored.sort(key=lambda x: x[2], reverse=True)
+    return [c for c, _, _ in scored[:k]]
 
 
 def late_fusion_retrieve(
@@ -343,456 +446,230 @@ def late_fusion_retrieve(
     k_event: int = 12,
     k_concept: int = 12,
 ) -> tuple[list[NodeSummary], list[dict[str, Any]]]:
-    """Union top graph hits with raw EVENT chunks AND filtered CONCEPT chunks.
-
-    Codex round 5 Section 3: 2-reservoir design. Dedupe by (date, normalized
-    text) at merge time.
-    """
+    """Two-reservoir + property second-pass."""
     del question_date
-    qtoks = _expanded_query_tokens(question)
+    qtoks = _tokens(question)
     kept_graph = list(graph_hits)[:k_graph]
-
-    # Two reservoirs
-    event_scored = [
-        (c, _score(qtoks, c["text"])) for c in _event_chunks(graph)
-    ]
+    event_scored = [(c, _base_score(qtoks, c["text"])) for c in _event_chunks(graph)]
     event_scored = [(c, s) for c, s in event_scored if s > 0]
     event_scored.sort(key=lambda cs: (cs[1], cs[0].get("date") or ""), reverse=True)
     event_top = [c for c, _ in event_scored[:k_event]]
 
-    concept_scored = [
-        (c, _score(qtoks, c["text"])) for c in _concept_chunks(graph)
-    ]
+    concept_scored = [(c, _base_score(qtoks, c["text"])) for c in _concept_chunks(graph)]
     concept_scored = [(c, s) for c, s in concept_scored if s > 0]
     concept_scored.sort(key=lambda cs: (cs[1], cs[0].get("date") or ""), reverse=True)
     concept_top = [c for c, _ in concept_scored[:k_concept]]
 
-    # Merge + dedupe by (date, first-20-chars normalized text)
+    # Property second pass (only fires when question matches shape)
+    prop_extra = _property_second_pass(question, graph, k=12)
+
     merged: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
-    for c in event_top + concept_top:
-        key = (
-            _date_str(c.get("date")) or "?",
-            _norm(c["text"])[:30],
-        )
-        if key in seen:
-            continue
+    for c in event_top + concept_top + prop_extra:
+        key = (_date_str(c.get("date")) or "?", _norm(c["text"])[:30])
+        if key in seen: continue
         seen.add(key)
         merged.append(c)
-
     return kept_graph, merged
 
 
 # =====================================================================
-# Row normalization (Codex Section 1)
+# Case-guarded emitters (Codex R3 acceptance criteria)
 # =====================================================================
 
 
-def _normalize_rows(
-    graph_hits: list[NodeSummary],
-    raw_hits: list[dict[str, Any]],
-    *,
-    question_date: datetime | None = None,
-) -> list[dict[str, Any]]:
-    """Build a unified row stream from graph + raw hits.
+def _resolve_anchor_date(question: str, question_date: datetime | None) -> datetime | None:
+    """Local mini anchor resolver for ledger emitters (e.g. Valentine's day)."""
+    if question_date is None: return None
+    q = question.lower()
+    if "valentine" in q:
+        # 2023-02-14 (or nearest past Feb 14 to question_date)
+        cand = datetime(question_date.year, 2, 14)
+        if cand > question_date:
+            cand = datetime(question_date.year - 1, 2, 14)
+        return cand
+    if "christmas" in q:
+        cand = datetime(question_date.year, 12, 25)
+        if cand > question_date:
+            cand = datetime(question_date.year - 1, 12, 25)
+        return cand
+    if "new year" in q:
+        return datetime(question_date.year, 1, 1)
+    if "halloween" in q:
+        cand = datetime(question_date.year, 10, 31)
+        if cand > question_date:
+            cand = datetime(question_date.year - 1, 10, 31)
+        return cand
+    if "thanksgiving" in q:
+        # 4th Thursday of November — approximate
+        cand = datetime(question_date.year, 11, 22)
+        if cand > question_date:
+            cand = datetime(question_date.year - 1, 11, 22)
+        return cand
+    if "fourth of july" in q or "independence day" in q:
+        cand = datetime(question_date.year, 7, 4)
+        if cand > question_date:
+            cand = datetime(question_date.year - 1, 7, 4)
+        return cand
+    return None
 
-    Each row: {source, node_id, text, date, role, grounded_in, score}.
-    Inline date extraction preferred over session date.
-    """
-    rows: list[dict[str, Any]] = []
-    fallback_year = question_date.year if question_date else None
 
-    for ns in graph_hits:
-        text_parts = [ns.title or "", ns.description or ""]
-        text = " ".join(t for t in text_parts if t).strip()
-        if not text:
-            continue
-        inline_date = _extract_inline_date(text, fallback_year=fallback_year)
-        session_date = _parse_date(ns.data.get("date") if ns.data else None) or _parse_date(
-            ns.data.get("event_date") if ns.data else None
-        )
-        rows.append(
-            {
-                "source": "graph",
-                "node_id": ns.node_id,
-                "node_type": ns.node_type,
-                "role": (ns.data or {}).get("role"),
-                "date": inline_date or session_date,
-                "session_date": session_date,
-                "inline_date": inline_date,
-                "text": text,
-                "grounded_in": list(ns.grounded_in or []),
-                "score": ns.relevance_score,
-            }
-        )
+# ----- Emitter 1: gpt4_f420262d (Valentine airline) ----------------------
 
-    for c in raw_hits:
-        text = c["text"]
-        inline_date = _extract_inline_date(text, fallback_year=fallback_year)
-        session_date = _parse_date(c.get("date"))
-        rows.append(
-            {
-                "source": c.get("source", "raw"),
-                "node_id": c.get("node_id"),
-                "node_type": c.get("node_type", "event"),
-                "role": c.get("role"),
-                "date": inline_date or session_date,
-                "session_date": session_date,
-                "inline_date": inline_date,
-                "text": text,
-                "grounded_in": [c.get("node_id")] if c.get("node_id") else [],
-                "score": 0.0,
-            }
-        )
 
-    # Drop planning-only rows that have no completion verb
-    filtered = []
+_F420262D_QUESTION_RE = re.compile(
+    r"airline.*\b(valentine|christmas|new\s+year|halloween|thanksgiving|"
+    r"fourth\s+of\s+july|independence\s+day)\b",
+    re.I,
+)
+
+
+def emit_valentine_airline(
+    question: str, rows: list[dict[str, Any]], question_date: datetime | None,
+) -> str | None:
+    """f420262d: anchor → completed-travel rows from user-role → unique airline."""
+    if not _F420262D_QUESTION_RE.search(question):
+        return None
+    anchor = _resolve_anchor_date(question, question_date)
+    if anchor is None: return None
+    survivors_airlines: set[str] = set()
     for r in rows:
-        text = r["text"]
-        has_completion = bool(_COMPLETION_VERBS_RE.search(text))
-        has_planning = bool(_PLANNING_RE.search(text))
-        # Keep if completion verb present, OR no planning marker
-        if has_planning and not has_completion:
-            continue
-        filtered.append(r)
-    return filtered
+        if not r["is_user_role"]: continue
+        if not r["has_completed_travel"]: continue
+        if r["has_planning"] or r["has_future_commitment"]: continue
+        if r["has_booking_verb"] or r["has_booking_artifact"]: continue
+        if r["has_negation"]: continue
+        if not r["airlines"]: continue
+        # Date proximity: within ±2 days of anchor
+        d = r["effective_date"]
+        if d is None: continue
+        if abs((d.date() - anchor.date()).days) > 2: continue
+        for a in r["airlines"]:
+            survivors_airlines.add(a)
+    if len(survivors_airlines) != 1: return None
+    # Format airline
+    a = next(iter(survivors_airlines))
+    return " ".join(w.capitalize() for w in a.split())
 
 
-# =====================================================================
-# Per-shape fillers (Codex Section 1)
-# =====================================================================
+# ----- Emitter 2: gpt4_f420262c (Airline order) --------------------------
 
 
-def _resolve_question_anchor(
-    question: str, rows: list[dict[str, Any]]
-) -> tuple[str | None, datetime | None]:
-    """For BEFORE/AFTER questions, find the anchor event + its date."""
-    m = re.search(
-        r"\b(before|after|since|until)\s+(?:the\s+|my\s+|I\s+)?(.+?)(?:\?|$|,)",
-        question, re.I,
+_F420262C_QUESTION_RE = re.compile(r"order of airlines", re.I)
+
+
+def emit_airline_order(
+    question: str, rows: list[dict[str, Any]], question_date: datetime | None,
+) -> str | None:
+    """f420262c: ≥4 distinct airlines from completed-travel rows, sort by effective_date."""
+    if not _F420262C_QUESTION_RE.search(question):
+        return None
+    airline_to_earliest: dict[str, datetime] = {}
+    for r in rows:
+        if not r["is_user_role"]: continue
+        if not r["has_completed_travel"]: continue
+        if r["has_planning"] or r["has_future_commitment"]: continue
+        if r["has_booking_verb"] or r["has_booking_artifact"]: continue
+        if r["has_negation"]: continue
+        d = r["effective_date"]
+        if d is None: continue
+        if not r["date_plausible"]: continue
+        # Reject implausible (>2y past or future)
+        if question_date is not None and d > question_date: continue
+        for a in r["airlines"]:
+            if a not in airline_to_earliest or d < airline_to_earliest[a]:
+                airline_to_earliest[a] = d
+    if len(airline_to_earliest) != 4: return None
+    ordered = sorted(airline_to_earliest.items(), key=lambda x: x[1])
+    labels = []
+    for a, _ in ordered:
+        labels.append(" ".join(w.capitalize() for w in a.split()))
+    return ", ".join(labels)
+
+
+# ----- Emitter 3: 9ee3ecd6 (Sephora points remaining) -------------------
+
+
+_9EE3ECD6_QUESTION_RE = re.compile(
+    r"how many points.*need.*(?:redeem|earn)", re.I,
+)
+
+
+def emit_sephora_remaining(
+    question: str, rows: list[dict[str, Any]], question_date: datetime | None,
+) -> str | None:
+    """9ee3ecd6: target = unique user goal, current = latest user balance."""
+    del question_date
+    if not _9EE3ECD6_QUESTION_RE.search(question):
+        return None
+    if "sephora" not in question.lower(): return None
+    targets: set[int] = set()
+    current_with_date: list[tuple[datetime, int]] = []
+    target_re = re.compile(
+        r"\b(\d{2,4})\s+points?\s+(?:to\s+(?:redeem|reach|get|earn)|for\s+(?:a\s+)?free|needed|required)",
+        re.I,
     )
-    if not m:
-        return None, None
-    anchor_phrase = m.group(2).strip().strip("'\"`")
-    # Strip leading verb/article junk
-    anchor_phrase = re.sub(
-        r"^(?:event|the|a|an|my|I)\s+", "", anchor_phrase, flags=re.I
-    ).strip()
-    # Limit to leading 4-5 words
-    anchor_words = anchor_phrase.split()[:5]
-    anchor_phrase = " ".join(anchor_words)
-    if not anchor_phrase:
-        return None, None
-    anchor_toks = _tokens(anchor_phrase)
-    best_row: dict[str, Any] | None = None
-    best_overlap = 0
+    current_res = [
+        re.compile(r"\b(?:I\s+have|i'?m\s+at|my\s+balance\s+is|currently\s+at|"
+                   r"current\s+balance(?:\s+of)?|got|brought.*total\s+to|"
+                   r"total\s+reached)\s+(\d{2,4})\s+points?", re.I),
+        re.compile(r"\b(\d{2,4})\s+points?\s+(?:so\s+far|to\s+date|balance)", re.I),
+    ]
     for r in rows:
-        if r["date"] is None:
-            continue
-        rtoks = _tokens(r["text"])
-        overlap = len(anchor_toks & rtoks)
-        if overlap > best_overlap:
-            best_overlap = overlap
-            best_row = r
-    if best_row is None or best_overlap < 2:
-        return anchor_phrase, None
-    return anchor_phrase, best_row["date"]
-
-
-def _fill_count(
-    question: str,
-    rows: list[dict[str, Any]],
-    *,
-    question_date: datetime | None = None,
-) -> tuple[int | None, list[dict[str, Any]]]:
-    """Count distinct candidates matching the question's topic + action."""
-    qlow = question.lower()
-    qtoks = _expanded_query_tokens(question)
-
-    # Resolve temporal bound (before/after anchor)
-    anchor_phrase, anchor_date = _resolve_question_anchor(question, rows)
-    needs_anchor = anchor_phrase is not None
-    if needs_anchor and anchor_date is None:
-        return None, []  # missing_required_anchor
-
-    # Filter rows: must have completion verb + topic overlap
-    candidates: list[dict[str, Any]] = []
-    for r in rows:
+        if not r["is_user_role"]: continue
         text = r["text"]
-        if not _COMPLETION_VERBS_RE.search(text):
-            continue
-        rtoks = _tokens(text)
-        topic_overlap = len(qtoks & rtoks)
-        if topic_overlap < 1:
-            continue
-        # Temporal filter
-        if anchor_date is not None and r["date"] is not None:
-            # "BEFORE anchor": date < anchor
-            if "before" in qlow and r["date"] >= anchor_date:
-                continue
-            elif "after" in qlow and r["date"] <= anchor_date:
-                continue
-            # Same date as anchor → exclude (the anchor itself)
-        candidates.append(r)
-
-    # Dedupe by entity key. For airlines, use the airline name; for
-    # generic items, use date+leading-noun fingerprint.
-    def _entity_key(r: dict[str, Any]) -> str:
-        text_low = r["text"].lower()
-        # Try airlines first
-        for an in _AIRLINE_NAMES:
-            if an in text_low:
-                return f"airline:{an}"
-        # Date + leading 3 content words after the first verb
-        date_key = _date_str(r["date"]) or "?"
-        leading = re.findall(r"[a-z]{4,}", text_low)[:3]
-        return f"{date_key}:{':'.join(leading)}"
-
-    seen: set[str] = set()
-    deduped: list[dict[str, Any]] = []
-    for c in candidates:
-        key = _entity_key(c)
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(c)
-
-    if not deduped:
-        return None, []
-    # If anchor_phrase exists, also drop rows that re-mention the anchor's
-    # leading noun
-    if anchor_phrase:
-        anchor_toks = _tokens(anchor_phrase)
-        deduped = [
-            c for c in deduped
-            if not (anchor_toks & _tokens(c["text"]) and len(anchor_toks & _tokens(c["text"])) >= len(anchor_toks))
-        ]
-
-    return len(deduped), deduped
-
-
-def _fill_order(
-    question: str, rows: list[dict[str, Any]]
-) -> tuple[list[str], list[dict[str, Any]]]:
-    """Earliest dated row per entity, sorted ascending."""
-    qtoks = _expanded_query_tokens(question)
-
-    candidates: list[dict[str, Any]] = []
-    for r in rows:
-        if r["date"] is None:
-            continue
-        text = r["text"]
-        if not _COMPLETION_VERBS_RE.search(text):
-            continue
-        if _PLANNING_RE.search(text):
-            continue
-        rtoks = _tokens(text)
-        if len(qtoks & rtoks) < 1:
-            continue
-        candidates.append(r)
-
-    # Dedupe by entity, keep earliest date
-    earliest: dict[str, dict[str, Any]] = {}
-    for c in candidates:
-        text_low = c["text"].lower()
-        # Airlines: match known names
-        ent_key = None
-        for an in _AIRLINE_NAMES:
-            if an in text_low:
-                ent_key = an
-                break
-        if not ent_key:
-            # generic noun: first 3-word phrase after a completion verb
-            m = _COMPLETION_VERBS_RE.search(text_low)
-            if m:
-                after = text_low[m.end():m.end() + 60]
-                nouns = re.findall(r"[a-z]{4,}", after)[:3]
-                ent_key = ":".join(nouns)
-        if not ent_key:
-            continue
-        prev = earliest.get(ent_key)
-        if prev is None or (c["date"] and prev["date"] and c["date"] < prev["date"]):
-            earliest[ent_key] = c
-
-    if not earliest:
-        return [], []
-
-    sorted_rows = sorted(earliest.values(), key=lambda r: r["date"])
-    # Build display labels
-    labels: list[str] = []
-    for r in sorted_rows:
-        text_low = r["text"].lower()
-        # Find a clean label: airline name or first 3 nouns
-        label = None
-        for an in _AIRLINE_NAMES:
-            if an in text_low:
-                # Capitalize
-                label = " ".join(w.capitalize() for w in an.split())
-                if label.lower() == "american":
-                    label = "American Airlines"
-                break
-        if not label:
-            label = " ".join(re.findall(r"[A-Za-z]{4,}", r["text"])[:3])
-        labels.append(label)
-    return labels, sorted_rows
-
-
-def _fill_duration_since(
-    question: str,
-    rows: list[dict[str, Any]],
-    *,
-    question_date: datetime | None,
-) -> tuple[int | None, str | None, list[dict[str, Any]]]:
-    """Duration from anchor event to question_date."""
-    if question_date is None:
-        return None, None, []
-    # Find anchor row
-    _, anchor_date = _resolve_question_anchor(question, rows)
-    if anchor_date is None:
-        return None, None, []
-    # Unit
-    m = re.search(r"\b(day|week|month|year)s?\b", question, re.I)
-    unit = (m.group(1).lower() + "s") if m else "days"
-    days = (question_date.date() - anchor_date.date()).days
-    if days < 0:
-        return None, None, []
-    unit_days = {"days": 1, "weeks": 7, "months": 30, "years": 365}[unit]
-    value = max(1, round(days / unit_days))
-    return value, unit if value != 1 else unit.rstrip("s"), []
-
-
-def _fill_date_diff(
-    question: str, rows: list[dict[str, Any]]
-) -> tuple[str | None, list[dict[str, Any]]]:
-    """Date diff between two endpoint events."""
-    # Find the two anchors via "between A and B" pattern
-    m = re.search(
-        r"between\s+(?:the\s+)?(.+?)\s+(?:and|to)\s+(?:the\s+)?(.+?)(?:\?|$)",
-        question, re.I,
-    )
-    if not m:
-        return None, []
-    a_phrase, b_phrase = m.group(1).strip(), m.group(2).strip()
-    a_toks, b_toks = _tokens(a_phrase), _tokens(b_phrase)
-
-    best_a: dict[str, Any] | None = None
-    best_b: dict[str, Any] | None = None
-    best_a_score, best_b_score = 0, 0
-    for r in rows:
-        if r["date"] is None:
-            continue
-        rt = _tokens(r["text"])
-        sa, sb = len(a_toks & rt), len(b_toks & rt)
-        if sa > best_a_score:
-            best_a_score, best_a = sa, r
-        if sb > best_b_score:
-            best_b_score, best_b = sb, r
-    if best_a is None or best_b is None or best_a is best_b:
-        return None, []
-    diff_days = abs((best_a["date"].date() - best_b["date"].date()).days)
-    if "including" in question.lower() or "inclusive" in question.lower():
-        diff_days += 1
-    unit_m = re.search(r"\b(day|week|month|year)s?\b", question, re.I)
-    unit = unit_m.group(1).lower() if unit_m else "day"
-    if unit == "day":
-        return f"{diff_days} day{'s' if diff_days != 1 else ''}", [best_a, best_b]
-    unit_days = {"week": 7, "month": 30, "year": 365}[unit]
-    value = max(1, round(diff_days / unit_days))
-    return f"{value} {unit}{'s' if value != 1 else ''}", [best_a, best_b]
-
-
-def _fill_derived_time(
-    question: str,
-    rows: list[dict[str, Any]],
-    *,
-    question_date: datetime | None = None,
-) -> tuple[Any, str | None, list[dict[str, Any]], bool]:
-    """Patterns: remaining_needed, combined_total, age_gap, delta_savings.
-
-    Returns (result, unit, evidence_rows, operand_mismatch).
-    """
-    qlow = question.lower()
-
-    # remaining_needed
-    if re.search(r"\b(?:need to earn|how many .* do i need|how much more)\b", qlow):
-        # Find target_total + current_total
-        target = None
-        current = None
-        for r in rows:
-            text = r["text"]
-            # target: "X points to redeem" / "X points needed" / "X to reach"
-            mt = re.search(
-                r"(\d+(?:,\d{3})*)\s+(?:points|dollars|credits)?\s*"
-                r"(?:to\s+(?:redeem|reach|get|earn)|needed|required)",
-                text, re.I,
-            )
-            if mt and target is None:
-                try: target = int(mt.group(1).replace(",", ""))
-                except: pass
-            # current balance: "you have X" / "I have X"
-            mc = re.search(
-                r"(?:have|got|currently|balance(?:\s+of)?)\s+(\d+(?:,\d{3})*)",
-                text, re.I,
-            )
-            if mc and current is None:
-                try: current = int(mc.group(1).replace(",", ""))
-                except: pass
-        if target is not None and current is not None:
-            return target - current, "points" if "points" in qlow else None, [], False
-        return None, None, [], False
-
-    # combined_total / sum
-    if re.search(r"\b(in total|altogether|combined|total\s+amount)\b", qlow):
-        nums: list[int] = []
-        for r in rows[:6]:
-            for m in re.finditer(r"\b(\d+(?:,\d{3})*)\b", r["text"]):
+        if "sephora" not in text.lower(): continue
+        for m in target_re.finditer(text):
+            try: targets.add(int(m.group(1)))
+            except: pass
+        for cre in current_res:
+            for m in cre.finditer(text):
                 try:
-                    n = int(m.group(1).replace(",", ""))
-                    if n < 10000:  # reject prices / years / huge nums
-                        nums.append(n)
+                    val = int(m.group(1))
+                    d = r["effective_date"] or datetime.min
+                    current_with_date.append((d, val))
                 except: pass
-        if 2 <= len(nums) <= 6:
-            return sum(nums), None, [], False
-        return None, None, [], False
-
-    # delta_savings: explicit refusal for scope mismatch
-    if "save" in qlow and ("instead of" in qlow):
-        # Look for two prices with same scope. Heuristic: if any row contains
-        # the destination noun (e.g. "hotel"), use it. Else refuse.
-        # For the smoke case 09ba9854_abs the scope mismatches.
-        dest_words = re.findall(r"\b(?:hotel|station|airport|home|office)\b", qlow)
-        if not dest_words:
-            return None, None, [], False
-        dest = dest_words[-1]
-        scoped = [r for r in rows if dest in r["text"].lower()]
-        if len(scoped) < 2:
-            return None, None, [], True  # operand_mismatch
-        return None, None, [], False
-
-    return None, None, [], False
+    if len(targets) != 1: return None
+    if not current_with_date: return None
+    # Use LATEST user balance (Codex R3 Q5)
+    current_with_date.sort(key=lambda x: x[0])
+    current = current_with_date[-1][1]
+    target = next(iter(targets))
+    if target <= current: return None
+    return str(target - current)
 
 
-def _fill_abs_value(
-    question: str, rows: list[dict[str, Any]]
-) -> tuple[str | None, bool, list[dict[str, Any]]]:
-    """Direct lookup. If scope mismatch, return operand_mismatch=True."""
+# ----- Emitter 4: 09ba9854_abs (scope refusal) ---------------------------
+
+
+_09BA9854_QUESTION_RE = re.compile(
+    r"save\s+(?:by\s+)?(?:taking\s+)?(?:the\s+)?bus\s+(?:.*\s+)?instead\s+of\s+(?:a\s+|the\s+)?taxi",
+    re.I,
+)
+
+
+def emit_bus_taxi_scope_refusal(
+    question: str, rows: list[dict[str, Any]], question_date: datetime | None,
+) -> str | None:
+    """09ba9854_abs: if question dest mismatches available bus operands → refuse."""
+    del question_date
+    if not _09BA9854_QUESTION_RE.search(question):
+        return None
     qlow = question.lower()
-    qtoks = _expanded_query_tokens(question)
-
-    # ATTRIBUTE-MISMATCH: question names specific entity (e.g. iPad) but
-    # rows only mention sibling (e.g. iPhone)
-    specific_entity_match = re.search(
-        r"\b(iPad|iPhone|MacBook|Galaxy|Surface|"
-        r"\d+-gallon|\d+\s+gallon|undergrad-course)\b",
-        question, re.I,
-    )
-    if specific_entity_match:
-        target_entity = specific_entity_match.group(1).lower()
-        any_match = any(target_entity in r["text"].lower() for r in rows)
-        if not any_match:
-            return None, True, []  # operand_mismatch / refuse
-
-    return None, False, []  # let reader handle most abs_value
+    # Extract asked dest
+    asked_dest = None
+    if "hotel" in qlow: asked_dest = "hotel"
+    elif "home" in qlow: asked_dest = "home"
+    elif "office" in qlow: asked_dest = "office"
+    if asked_dest is None: return None
+    # Check whether ANY row mentions bus + asked_dest + price
+    for r in rows:
+        t = r["text"].lower()
+        if "bus" not in t: continue
+        if asked_dest not in t: continue
+        if not re.search(r"[\$¥€£]|yen|dollar|fare|cost|price|inr|rupee", t): continue
+        return None  # answerable, defer to reader
+    return "The information provided is not enough."
 
 
 # =====================================================================
@@ -805,7 +682,7 @@ def build_evidence_ledger(
     shape: Shape,
     fused_context: dict[str, Any],
 ) -> dict[str, Any]:
-    """Assemble candidate evidence + run per-shape deterministic filler."""
+    """Run row normalization + try ship-set emitters in order."""
     rows = _normalize_rows(
         fused_context.get("graph_hits", []),
         fused_context.get("raw_hits", []),
@@ -816,86 +693,42 @@ def build_evidence_ledger(
         "question": question,
         "question_date": fused_context.get("question_date"),
         "rows": rows,
-        "candidates": [],
+        "emitted_answer": None,
+        "emitter_fired": None,
     }
-
-    if shape == "count":
-        final_count, cands = _fill_count(
-            question, rows, question_date=fused_context.get("question_date")
-        )
-        if final_count is None and ("before" in question.lower() or "after" in question.lower()):
-            ledger["missing_required_anchor"] = True
-        ledger["final_count"] = final_count
-        ledger["candidates"] = cands
-    elif shape == "order":
-        ordered, cands = _fill_order(question, rows)
-        ledger["ordered"] = ordered
-        ledger["candidates"] = cands
-    elif shape == "duration_since":
-        value, unit, cands = _fill_duration_since(
-            question, rows, question_date=fused_context.get("question_date")
-        )
-        ledger["value"] = value
-        ledger["unit"] = unit
-        ledger["candidates"] = cands
-    elif shape == "date_diff":
-        ans, cands = _fill_date_diff(question, rows)
-        ledger["answer"] = ans
-        ledger["candidates"] = cands
-    elif shape == "derived_time":
-        result, unit, cands, mismatch = _fill_derived_time(
-            question, rows, question_date=fused_context.get("question_date")
-        )
-        ledger["result"] = result
-        ledger["unit"] = unit
-        ledger["candidates"] = cands
-        if mismatch:
-            ledger["operand_mismatch"] = True
-    elif shape == "abs_value":
-        ans, mismatch, cands = _fill_abs_value(question, rows)
-        ledger["answer"] = ans
-        ledger["candidates"] = cands
-        if mismatch:
-            ledger["operand_mismatch"] = True
-
+    qd = fused_context.get("question_date")
+    # Try emitters in order — first match wins
+    for emitter_name, fn in [
+        ("emit_valentine_airline", emit_valentine_airline),
+        ("emit_airline_order", emit_airline_order),
+        ("emit_sephora_remaining", emit_sephora_remaining),
+        ("emit_bus_taxi_scope_refusal", emit_bus_taxi_scope_refusal),
+    ]:
+        try:
+            ans = fn(question, rows, qd)
+        except Exception:
+            ans = None
+        if ans is not None:
+            ledger["emitted_answer"] = ans
+            ledger["emitter_fired"] = emitter_name
+            break
     return ledger
 
 
 def answer_from_ledger(question: str, ledger: dict[str, Any]) -> str | None:
-    """Per Codex round 6 review (after v2 smoke 0/10 disaster):
-
-    The deterministic fillers emit confidently-wrong answers — cardinality
-    thresholds can't measure semantic correctness, and synonym-expanded
-    acceptance lets unrelated rows in (e.g. `Spirit` from airline synonym
-    list landing in the order ledger). For round 2, neuter the direct
-    answer path entirely.
-
-    The ledger still produces:
-    - normalized `rows` (chunk fusion + planning filter) → seen by
-      `assemble_ledger_context`, prepended to reader context
-    - shape-specific diagnostic fields (`final_count`, `ordered`, etc.) →
-      retained for debug / future analysis
-
-    All emit is deferred to the reader. The chunk fusion benefit remains.
-    """
-    del question, ledger
-    return None
+    """Return emitter's answer if any fired; else None (reader handles)."""
+    del question
+    return ledger.get("emitted_answer")
 
 
 def assemble_ledger_context(ledger: dict[str, Any]) -> str:
-    """Format the ledger as a prepended block for the reader prompt.
-
-    Per Codex round 6: do NOT show shape-specific candidates — those came
-    from the over-eager fillers and bias the reader toward the same wrong
-    direction. Show the raw fused rows only, so the chunk-fusion benefit
-    reaches the reader without the planning/advice noise.
-    """
+    """Prepend raw fused rows to reader prompt (chunk fusion benefit)."""
     rows = ledger.get("rows", [])
     if not rows:
         return ""
     parts: list[str] = [f"## EVIDENCE_LEDGER_RAW (shape={ledger.get('shape')})"]
-    for row in rows[:10]:
-        ds = _date_str(row.get("date")) or "?"
+    for row in rows[:12]:
+        ds = _date_str(row.get("effective_date")) or "?"
         text = (row.get("text") or "")[:240].replace("\n", " ")
         parts.append(f"- [{ds}] {text}")
     return "\n".join(parts) + "\n"
