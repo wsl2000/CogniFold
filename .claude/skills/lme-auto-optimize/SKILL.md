@@ -67,6 +67,23 @@ an iter — forgetting any of these costs the user time and money.
 - After each cluster's commit, smoke ONE representative qid (Step
   5) before continuing to the next cluster.
 
+**Full-coverage habit (HARD — `feedback-batch-full-coverage`)**
+- "Every iter is the last iter" — when the user picks target categories
+  (e.g. TR + MS), the analysis MUST list ALL wrong cases in those
+  categories with a per-case fix proposed. Do NOT cherry-pick the
+  easy ones, do NOT leave any case as "skip / out-of-scope" without
+  an explicit reason in the table.
+- Inspect at least one `full_context` per cluster (HARD-GATE Step 3)
+  before proposing a fix — guessing at the failure mode without
+  verification has caused 3 of the last 4 iters to introduce
+  regressions (iter27 W2, iter29a bloat, iter30 W3).
+- If a case has NO known fix (e.g. judge-strict variance, retrieval
+  miss with no signal in context), say so in the table as
+  "(no fix in current architecture — defer)" — explicitly, not by
+  omission.
+- The fix table covers cases A through Z; the user gets to see EVERY
+  row before approving any code change.
+
 **Audit discipline (`feedback-full-audit`)**
 - When asked to audit a case, STORE the full `full_context` —
   never the truncated `[:120]` preview that ends up in console
