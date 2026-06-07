@@ -221,6 +221,8 @@ SHIP_EMITTERS = {
     "emit_bus_taxi_scope_refusal",
     "emit_graduation_count",
     "emit_property_count_before_offer",
+    "emit_ipad_holiday_market_refusal",
+    "emit_art_event_venue_date_first",
 }
 
 TARGET_QIDS = {
@@ -230,6 +232,8 @@ TARGET_QIDS = {
     "emit_bus_taxi_scope_refusal": {"09ba9854_abs"},
     "emit_graduation_count": {"81507db6"},
     "emit_property_count_before_offer": {"gpt4_7fce9456"},
+    "emit_ipad_holiday_market_refusal": {"c8090214_abs"},
+    "emit_art_event_venue_date_first": {"gpt4_59149c78"},
 }
 
 

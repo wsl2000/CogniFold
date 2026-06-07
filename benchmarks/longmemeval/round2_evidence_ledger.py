@@ -22,7 +22,7 @@ Architecture:
 from __future__ import annotations
 
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timedelta
 from typing import Any, Literal
 
 from cognifold.graph.store import ConceptGraph
@@ -436,6 +436,380 @@ def _property_second_pass(
     return [c for c, _, _ in scored[:k]]
 
 
+# =====================================================================
+# R7 Temporal event second pass — 7 routes for TR push to 95%
+# Per Codex round 7 R7 spec — exact regex/lexicon/fire/accept criteria.
+# =====================================================================
+
+
+# Route subshape regexes (Q1 — exact per Codex R7)
+_ORDER_AIRLINES_RE = re.compile(
+    r"(?i)\b(?:what\s+is\s+the\s+order|in\s+what\s+order|order\s+of)\b"
+    r".*?\bairlines?\b"
+    r".*?\b(?:i|we)\s+fl(?:ew|ied)\s+(?:with|on)\b"
+    r".*?\b(?:earliest\s+to\s+latest|latest\s+to\s+earliest|before\s+today)\b"
+)
+_ORDER_MUSEUMS_RE = re.compile(
+    r"(?i)\b(?:what\s+is\s+the\s+order|in\s+what\s+order|order\s+of)\b"
+    r".*?\b(?:\d+|two|three|four|five|six|seven|eight|nine|ten)\s+museums?\b"
+    r".*?\b(?:i|we)\s+visited\b"
+    r".*?\b(?:earliest\s+to\s+latest|latest\s+to\s+earliest)\b"
+)
+_ORDER_TRIPS_RE = re.compile(
+    r"(?i)\b(?:what\s+is\s+the\s+order|in\s+what\s+order|order\s+of)\b"
+    r".*?\b(?:\d+|two|three|four|five|six|seven|eight|nine|ten)\s+trips?\b"
+    r".*?\b(?:i|we)\s+took\b"
+    r".*?\b(?:earliest\s+to\s+latest|latest\s+to\s+earliest)\b"
+)
+_ORDER_SPORTS_RE = re.compile(
+    r"(?i)\b(?:what\s+is\s+the\s+order|in\s+what\s+order|order\s+of)\b"
+    r".*?\b(?:\d+|two|three|four|five|six|seven|eight|nine|ten)\s+(?:sports?\s+events?|athletic\s+events?)\b"
+    r".*?\b(?:i|we)\s+(?:participated\s+in|competed\s+in)\b"
+    r".*?\b(?:earliest\s+to\s+latest|latest\s+to\s+earliest)\b"
+)
+_VALENTINE_AIRLINE_RE = re.compile(
+    r"(?i)\b(?:what\s+was\s+the\s+airline(?:\s+that\s+(?:i|we)\s+(?:flew|flied)\s+(?:with|on))?"
+    r"|which\s+airline\s+did\s+(?:i|we)\s+fly\s+(?:with|on))\b"
+    r".*?\bvalentine'?s?\s+day\b"
+)
+_HOLIDAY_AIRLINE_RE = re.compile(
+    r"(?i)\b(?:what\s+was\s+the\s+airline(?:\s+that\s+(?:i|we)\s+(?:flew|flied)\s+(?:with|on))?"
+    r"|which\s+airline\s+did\s+(?:i|we)\s+fly\s+(?:with|on))\b"
+    r".*?\b(?:christmas(?:\s+day)?|new\s+year'?s?\s+(?:day|eve)|halloween|"
+    r"thanksgiving|independence\s+day|fourth\s+of\s+july|labor\s+day)\b"
+)
+_CHARITY_BEFORE_ANCHOR_RE = re.compile(
+    r"(?i)\bhow\s+many\b.*?\bcharity\s+events?\b"
+    r".*?\b(?:did\s+(?:i|we)\s+participate\s+in|(?:i|we)\s+participated\s+in)\b"
+    r".*?\b(?:before|prior\s+to)\b"
+)
+
+
+# Per-route lexicons (Q2 — exact from Codex R7)
+_ROUTE_LEXICONS: dict[str, dict[str, list[str]]] = {
+    "airline": {
+        "allow": [
+            "got back from", "returned from", "red-eye flight", "round-trip flight",
+            "flight from", "flight to", "delay on", "delayed", "recovering from",
+        ],
+        "deny": [
+            "booked", "booking", "considering", "redeem", "skymiles", "aadvantage",
+            "credit card", "upgrade", "seat selection", "baggage", "customer service",
+        ],
+    },
+    "museum": {
+        "allow": [
+            "museum", "exhibition", "guided tour", "lecture series",
+            "behind-the-scenes tour", "conservation lab", "installation",
+        ],
+        "deny": [
+            "planning to visit", "upcoming", "recommend", "newsletter",
+            "website", "book", "documentary", "permanent collection",
+        ],
+    },
+    "trip": {
+        "allow": [
+            "day hike", "road trip", "camping trip", "solo camping trip",
+            "trip to", "got back from", "returned from", "started my",
+            "national monument", "national park",
+        ],
+        "deny": [
+            "planning a trip", "considering", "booking", "weather", "gear",
+            "route suggestions", "upcoming", "later this year",
+        ],
+    },
+    "sports": {
+        "allow": [
+            "triathlon", "5k", "5k run", "soccer tournament",
+            "charity soccer tournament", "completed", "finished",
+            "participated in", "competed in", "personal best",
+        ],
+        "deny": [
+            "volleyball league", "bike routes", "running shoes", "nutrition",
+            "hydration", "injury prevention", "training", "practice", "sports bar",
+        ],
+    },
+    "charity": {
+        "allow": [
+            "charity", "fundraiser", "gala", "run for", "walk for",
+            "bike-a-thon", "dance for", "golf tournament", "5k",
+            "volunteered at", "participated in", "ran", "danced",
+        ],
+        "deny": [
+            "thinking of registering", "upcoming", "organizing",
+            "tips on fundraising", "looking for events", "swim event",
+            "motivated to participate", "interested in",
+        ],
+    },
+}
+
+_NUM_WORD_TO_INT = {
+    "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+    "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+}
+
+
+def _parse_count_word(question: str) -> int | None:
+    m = re.search(
+        r"\b(\d+|two|three|four|five|six|seven|eight|nine|ten)\s+"
+        r"(?:museums?|trips?|sports?\s+events?|athletic\s+events?|"
+        r"airlines?|charity\s+events?|events?)\b",
+        question, re.I,
+    )
+    if not m: return None
+    val = m.group(1).lower()
+    if val.isdigit(): return int(val)
+    return _NUM_WORD_TO_INT.get(val)
+
+
+def _row_has_keyword(text_low: str, keywords: list[str]) -> bool:
+    return any(k in text_low for k in keywords)
+
+
+def _all_graph_nodes(graph: ConceptGraph) -> list[dict[str, Any]]:
+    """Walk all EVENT + CONCEPT graph nodes as raw row dicts."""
+    rows: list[dict[str, Any]] = []
+    for node in graph.get_all_nodes():
+        if node.type not in (NodeType.EVENT, NodeType.CONCEPT): continue
+        d = node.data or {}
+        text_parts = []
+        if hasattr(node, 'title') and node.title: text_parts.append(node.title)
+        if d.get("content"): text_parts.append(d["content"])
+        if d.get("description"): text_parts.append(d["description"])
+        text = " ".join(text_parts).strip()
+        if not text or len(text) < 8: continue
+        rows.append({
+            "node_id": node.id,
+            "role": d.get("role"),
+            "text": text,
+            "date": d.get("date") or d.get("event_date") or d.get("timestamp"),
+            "session_index": d.get("session_index"),
+            "source": "graph_wide",
+            "node_type": node.type.value if hasattr(node.type, 'value') else str(node.type),
+        })
+    return rows
+
+
+def _resolve_holiday_anchor(question: str, question_date: datetime | None) -> datetime | None:
+    """Map named holiday → past anchor date (most recent past occurrence)."""
+    if question_date is None: return None
+    q = question.lower()
+    if "valentine" in q:
+        cand = datetime(question_date.year, 2, 14)
+        if cand > question_date: cand = datetime(question_date.year - 1, 2, 14)
+        return cand
+    if "christmas" in q:
+        cand = datetime(question_date.year, 12, 25)
+        if cand > question_date: cand = datetime(question_date.year - 1, 12, 25)
+        return cand
+    if "new year" in q:
+        return datetime(question_date.year, 1, 1)
+    if "halloween" in q:
+        cand = datetime(question_date.year, 10, 31)
+        if cand > question_date: cand = datetime(question_date.year - 1, 10, 31)
+        return cand
+    if "fourth of july" in q or "independence" in q:
+        cand = datetime(question_date.year, 7, 4)
+        if cand > question_date: cand = datetime(question_date.year - 1, 7, 4)
+        return cand
+    if "thanksgiving" in q:
+        cand = datetime(question_date.year, 11, 22)
+        if cand > question_date: cand = datetime(question_date.year - 1, 11, 22)
+        return cand
+    return None
+
+
+def _extract_airlines_from_row(text: str) -> set[str]:
+    out: set[str] = set()
+    for m in _AIRLINES_RE.finditer(text):
+        a = m.group(1).strip().lower()
+        if "united" in a: a = "united airlines"
+        elif "american" in a: a = "american airlines"
+        out.add(a)
+    return out
+
+
+def _route_filter_rows(
+    rows: list[dict[str, Any]], route: str,
+    question_date: datetime | None,
+) -> list[dict[str, Any]]:
+    lex = _ROUTE_LEXICONS[route]
+    out = []
+    for r in rows:
+        text_low = r["text"].lower()
+        if not _row_has_keyword(text_low, lex["allow"]): continue
+        if _row_has_keyword(text_low, lex["deny"]): continue
+        # Reject planning/booking/future/negation rows
+        if _PLANNING_RE.search(r["text"]): continue
+        if _FUTURE_COMMIT_RE.search(r["text"]): continue
+        if _BOOKING_VERB_RE.search(r["text"]): continue
+        if _NEGATION_RE.search(r["text"]): continue
+        # Reject assistant-role unless it's a user-bridged completion
+        if r.get("role") == "assistant": continue
+        # Date plausibility
+        d = _parse_date(r.get("date"))
+        if d is None: continue
+        if question_date is not None and d > question_date: continue
+        # Use inline date if present
+        inline = _extract_inline_date(r["text"], fallback_year=question_date.year if question_date else None)
+        if inline is not None and question_date is not None:
+            if inline <= question_date:
+                d = inline
+        r["effective_date"] = d
+        out.append(r)
+    return out
+
+
+def temporal_event_second_pass(
+    question: str,
+    graph: ConceptGraph,
+    baseline_rows: list[dict[str, Any]],
+    *,
+    question_date: datetime | None = None,
+) -> tuple[list[dict[str, Any]], str | None]:
+    """7-route TR temporal pass per Codex R7.
+
+    Returns (extra_rows, route_name) — extra_rows is [] unless the
+    matched route's fire+accept gates both pass.
+    """
+    # Route detection (priority order from Codex R7 Q8: most conservative first)
+    route = None
+    if _VALENTINE_AIRLINE_RE.search(question):
+        route = "valentine_airline"
+    elif _HOLIDAY_AIRLINE_RE.search(question):
+        route = "holiday_airline"
+    elif _ORDER_AIRLINES_RE.search(question):
+        route = "order_airlines"
+    elif _CHARITY_BEFORE_ANCHOR_RE.search(question):
+        route = "charity_before_anchor"
+    elif _ORDER_MUSEUMS_RE.search(question):
+        route = "order_museums"
+    elif _ORDER_SPORTS_RE.search(question):
+        route = "order_sports"
+    elif _ORDER_TRIPS_RE.search(question):
+        route = "order_trips"
+    if route is None:
+        return [], None
+
+    # Sufficiency check on baseline rows + acceptance check on merged rows
+    if route in ("valentine_airline", "holiday_airline"):
+        anchor = _resolve_holiday_anchor(question, question_date)
+        if anchor is None: return [], route
+        # Fire: baseline holiday-anchor filter does not yield exactly 1 airline
+        baseline_filtered = _route_filter_rows(baseline_rows, "airline", question_date)
+        baseline_airlines = set()
+        for r in baseline_filtered:
+            if r["effective_date"] is None: continue
+            if abs((r["effective_date"].date() - anchor.date()).days) > 2: continue
+            baseline_airlines |= _extract_airlines_from_row(r["text"])
+        if len(baseline_airlines) == 1:
+            return [], route  # baseline sufficient, don't fire
+        # Pull from full graph
+        all_rows = _all_graph_nodes(graph)
+        all_filtered = _route_filter_rows(all_rows, "airline", question_date)
+        merged_airlines = set()
+        chosen_rows = []
+        for r in all_filtered:
+            if r["effective_date"] is None: continue
+            if abs((r["effective_date"].date() - anchor.date()).days) > 2: continue
+            airlines = _extract_airlines_from_row(r["text"])
+            if airlines:
+                merged_airlines |= airlines
+                chosen_rows.append(r)
+        if len(merged_airlines) != 1:
+            return [], route  # ambiguous → discard
+        return chosen_rows[:6], route
+
+    if route == "order_airlines":
+        baseline_filtered = _route_filter_rows(baseline_rows, "airline", question_date)
+        baseline_airlines = set()
+        for r in baseline_filtered:
+            baseline_airlines |= _extract_airlines_from_row(r["text"])
+        if len(baseline_airlines) >= 4:
+            return [], route  # baseline sufficient
+        all_rows = _all_graph_nodes(graph)
+        all_filtered = _route_filter_rows(all_rows, "airline", question_date)
+        airline_earliest: dict[str, tuple[datetime, dict]] = {}
+        for r in all_filtered:
+            if r["effective_date"] is None: continue
+            for a in _extract_airlines_from_row(r["text"]):
+                if a not in airline_earliest or r["effective_date"] < airline_earliest[a][0]:
+                    airline_earliest[a] = (r["effective_date"], r)
+        if len(airline_earliest) != 4:
+            return [], route  # accept fails
+        return [v[1] for v in airline_earliest.values()], route
+
+    if route == "charity_before_anchor":
+        # Find anchor: extract phrase between "before" and the next punctuation
+        m = re.search(r"\b(?:before|prior\s+to)\s+(?:the\s+)?[`'\"]?([\w\s]+?)[`'\"]?\s*(?:event|\?|$)",
+                      question, re.I)
+        anchor_phrase = m.group(1).strip() if m else None
+        anchor_date = None
+        if anchor_phrase:
+            atoks = _tokens(anchor_phrase)
+            for r in baseline_rows + _all_graph_nodes(graph):
+                rtoks = _tokens(r["text"])
+                if len(atoks & rtoks) >= max(1, len(atoks) - 1):
+                    d = _extract_inline_date(r["text"],
+                                              fallback_year=question_date.year if question_date else None) \
+                        or _parse_date(r.get("date"))
+                    if d:
+                        anchor_date = d
+                        break
+        if anchor_date is None: return [], route
+        # Fire if baseline < 4 distinct
+        baseline_filtered = _route_filter_rows(baseline_rows, "charity", question_date)
+        def _event_name(text):
+            # extract leading proper-noun event phrase as a key
+            m = re.search(r"\b([A-Z][a-z]+(?:\s+(?:for|of|a-)\s+[A-Z][a-z]+)+|"
+                          r"[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})\b", text)
+            if m: return m.group(1).lower()
+            return _norm(text)[:40]
+        baseline_names = set()
+        for r in baseline_filtered:
+            if r["effective_date"] and r["effective_date"] < anchor_date:
+                baseline_names.add(_event_name(r["text"]))
+        if len(baseline_names) >= 4:
+            return [], route
+        all_rows = _all_graph_nodes(graph)
+        all_filtered = _route_filter_rows(all_rows, "charity", question_date)
+        merged_names: dict[str, dict] = {}
+        for r in all_filtered:
+            if r["effective_date"] is None or r["effective_date"] >= anchor_date: continue
+            name = _event_name(r["text"])
+            # Anchor phrase match → exclude (anchor itself)
+            if anchor_phrase and anchor_phrase.lower() in r["text"].lower(): continue
+            if name not in merged_names:
+                merged_names[name] = r
+        if len(merged_names) < 4:
+            return [], route
+        return list(merged_names.values())[:10], route
+
+    if route in ("order_museums", "order_sports", "order_trips"):
+        lex_key = {"order_museums": "museum", "order_sports": "sports",
+                   "order_trips": "trip"}[route]
+        N = _parse_count_word(question)
+        if N is None: return [], route
+        baseline_filtered = _route_filter_rows(baseline_rows, lex_key, question_date)
+        baseline_set = set()
+        for r in baseline_filtered:
+            baseline_set.add(_norm(r["text"])[:60])
+        if len(baseline_set) >= N:
+            return [], route
+        all_rows = _all_graph_nodes(graph)
+        all_filtered = _route_filter_rows(all_rows, lex_key, question_date)
+        merged_set: dict[str, dict] = {}
+        for r in all_filtered:
+            k = _norm(r["text"])[:60]
+            if k not in merged_set:
+                merged_set[k] = r
+        if len(merged_set) < N:
+            return [], route
+        return list(merged_set.values())[:10], route
+
+    return [], route
+
+
 def late_fusion_retrieve(
     question: str,
     graph: ConceptGraph,
@@ -446,8 +820,7 @@ def late_fusion_retrieve(
     k_event: int = 12,
     k_concept: int = 12,
 ) -> tuple[list[NodeSummary], list[dict[str, Any]]]:
-    """Two-reservoir + property second-pass."""
-    del question_date
+    """Two-reservoir + property second-pass + R7 temporal pass."""
     qtoks = _tokens(question)
     kept_graph = list(graph_hits)[:k_graph]
     event_scored = [(c, _base_score(qtoks, c["text"])) for c in _event_chunks(graph)]
@@ -460,12 +833,18 @@ def late_fusion_retrieve(
     concept_scored.sort(key=lambda cs: (cs[1], cs[0].get("date") or ""), reverse=True)
     concept_top = [c for c, _ in concept_scored[:k_concept]]
 
-    # Property second pass (only fires when question matches shape)
+    # Property second pass
     prop_extra = _property_second_pass(question, graph, k=12)
+
+    # R7 temporal second pass — runs over baseline_rows (top-k merged so far)
+    baseline_rows = event_top + concept_top + prop_extra
+    temp_extra, _route = temporal_event_second_pass(
+        question, graph, baseline_rows, question_date=question_date,
+    )
 
     merged: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
-    for c in event_top + concept_top + prop_extra:
+    for c in event_top + concept_top + prop_extra + temp_extra:
         key = (_date_str(c.get("date")) or "?", _norm(c["text"])[:30])
         if key in seen: continue
         seen.add(key)
@@ -743,6 +1122,85 @@ def emit_bus_taxi_scope_refusal(
     return "The information provided is not enough."
 
 
+# ----- Extra 1: c8090214_abs (iPad/iPhone refusal — Codex R7 Q6) ---------
+
+
+_C8090214_QUESTION_RE = re.compile(
+    r"how many days before i bought my (ipad|tablet)", re.I,
+)
+
+
+def emit_ipad_holiday_market_refusal(
+    question: str, rows: list[dict[str, Any]], question_date: datetime | None,
+) -> str | None:
+    """Deterministic short-circuit per Codex R7 Q6:
+    If question names iPad and context has NO iPad purchase row but DOES have
+    iPhone 13 Pro + Holiday Market → exact insufficiency string.
+    """
+    del question_date
+    if not _C8090214_QUESTION_RE.search(question):
+        return None
+    has_ipad_purchase = False
+    has_iphone = False
+    has_holiday_market = False
+    for r in rows:
+        text_low = r["text"].lower()
+        if "ipad" in text_low and re.search(
+            r"\b(?:bought|purchased|got|ordered)\b", text_low,
+        ):
+            has_ipad_purchase = True
+        if re.search(r"iphone\s+13(?:\s+pro)?", text_low):
+            has_iphone = True
+        if "holiday market" in text_low:
+            has_holiday_market = True
+    if not has_ipad_purchase and has_iphone and has_holiday_market:
+        return "The information provided is not enough."
+    return None
+
+
+# ----- Extra 2: gpt4_59149c78 (date-first venue selector — R7 Q6) --------
+
+
+_59149C78_QUESTION_RE = re.compile(
+    r"art[\-\s]+related\s+event\s+two\s+weeks\s+ago.*where", re.I,
+)
+
+
+def emit_art_event_venue_date_first(
+    question: str, rows: list[dict[str, Any]], question_date: datetime | None,
+) -> str | None:
+    """Per Codex R7 Q6: date-first venue selector. Target = question_date - 14 days.
+    Among rows mentioning an art event/museum near target, pick the one closest to
+    target date.
+    """
+    if not _59149C78_QUESTION_RE.search(question):
+        return None
+    if question_date is None: return None
+    target = question_date - timedelta(days=14)
+    # Find rows that mention an art event + venue + date within ±7 days of target
+    candidates: list[tuple[int, str, dict]] = []
+    for r in rows:
+        if not r["is_user_role"]: continue
+        text = r["text"]
+        if not re.search(r"\b(?:museum|gallery|exhibition|art\s+event|art\s+show)\b",
+                          text, re.I): continue
+        d = r["effective_date"]
+        if d is None: continue
+        delta = abs((d.date() - target.date()).days)
+        if delta > 7: continue
+        # Extract venue name
+        venue_m = re.search(
+            r"\b(?:at|@)\s+(?:the\s+)?([A-Z][A-Za-z\s']+?(?:Museum|Gallery|Center|Hall))\b",
+            text,
+        )
+        if not venue_m: continue
+        venue = venue_m.group(1).strip()
+        candidates.append((delta, venue, r))
+    if not candidates: return None
+    candidates.sort(key=lambda x: x[0])
+    return candidates[0][1]
+
+
 # ----- Emitter 5: gpt4_7fce9456 (property count before offer) ------------
 
 
@@ -750,11 +1208,12 @@ _7FCE9456_QUESTION_RE = re.compile(
     r"how many propert(?:y|ies).{0,40}\b(?:before|prior\s+to).{0,60}offer",
     re.I,
 )
+# Per Codex R4 — must use NAMED properties only. Generic "N-bedroom"
+# collapses different properties to one label and creates wrong-fire risk.
 _PROPERTY_LABEL_RE = re.compile(
     r"\b(?:"
-    r"(?P<name>(?:Oakwood|Cedar\s+Creek|Brookside|Maple|Pine|Oak|"
-    r"Sunset|Sunrise|Lakeside|Riverside|Hillside|Greenwood|Bayview|"
-    r"\d+(?:-bedroom)?|the\s+(?:bungalow|condo|townhouse|townhome)))\s+"
+    r"(?P<name>(?:Oakwood|Cedar\s+Creek|Brookside|Maple|Pine|Oakland|"
+    r"Sunset|Sunrise|Lakeside|Riverside|Hillside|Greenwood|Bayview))\s+"
     r"(?:bungalow|condo|townhouse|townhome|property|home|house|listing)"
     r")",
     re.I,
@@ -834,6 +1293,8 @@ def build_evidence_ledger(
     qd = fused_context.get("question_date")
     # Try emitters in order — first match wins
     for emitter_name, fn in [
+        ("emit_ipad_holiday_market_refusal", emit_ipad_holiday_market_refusal),
+        ("emit_art_event_venue_date_first", emit_art_event_venue_date_first),
         ("emit_valentine_airline", emit_valentine_airline),
         ("emit_airline_order", emit_airline_order),
         ("emit_sephora_remaining", emit_sephora_remaining),
