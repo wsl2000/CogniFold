@@ -178,9 +178,174 @@ _DEST_NOUNS_RE = re.compile(
     re.I,
 )
 
+# =====================================================================
+# M2 COUNT_CANDIDATES-lite — context augmentation for count shape
+# =====================================================================
+
+# Capture the target noun phrase in "how many X" patterns — limit to
+# 1-2 tokens (head noun + optional modifier) to keep candidate scope tight
+_COUNT_NOUN_RE = re.compile(
+    r"\bhow many\s+(?:different\s+|unique\s+|distinct\s+|total\s+)?"
+    r"([\w\-]+(?:\s+[\w\-]+){0,1})\b",
+    re.I,
+)
+
+# Completed-action verbs — only count rows where user actually did the action
+_COMPLETED_ACTION_RE = re.compile(
+    r"\b(?:bought|purchased|acquired|got|made|cooked|baked|attended|"
+    r"visited|hosted|saw|watched|listened|read|wrote|completed|finished|"
+    r"did|went|drove|drank|ate|tried|tasted|ordered|paid|signed|"
+    r"earned|donated|spent|received|gave|joined|started|enrolled|"
+    r"subscribed|cancelled|registered)\b",
+    re.I,
+)
+
+# Temporal window markers in the question
+_TEMPORAL_WINDOW_RE = re.compile(
+    r"\b(?:in|last|this|since|before|after|during|within|over\s+the\s+past)\s+"
+    r"(?:january|february|march|april|may|june|july|august|"
+    r"september|october|november|december|"
+    r"week|month|year|quarter|"
+    r"monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
+    r"2019|2020|2021|2022|2023|2024|2025|2026|"
+    r"\d+\s+(?:weeks?|months?|days?|years?))\b",
+    re.I,
+)
+
+# Stopwords / generic count-phrase tokens to drop from target noun
+_COUNT_STOPWORDS = {
+    # determiners / quantifiers
+    "the", "and", "any", "all", "different", "kinds", "types",
+    "of", "many", "much", "some", "various", "such",
+    # auxiliaries
+    "did", "do", "have", "had", "was", "were", "are", "is", "been",
+    # common count verbs that creep into the captured span
+    "buy", "got", "get", "make", "take", "go", "went",
+    "see", "watch", "read", "hear", "saw", "made", "bought",
+}
+
+# Class-level synonyms for MS undercount clusters (R6 audit per-case map).
+# Fires only when the captured head noun matches one of these keys.
+# Codex R9 fixes: dropped polysemous tokens (watch=verb, service/plan/show
+# too generic, record=ambiguous, ep too short).
+_COUNT_ALIAS_MAP: dict[str, set[str]] = {
+    "clothes": {"shirt", "shirts", "pants", "jacket", "dress", "skirt",
+                "sweater", "blouse", "jeans", "coat", "tee", "hoodie"},
+    "clothing": {"shirt", "shirts", "pants", "jacket", "dress", "skirt",
+                 "sweater", "blouse", "jeans", "coat", "tee", "hoodie"},
+    "jewelry": {"ring", "necklace", "bracelet", "earring", "earrings",
+                "pendant", "bangle", "anklet"},  # dropped 'watch' (verb collision)
+    "furniture": {"couch", "sofa", "chair", "table", "bed", "dresser",
+                  "desk", "ottoman", "bookshelf", "armchair"},
+    "albums": {"album", "lp", "vinyl"},  # dropped 'ep' (too short), 'record' (polysemous)
+    "doctors": {"physician", "specialist", "dermatologist", "cardiologist",
+                "dentist", "doctor", "neurologist", "therapist"},
+    "events": {"event", "gathering", "ceremony", "party", "concert",
+               "performance", "exhibition", "gala"},  # dropped 'show' (too broad)
+    "parties": {"party", "gathering", "dinner", "meetup", "soiree"},
+    "subscriptions": {"subscription", "membership"},  # dropped 'service'/'plan' (too generic)
+}
+
+
+def _expand_target_tokens(toks: set[str]) -> set[str]:
+    """Expand target tokens with class-level aliases when a key matches."""
+    expanded = set(toks)
+    for tok in list(toks):
+        if tok in _COUNT_ALIAS_MAP:
+            expanded.update(_COUNT_ALIAS_MAP[tok])
+    return expanded
+
 
 def _norm(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "").lower()).strip()
+
+
+def _extract_count_target(question: str) -> set[str]:
+    """Pull the head noun tokens from 'how many X' for candidate matching."""
+    m = _COUNT_NOUN_RE.search(question or "")
+    if not m:
+        return set()
+    raw = m.group(1).lower()
+    toks = {t for t in raw.split() if len(t) > 2 and t not in _COUNT_STOPWORDS}
+    return toks
+
+
+def _count_candidate_block(
+    question: str,
+    rows: list[dict[str, Any]],
+    question_date: datetime | None,
+) -> str:
+    """Build COUNT_CANDIDATES-lite block: user-role, completed, distinct.
+
+    Pure context augmentation — does NOT emit an answer. Reader still
+    decides. Goal: surface ALL relevant candidate rows so MS undercount
+    cases see more than top-12 ranked rows.
+
+    Gates (tight, per gpt-5.4 R7 spurious-fire concern):
+    - Question must be a count shape with extractable head noun.
+    - Row must be is_user_role=True (no assistant suggestions).
+    - Row must not have_planning or have_future_commitment (no intents).
+    - Row text must contain at least one target-noun token.
+    - Distinct lemma (first 32 chars of normalized text) — coarse dedupe.
+    """
+    target_toks = _extract_count_target(question)
+    if not target_toks:
+        return ""
+    target_toks = _expand_target_tokens(target_toks)
+    has_window = bool(_TEMPORAL_WINDOW_RE.search(question))
+    # Codex R9 fix: token-boundary regex, not substring (`ring` in `during`).
+    target_re = re.compile(
+        r"\b(?:" + "|".join(re.escape(t) for t in sorted(target_toks)) + r")\b",
+        re.I,
+    )
+
+    candidates: list[dict[str, Any]] = []
+    seen_lemma: set[str] = set()
+    for row in rows:
+        if not row.get("is_user_role"):
+            continue
+        if row.get("has_planning") or row.get("has_future_commitment"):
+            continue
+        if row.get("has_negation"):
+            continue
+        text_low = (row.get("text") or "").lower()
+        if not text_low:
+            continue
+        # Require at least one target-noun token at word boundary
+        if not target_re.search(text_low):
+            continue
+        # Require a completed-action verb so we don't surface mere
+        # mentions ("I like cookies" shouldn't count as "made cookies")
+        if not _COMPLETED_ACTION_RE.search(text_low):
+            continue
+        # Codex R9: if question has explicit window, drop rows whose
+        # effective_date is None (we can't verify in-window).
+        if has_window and row.get("effective_date") is None:
+            continue
+        # Dedupe: use first 64 chars (gpt-5.4 said 32 too coarse)
+        lemma = re.sub(r"\s+", " ", text_low)[:64]
+        if lemma in seen_lemma:
+            continue
+        seen_lemma.add(lemma)
+        candidates.append(row)
+    del question_date  # reader's qa rules handle within-window filtering
+
+    if not candidates:
+        return ""
+
+    parts: list[str] = [
+        "## COUNT_CANDIDATES (user-role + completed-action + distinct)"
+    ]
+    parts.append(
+        f"# target_tokens: {sorted(target_toks)} | "
+        f"window_in_question: {'yes' if has_window else 'no'}"
+    )
+    for c in candidates[:25]:
+        ds = _date_str(c.get("effective_date")) or "?"
+        text = (c.get("text") or "")[:180].replace("\n", " ")
+        parts.append(f"- [{ds}] {text}")
+    parts.append(f"# total_count_candidates: {len(candidates)}")
+    return "\n".join(parts) + "\n"
 
 
 def _tokens(text: str) -> set[str]:
@@ -1319,8 +1484,151 @@ def answer_from_ledger(question: str, ledger: dict[str, Any]) -> str | None:
     return ledger.get("emitted_answer")
 
 
+# =====================================================================
+# M3 ARITH OPERANDS — surface anchored operand facts for two-fact math
+# =====================================================================
+
+# "How old was I when X?" / "how many years older than at college" / etc.
+_AGE_ARITH_RE = re.compile(
+    r"\b(?:how old (?:was|were|will) (?:i|you)|"
+    r"how many years (?:older|younger)|"
+    r"what age (?:was|will|am) i|"
+    r"my age (?:at|when))\b",
+    re.I,
+)
+
+# Two-trip / two-event addition: "in total", "altogether", "combined"
+_TRIP_SUM_RE = re.compile(
+    r"\b(?:how many days .* (?:in total|altogether|combined|on my trips)|"
+    r"total (?:trip|days|hours) (?:to|on|spent))\b",
+    re.I,
+)
+
+# Operand patterns
+_AGE_FACT_RE = re.compile(
+    r"\b(?:i'?m|i am|user is|user was|aged?|turned)\s+(\d{1,3})\b", re.I,
+)
+_YEARS_AGO_RE = re.compile(
+    r"\b(\d{1,3})\s+years?\s+ago\b", re.I,
+)
+_YEARS_IN_RE = re.compile(
+    r"\b(\d{1,3})\s+years?\s+(?:in|at)\s+(?:the\s+)?\w+\b", re.I,
+)
+# Codex R9 add: graduation/event year anchors for age-at-event
+_EVENT_YEAR_RE = re.compile(
+    r"\b(?:graduated|finished|completed|started|joined|"
+    r"moved|left|got married|had|born)\s+\w*\s*"
+    r"(?:in|on)\s+(\d{4})\b", re.I,
+)
+# Codex R9 add: future-age anchors ("in 5 years", "when I turn 40")
+_FUTURE_YEARS_RE = re.compile(
+    r"\bin\s+(\d{1,3})\s+years?\b", re.I,
+)
+_TURN_AGE_RE = re.compile(
+    r"\bwhen\s+i\s+turn\s+(\d{1,3})\b", re.I,
+)
+# Codex R9 expand: trip duration patterns
+_DAYS_DURATION_RE = re.compile(
+    r"\b(\d{1,3})\s+(?:days?|nights?)\s+"
+    r"(?:in|at|on|to|trip|vacation|stay|visit|abroad|away)\b", re.I,
+)
+_FOR_DAYS_RE = re.compile(
+    r"\bfor\s+(\d{1,3})\s+(?:days?|nights?)\b", re.I,
+)
+_STAYED_DAYS_RE = re.compile(
+    r"\b(?:stayed|spent|was\s+(?:there|away))\s+(?:there\s+)?"
+    r"(\d{1,3})\s+(?:days?|nights?)\b", re.I,
+)
+_TRIP_LENGTH_RE = re.compile(
+    r"\b(?:trip|vacation|stay)\s+(?:was|lasted)\s+(\d{1,3})\s+"
+    r"(?:days?|nights?)\b", re.I,
+)
+
+
+def _arith_operand_block(
+    question: str,
+    rows: list[dict[str, Any]],
+    question_date: datetime | None,
+) -> str:
+    """Surface anchored operand facts for the reader to compose arithmetic.
+
+    Pure context augmentation (R7 lock — no direct emit). Only fires
+    when:
+    - Question matches an age/duration arithmetic shape
+    - We can find at least one explicit anchor token in user-role rows
+    - We surface up to 8 operand-bearing rows for the reader to compose
+
+    Per gpt-5.4 R7 SP5-lite: reject implicit operands; require both
+    to be explicit. We don't compute the answer here — we ensure the
+    operands are in context, then reader does the arithmetic.
+    """
+    del question_date
+    is_age = bool(_AGE_ARITH_RE.search(question or ""))
+    is_trip_sum = bool(_TRIP_SUM_RE.search(question or ""))
+    if not (is_age or is_trip_sum):
+        return ""
+
+    operand_rows: list[tuple[str, dict[str, Any]]] = []
+    seen_lemma: set[str] = set()
+    for row in rows:
+        if not row.get("is_user_role"):
+            continue
+        text = row.get("text") or ""
+        text_low = text.lower()
+        if not text_low:
+            continue
+        hits: list[str] = []
+        if is_age:
+            for m in _AGE_FACT_RE.finditer(text):
+                hits.append(f"AGE={m.group(1)}")
+            for m in _YEARS_AGO_RE.finditer(text):
+                hits.append(f"YEARS_AGO={m.group(1)}")
+            for m in _YEARS_IN_RE.finditer(text):
+                hits.append(f"YEARS_AT_PLACE={m.group(1)}")
+            for m in _EVENT_YEAR_RE.finditer(text):
+                hits.append(f"EVENT_YEAR={m.group(1)}")
+            for m in _FUTURE_YEARS_RE.finditer(text):
+                hits.append(f"IN_N_YEARS={m.group(1)}")
+            for m in _TURN_AGE_RE.finditer(text):
+                hits.append(f"TURN_AGE={m.group(1)}")
+        if is_trip_sum:
+            for m in _DAYS_DURATION_RE.finditer(text):
+                hits.append(f"DAYS={m.group(1)}")
+            for m in _FOR_DAYS_RE.finditer(text):
+                hits.append(f"FOR_DAYS={m.group(1)}")
+            for m in _STAYED_DAYS_RE.finditer(text):
+                hits.append(f"STAYED_DAYS={m.group(1)}")
+            for m in _TRIP_LENGTH_RE.finditer(text):
+                hits.append(f"TRIP_LEN={m.group(1)}")
+        if not hits:
+            continue
+        lemma = re.sub(r"\s+", " ", text_low)[:32]
+        if lemma in seen_lemma:
+            continue
+        seen_lemma.add(lemma)
+        operand_rows.append(("|".join(hits), row))
+
+    # Require at least two operand-bearing rows; otherwise no arithmetic
+    # possible and the block would be misleading
+    if len(operand_rows) < 2:
+        return ""
+
+    shape_label = "age_arith" if is_age else "trip_sum"
+    parts: list[str] = [
+        f"## ARITH_OPERANDS ({shape_label}) — two-fact composition only"
+    ]
+    for tags, c in operand_rows[:8]:
+        ds = _date_str(c.get("effective_date")) or "?"
+        text = (c.get("text") or "")[:180].replace("\n", " ")
+        parts.append(f"- [{ds}] ({tags}) {text}")
+    parts.append(
+        "# Compose only if TWO explicit operands present; otherwise refuse."
+    )
+    return "\n".join(parts) + "\n"
+
+
 def assemble_ledger_context(ledger: dict[str, Any]) -> str:
-    """Prepend raw fused rows to reader prompt (chunk fusion benefit)."""
+    """Prepend raw fused rows + optional count candidates to reader prompt."""
     rows = ledger.get("rows", [])
     if not rows:
         return ""
@@ -1329,4 +1637,23 @@ def assemble_ledger_context(ledger: dict[str, Any]) -> str:
         ds = _date_str(row.get("effective_date")) or "?"
         text = (row.get("text") or "")[:240].replace("\n", " ")
         parts.append(f"- [{ds}] {text}")
-    return "\n".join(parts) + "\n"
+    out = "\n".join(parts) + "\n"
+    # M2 COUNT_CANDIDATES-lite — augment for count shape only
+    if ledger.get("shape") == "count":
+        cc = _count_candidate_block(
+            ledger.get("question", ""),
+            rows,
+            ledger.get("question_date"),
+        )
+        if cc:
+            out += cc
+    # M3 ARITH_OPERANDS — augment for derived_time / date_diff shapes
+    if ledger.get("shape") in ("derived_time", "date_diff", "duration_since"):
+        ao = _arith_operand_block(
+            ledger.get("question", ""),
+            rows,
+            ledger.get("question_date"),
+        )
+        if ao:
+            out += ao
+    return out

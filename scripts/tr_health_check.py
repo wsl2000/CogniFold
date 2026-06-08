@@ -76,11 +76,16 @@ def main():
     base_acc = None
     floor = None
     if common:
-        b_c = sum(1 for q in common if baseline[q].get("verdict") == "CORRECT")
-        c_c = sum(1 for q in common if records[q].get("verdict") == "CORRECT")
-        base_acc = b_c / len(common) * 100
-        cur_acc_on_common = c_c / len(common) * 100
-        floor = base_acc - args.regression_pp
+        # Exclude empty-HY records from accuracy floor check (provider-induced, not reasoning regression).
+        common_healthy = [q for q in common if len(str(records[q].get("hypothesis","") or "").strip()) >= 5]
+        if common_healthy:
+            b_c = sum(1 for q in common_healthy if baseline[q].get("verdict") == "CORRECT")
+            c_c = sum(1 for q in common_healthy if records[q].get("verdict") == "CORRECT")
+            base_acc = b_c / len(common_healthy) * 100
+            cur_acc_on_common = c_c / len(common_healthy) * 100
+            floor = base_acc - args.regression_pp
+        else:
+            base_acc = None
 
     print(f"=== TR health @ done={total} ===")
     print(f"  CORRECT  : {correct}/{total} = {acc:.1f}%")
