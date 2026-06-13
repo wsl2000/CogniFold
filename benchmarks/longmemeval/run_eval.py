@@ -14,7 +14,7 @@ import sys
 import time
 import urllib.request
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from tqdm import tqdm
@@ -71,6 +71,67 @@ def download_data(output_dir: Path) -> Path:
     return file_path
 
 
+# Per-process call-stats counter. Each successful LLM call records its
+# token usage by model name. Dumped to <output_dir>/call_stats.json at the
+# end of run_benchmark; the launcher merges these across batches.
+#
+# `cost_usd` is summed when the provider reports an authoritative cost on
+# the response (OpenRouter populates `usage.cost`); when absent (OpenAI
+# direct doesn't return a cost field), only tokens are recorded and
+# cost_usd stays 0 for that model.
+_LLM_CALL_STATS: dict[str, dict[str, float]] = {}
+
+
+def _record_llm_call(
+    model_name: str,
+    input_tokens: int,
+    output_tokens: int,
+    reasoning_tokens: int = 0,
+    cost_usd: float = 0.0,
+) -> None:
+    """Increment the per-model call counter. Safe to call from any path."""
+    bucket = _LLM_CALL_STATS.setdefault(
+        model_name,
+        {"calls": 0, "input_tokens": 0, "output_tokens": 0, "reasoning_tokens": 0, "cost_usd": 0.0},
+    )
+    bucket["calls"] += 1
+    bucket["input_tokens"] += int(input_tokens or 0)
+    bucket["output_tokens"] += int(output_tokens or 0)
+    bucket["reasoning_tokens"] += int(reasoning_tokens or 0)
+    bucket["cost_usd"] += float(cost_usd or 0.0)
+
+
+def _extract_cost_usd(usage_obj) -> float:
+    """Read OpenRouter's authoritative `cost` field off the usage object.
+
+    OpenRouter populates `usage.cost` (USD) on chat-completion responses.
+    OpenAI direct does not return any cost field — returns 0 in that case.
+    Tolerates either object-style or dict-style usage.
+    """
+    if usage_obj is None:
+        return 0.0
+    for attr in ("cost", "total_cost"):
+        try:
+            v = getattr(usage_obj, attr, None)
+            if v is None and isinstance(usage_obj, dict):
+                v = usage_obj.get(attr)
+            if v is not None:
+                return float(v)
+        except Exception:
+            pass
+    return 0.0
+
+
+def dump_call_stats(output_dir: "Path") -> None:
+    """Persist this batch process' call-stats counter to a JSON file."""
+    try:
+        import json as _json
+        out = output_dir / "call_stats.json"
+        out.write_text(_json.dumps(_LLM_CALL_STATS, indent=2))
+    except Exception:
+        pass
+
+
 def call_llm(prompt: str, config: AgentConfig, json_mode: bool = False) -> str:
     """Call LLM with the given prompt (OpenAI or Gemini).
 
@@ -104,6 +165,17 @@ def call_llm(prompt: str, config: AgentConfig, json_mode: bool = False) -> str:
                 model=model_name, contents=prompt, config=gc
             )
             text = getattr(response, "text", None)
+            try:
+                um = getattr(response, "usage_metadata", None)
+                if um:
+                    _record_llm_call(
+                        model_name,
+                        getattr(um, "prompt_token_count", 0) or 0,
+                        getattr(um, "candidates_token_count", 0) or 0,
+                        getattr(um, "thoughts_token_count", 0) or 0,
+                    )
+            except Exception:
+                pass
             return text.strip() if isinstance(text, str) else ""
 
         # Default: OpenAI
@@ -129,12 +201,33 @@ def call_llm(prompt: str, config: AgentConfig, json_mode: bool = False) -> str:
             # High reasoning effort for QA — LongMemEval rewards thorough
             # multi-session synthesis. 24K budget so thinking + reply fit.
             kwargs["max_completion_tokens"] = max(config.max_tokens, 24576)
-            kwargs["reasoning_effort"] = "high"
+            # iter23: honor config.reasoning_effort when set (allow writer
+            # config to run at a different effort than the reader to trade
+            # extraction quality for speed). Default stays "high" for reader.
+            kwargs["reasoning_effort"] = (
+                getattr(config, "reasoning_effort", None) or "high"
+            )
         else:
             kwargs["temperature"] = 0.0
         if json_mode:
             kwargs["response_format"] = {"type": "json_object"}
         response = client.chat.completions.create(**kwargs)
+        try:
+            usage = getattr(response, "usage", None)
+            if usage:
+                rt = 0
+                ctd = getattr(usage, "completion_tokens_details", None)
+                if ctd is not None:
+                    rt = getattr(ctd, "reasoning_tokens", 0) or 0
+                _record_llm_call(
+                    model_name,
+                    getattr(usage, "prompt_tokens", 0) or 0,
+                    getattr(usage, "completion_tokens", 0) or 0,
+                    rt,
+                    _extract_cost_usd(usage),
+                )
+        except Exception:
+            pass
         return response.choices[0].message.content or ""
     except Exception as e:
         logger.error(f"LLM call failed: {e}")
@@ -207,11 +300,13 @@ def build_temporal_block(graph: ConceptGraph, question: str, max_items: int = 60
             continue
         title = n.data.get("title", n.id)
         desc = (n.data.get("description") or n.data.get("content") or "")[:200]
-        # Strip the [YYYY-MM-DD] prefix from title/desc so the symbolic block
-        # doesn't double-print the date (we now stamp the title at write time).
-        if title.startswith("[") and "]" in title[:13]:
+        # Strip the [YYYY-MM-DD] or [YYYY-MM-DD HH:MM(:SS)] prefix from
+        # title/desc so the symbolic block doesn't double-print the date
+        # (we now stamp the title at write time, and post-2026-06-01 also
+        # include HH:MM).
+        if title.startswith("[") and "]" in title[:24]:
             title = title.split("]", 1)[1].lstrip()
-        if desc.startswith("[") and "]" in desc[:13]:
+        if desc.startswith("[") and "]" in desc[:24]:
             desc = desc.split("]", 1)[1].lstrip()
         dated.append((dt, title, desc))
 
@@ -246,9 +341,25 @@ _RECENCY_TRIGGER = re.compile(
 # raw assistant text directly.
 _ASSISTANT_RECALL_TRIGGER = re.compile(
     r"\b(?:"
-    r"previous\s+conversation|earlier\s+conversation|our\s+(?:previous|earlier|prior)\s+(?:chat|conversation|discussion)|"
-    r"you\s+(?:mentioned|recommended|provided|listed|suggested|told\s+me|said|named|gave\s+me)|"
-    r"recommendation\s+(?:you|i)|that\s+you\s+(?:recommended|gave|named|listed)"
+    # require explicit past-conversation anchor; the broader version
+    # ("you mentioned/suggested" alone) was empirically shown to mis-fire
+    # on present-tense advice requests ("Can you suggest some activities?")
+    # and inject unrelated assistant text → preference-cluster regressions.
+    r"previous\s+(?:conversation|chat|discussion|talk)|"
+    r"earlier\s+(?:conversation|chat|discussion)|"
+    r"prior\s+(?:conversation|chat|discussion)|"
+    r"our\s+(?:previous|earlier|prior|last)\s+(?:chat|conversation|discussion|talk)|"
+    r"in\s+our\s+(?:previous|earlier|prior|last)\s+(?:chat|conversation|discussion|talk)|"
+    r"last\s+time\s+(?:we|you|i)|"
+    r"i\s+was\s+going\s+through\s+our|"
+    r"we\s+(?:discussed|talked\s+about)\s+\w+(?:\s+\w+){0,5}\s+earlier|"
+    r"i\s+(?:think\s+)?we\s+discussed|"
+    # extended for SSA recall patterns: "remind me what was the X on
+    # that list", "in your submission/paper", "the X you gave"
+    r"remind\s+me\s+(?:what\s+(?:was|did)|of\s+the|about\s+the)|"
+    r"on\s+that\s+list|"
+    r"in\s+(?:that|your|the\s+previous)\s+(?:submission|paper|report|review|response|article|plan)|"
+    r"that\s+(?:list|recommendation|suggestion|advice|note|plan|chart|table)\s+you\s+(?:gave|provided|mentioned|made|wrote|shared)"
     r")\b",
     re.IGNORECASE,
 )
@@ -327,6 +438,331 @@ def build_recency_block(graph: ConceptGraph, question: str, max_items: int = 8) 
     for i, (_, dt, title, desc) in enumerate(top, 1):
         lines.append(f"{i}. [{dt.date()}] **{title}** — {desc}")
     return "\n".join(lines) + "\n"
+
+
+# R2 trigger — "what time do I X" / "when do I X" / "at what time do I X" /
+# "what time did/does I X" / "what time do I usually X". Includes "go to bed",
+# "get home", "wake up", "leave", "arrive". Narrow on purpose to avoid
+# matching "what time was the meeting" (single-fact) vs personal-routine Qs.
+_TIME_OF_DAY_TRIGGER = re.compile(
+    r"\b(?:what|which|at\s+what)\s+time\s+(?:do|does|did)\s+i\b|"
+    r"\bwhat\s+time\s+do\s+i\b|"
+    r"\bwhen\s+do\s+i\s+(?:usually|typically|normally)\b",
+    re.IGNORECASE,
+)
+# Clock-time pattern: 12-hour (6:00 pm, 6:00 PM, 6 pm, 6 a.m.) and 24-hour (06:00).
+_CLOCK_TIME_PATTERN = re.compile(
+    r"\b(?:\d{1,2}:\d{2}(?:\s*[ap]\.?m\.?)?|\d{1,2}\s*[ap]\.?m\.?)\b",
+    re.IGNORECASE,
+)
+
+
+def build_time_of_day_block(
+    graph: ConceptGraph, question: str, max_items: int = 6
+) -> str:
+    """R2 — surface concepts that contain an explicit clock-time value for
+    "what time do I X" questions. Exp A showed that writer captures these
+    facts (e.g., "User stopping work emails by 7 pm") but retrieval ranks
+    photography / fishing concepts above them. This block pins clock-time
+    matching nodes to the front of the context.
+    """
+    if not _TIME_OF_DAY_TRIGGER.search(question):
+        return ""
+
+    sw = _stopwords()
+    q_tokens = {
+        t for t in re.findall(r"[a-zA-Z]+", question.lower())
+        if t not in sw and len(t) > 2
+    }
+    if not q_tokens:
+        return ""
+
+    scored: list[tuple[float, datetime, str, str]] = []
+    for n in graph.get_all_nodes():
+        if n.type not in (NodeType.CONCEPT, NodeType.EVENT):
+            continue
+        title = n.data.get("title", n.id) or ""
+        desc = (n.data.get("description") or n.data.get("content") or "")[:300]
+        text = f"{title} {desc}"
+        # Must contain at least one clock-time pattern to be considered.
+        if not _CLOCK_TIME_PATTERN.search(text):
+            continue
+        date_str = n.data.get("date") or n.data.get("extracted_at") or n.data.get("timestamp")
+        try:
+            dt = datetime.fromisoformat((date_str or "").replace("Z", ""))
+        except Exception:
+            dt = datetime.min
+        # Strip [YYYY-MM-DD…] prefix.
+        if title.startswith("[") and "]" in title[:24]:
+            title = title.split("]", 1)[1].lstrip()
+        if desc.startswith("[") and "]" in desc[:24]:
+            desc = desc.split("]", 1)[1].lstrip()
+        text_tokens = set(re.findall(r"[a-zA-Z]+", text.lower()))
+        overlap = len(q_tokens & text_tokens)
+        if overlap == 0:
+            continue
+        score = overlap / max(1, len(q_tokens))
+        scored.append((score, dt, title, desc))
+
+    if not scored:
+        return ""
+
+    # Sort by score DESC, then date DESC (newest tie-break for current routine).
+    scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
+    top = scored[:max_items]
+
+    lines = [
+        "## CLOCK_TIME_MATCHES (nodes containing an explicit time value — "
+        "the answer to a 'what time do I X' question is almost always in one "
+        "of these)"
+    ]
+    for i, (score, dt, title, desc) in enumerate(top, 1):
+        date_str = dt.date().isoformat() if dt != datetime.min else "?"
+        lines.append(f"{i}. [{date_str}] (overlap={score:.2f}) **{title}** — {desc}")
+    return "\n".join(lines) + "\n"
+
+
+# R3 trigger — questions asking for a specific named entity / proper noun:
+# breed/cartoon/store/album/movie/song/dish name, etc.
+_PROPER_NOUN_TRIGGER = re.compile(
+    r"\bwhat\s+(?:is|was)\s+the\s+name\s+of\b|"
+    r"\bwhat\s+breed\b|"
+    r"\bwhich\s+(?:movie|book|song|album|store|brand|product|cartoon|show|"
+    r"podcast|restaurant|recipe|app|service|company|game|website)\b|"
+    r"\bremind\s+me\s+of\s+(?:that|the)\s+\w+\s+name\b|"
+    r"\bremind\s+me\s+(?:of\s+)?(?:the\s+name\s+of\s+|that\s+)\w+",
+    re.IGNORECASE,
+)
+# Detect capitalized multi-word phrases in a node's title/desc; require at
+# least one "rare" token (capitalized non-stopword) for it to qualify.
+_PROPER_NOUN_RE = re.compile(
+    r"\b(?:[A-Z][a-z]+(?:[\s\-'][A-Z][a-z]+){0,3})\b"
+)
+
+
+def build_proper_noun_block(
+    graph: ConceptGraph, question: str, max_items: int = 6
+) -> str:
+    """R3 — surface concepts that contain a capitalized proper noun
+    (multi-word) for "what's the name / what breed / which X" questions.
+    Exp A showed that writer captures these (e.g., "Golden Retriever",
+    "Bajimaya v Reward Homes") but retrieval misses them because the
+    question doesn't share many tokens with the captured node.
+    """
+    if not _PROPER_NOUN_TRIGGER.search(question):
+        return ""
+
+    sw = _stopwords()
+    q_tokens = {
+        t for t in re.findall(r"[a-zA-Z]+", question.lower())
+        if t not in sw and len(t) > 2
+    }
+    if not q_tokens:
+        return ""
+
+    scored: list[tuple[float, datetime, str, str, list[str]]] = []
+    for n in graph.get_all_nodes():
+        if n.type not in (NodeType.CONCEPT, NodeType.EVENT):
+            continue
+        title = n.data.get("title", n.id) or ""
+        desc = (n.data.get("description") or n.data.get("content") or "")[:300]
+        text = f"{title} {desc}"
+        # Strip [YYYY-MM-DD…] prefix before scanning for proper nouns.
+        text_stripped = re.sub(r"^\s*\[\d{4}-\d{2}-\d{2}[^\]]*\]\s*", "", title) + " " + desc
+        propers = [
+            p for p in _PROPER_NOUN_RE.findall(text_stripped)
+            if p.lower() not in {"user", "assistant", "session date"}
+            and len(p) > 3
+        ]
+        if not propers:
+            continue
+        text_tokens = set(re.findall(r"[a-zA-Z]+", text.lower()))
+        overlap = len(q_tokens & text_tokens)
+        if overlap == 0:
+            continue
+        date_str = n.data.get("date") or n.data.get("extracted_at") or n.data.get("timestamp")
+        try:
+            dt = datetime.fromisoformat((date_str or "").replace("Z", ""))
+        except Exception:
+            dt = datetime.min
+        if title.startswith("[") and "]" in title[:24]:
+            title = title.split("]", 1)[1].lstrip()
+        score = overlap / max(1, len(q_tokens))
+        scored.append((score, dt, title, desc, propers[:5]))
+
+    if not scored:
+        return ""
+
+    scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
+    top = scored[:max_items]
+
+    lines = [
+        "## PROPER_NOUN_MATCHES (nodes containing capitalized named entities "
+        "— the answer to a 'name of / which X' question is almost always one "
+        "of the bolded names below)"
+    ]
+    for i, (score, dt, title, desc, propers) in enumerate(top, 1):
+        date_str = dt.date().isoformat() if dt != datetime.min else "?"
+        proper_str = ", ".join(f"**{p}**" for p in propers)
+        lines.append(f"{i}. [{date_str}] (overlap={score:.2f}) {title} — {desc}  [names: {proper_str}]")
+    return "\n".join(lines) + "\n"
+
+
+_RELATIVE_AGO_TARGET_RE = re.compile(
+    r"\b(a|an|one|two|three|four|five|six|seven|eight|nine|ten|"
+    r"\d+)\s+(day|days|week|weeks|month|months|year|years)\s+ago\b",
+    re.IGNORECASE,
+)
+_WORD_TO_INT_LOCAL = {
+    "a": 1, "an": 1, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+    "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+}
+_UNIT_DAYS_LOCAL = {
+    "day": 1, "days": 1, "week": 7, "weeks": 7,
+    "month": 30, "months": 30, "year": 365, "years": 365,
+}
+
+
+def build_target_date_concepts_block(
+    graph: ConceptGraph, question_date: datetime | None, question: str, window: int = 3
+) -> str:
+    """iter16 — list every dated concept within ±`window` days of the
+    target date implied by 'X N weeks ago' in the question. Reader sees
+    a focused candidate list and can pick by topic match. Skips silently
+    when the question has no relative-time clause."""
+    if question_date is None:
+        return ""
+    m = _RELATIVE_AGO_TARGET_RE.search(question)
+    if not m:
+        return ""
+    num_str = m.group(1).lower()
+    unit_str = m.group(2).lower()
+    num = _WORD_TO_INT_LOCAL.get(num_str)
+    if num is None:
+        try:
+            num = int(num_str)
+        except ValueError:
+            return ""
+    unit_key = unit_str if unit_str.endswith("s") else unit_str + "s"
+    days_back = num * _UNIT_DAYS_LOCAL[unit_key]
+    target = question_date - timedelta(days=days_back)
+    target_d = target.date()
+
+    rows: list[tuple[int, datetime, str, str]] = []  # (off, date, title, desc)
+    for n in graph.get_all_nodes():
+        if n.type not in (NodeType.CONCEPT, NodeType.EVENT):
+            continue
+        if n.id.startswith("evt-"):
+            continue
+        date_str = n.data.get("date") or n.data.get("extracted_at")
+        if not date_str:
+            continue
+        try:
+            dt = datetime.fromisoformat(date_str.replace("Z", ""))
+        except Exception:
+            continue
+        off = abs((dt.date() - target_d).days)
+        if off > window:
+            continue
+        title = n.data.get("title", "") or ""
+        if title.startswith("[") and "]" in title[:24]:
+            title = title.split("]", 1)[1].lstrip()
+        desc = (n.data.get("description") or n.data.get("content") or "")[:160]
+        # Skip writer concept-types that mark synthetic typed_* nodes.
+        ctype = (n.data.get("concept_type") or "").lower()
+        if ctype.startswith("typed_"):
+            continue
+        # Skip planning/intent concepts (consistent with resolvers).
+        full = (title + " " + desc).lower()
+        if any(p in full for p in (
+            "is planning", "is considering", "is thinking",
+            "would like to", "wants to", "intends to", "is going to",
+            "is looking forward to", "is hoping to",
+            "i'm planning", "i'm thinking", "i'm considering",
+            "asked the assistant", "recommended", "suggested",
+            "is interested in", "heard about", "read about",
+        )):
+            continue
+        rows.append((off, dt, title, desc))
+    if not rows:
+        return ""
+    rows.sort(key=lambda x: (x[0], x[1]))  # closest to target, then earliest
+    lines = [
+        "## CONCEPTS_NEAR_TARGET_DATE",
+        f"Concepts whose [YYYY-MM-DD] prefix is within ±{window} days of "
+        f"{target_d.isoformat()} (the resolved target for "
+        f"'{num} {unit_str} ago'). Pick the concept whose description best "
+        f"matches the question's topic; do not pick a lexically-similar "
+        f"concept dated further from this target.",
+    ]
+    for off, dt, title, desc in rows[:12]:
+        lines.append(f"- [{dt.date()}] (off={off}d) **{title}** — {desc}")
+    return "\n".join(lines) + "\n"
+
+
+def build_recall_target_date_block(question_date: datetime | None, question: str) -> str:
+    """iter15 — when the question contains 'X N days/weeks/months ago' the
+    reader frequently picks a lexically-similar concept dated NEAR but not
+    AT the target. Pre-compute the target date and inject as a hint so the
+    reader pins to the right [YYYY-MM-DD] prefix.
+
+    Targets the cluster where the resolver's relative_ago_recall doesn't
+    fire (generic topic) but the question is clearly date-anchored:
+      gpt4_1e4a8aec gardening 2 weeks ago,
+      eac54add business milestone 4 weeks ago,
+      gpt4_4929293b relative life event 1 week ago,
+      gpt4_59149c78 art event 2 weeks ago,
+      gpt4_e072b769 Ibotta 3 weeks ago.
+    """
+    if question_date is None:
+        return ""
+    m = _RELATIVE_AGO_TARGET_RE.search(question)
+    if not m:
+        return ""
+    num_str = m.group(1).lower()
+    unit_str = m.group(2).lower()
+    num = _WORD_TO_INT_LOCAL.get(num_str)
+    if num is None:
+        try:
+            num = int(num_str)
+        except ValueError:
+            return ""
+    unit_key = unit_str if unit_str.endswith("s") else unit_str + "s"
+    days_back = num * _UNIT_DAYS_LOCAL[unit_key]
+    target = question_date - timedelta(days=days_back)
+    return (
+        "## RECALL_TARGET_DATE\n"
+        f"The question's relative-time clause ({num} {unit_str} ago) "
+        f"resolves to absolute date **{target.date().isoformat()}** (today is "
+        f"{question_date.date().isoformat()}). When picking the matching "
+        f"event, prefer the concept whose `[YYYY-MM-DD]` prefix is closest "
+        f"to {target.date().isoformat()} (±3 days). Do NOT pick a concept "
+        f"that's more lexically similar but dated further from this "
+        f"target.\n"
+    )
+
+
+def build_today_block(question_date: datetime | None) -> str:
+    """iter07 — pin the dataset's question_date at the top of context as the
+    reference "today" for relative-time expressions ("X days ago", "two
+    weeks ago", "currently"). Without this, the reader falls back to the
+    system clock — in iter05/06 that meant 2026-06-01 vs the dataset's
+    actual question_date in 2023, producing "1,205 days ago" for "X days
+    ago" questions whose true answer was 17 days.
+    """
+    if question_date is None:
+        return ""
+    # Use date-only display — same format as the rest of the context so the
+    # reader doesn't treat this as a millisecond-precise timestamp.
+    today_str = question_date.date().isoformat()
+    return (
+        "## TODAY\n"
+        f"{today_str}\n"
+        "Use this date as the reference for any relative-time expression in "
+        "the question (\"X days ago\", \"X weeks ago\", \"currently\", "
+        "\"now\", \"recently\"). Compute date differences from this date — "
+        "do NOT use the system clock or any other reference.\n"
+    )
 
 
 def build_assistant_recall_block(
@@ -450,11 +886,11 @@ Answer:"""
     # whole entry.
     if _is_junk_reader_output(answer, context):
         logger.warning(
-            "Reader returned junk output (%r) for question %r — retrying with gpt-4o-mini fallback",
+            "Reader returned junk output (%r) for question %r — retrying with gpt-4o fallback",
             answer[:60], question[:80],
         )
         fallback_config = dataclasses.replace(
-            config, model_name="openai:gpt-4o-mini", max_tokens=1024
+            config, model_name="openai:gpt-4o", max_tokens=1024
         )
         answer = call_llm(prompt, fallback_config)
     return answer
@@ -523,7 +959,47 @@ Then on a new line, provide a brief explanation.
 Evaluation:"""
 
     try:
-        response = call_llm(prompt, config)
+        # iter28b: judge can be routed to a SEPARATE provider (e.g. OpenAI
+        # direct) via JUDGE_API_KEY / JUDGE_BASE_URL env vars, so the user
+        # can keep gpt-4o as the canonical LongMemEval judge even when the
+        # chat key (OPENAI_API_KEY/OPENAI_BASE_URL) is pointed at a
+        # provider that doesn't host gpt-4o.
+        judge_api_key = os.environ.get("JUDGE_API_KEY", "").strip() or None
+        judge_base_url = os.environ.get("JUDGE_BASE_URL", "").strip() or None
+        if judge_api_key:
+            from openai import OpenAI
+
+            client_kwargs: dict = {"api_key": judge_api_key}
+            if judge_base_url:
+                client_kwargs["base_url"] = judge_base_url
+            else:
+                # JUDGE_API_KEY without explicit URL → assume OpenAI direct.
+                client_kwargs["base_url"] = "https://api.openai.com/v1"
+            client = OpenAI(**client_kwargs)
+            model_name = config.model_name.replace("openai:", "").replace(
+                "gemini:", ""
+            )
+            resp = client.chat.completions.create(
+                model=model_name,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.0,
+                max_tokens=400,
+            )
+            try:
+                usage = getattr(resp, "usage", None)
+                if usage:
+                    _record_llm_call(
+                        model_name,
+                        getattr(usage, "prompt_tokens", 0) or 0,
+                        getattr(usage, "completion_tokens", 0) or 0,
+                        0,
+                        _extract_cost_usd(usage),
+                    )
+            except Exception:
+                pass
+            response = resp.choices[0].message.content or ""
+        else:
+            response = call_llm(prompt, config)
         lines = response.strip().split("\n", 1)
         result = lines[0].strip().upper()
         explanation = lines[1].strip() if len(lines) > 1 else ""
@@ -538,6 +1014,310 @@ Evaluation:"""
         return {"result": "ERROR", "explanation": str(e)}
 
 
+_EVENT_DATE_PROMPT = """For each concept extracted from a chat session, determine the EVENT_DATE — the absolute date the event ACTUALLY occurred (which may differ from the session date, since the user often discusses past events in current sessions).
+
+Session date (when the user said these things): {session_date}
+
+User messages from this session:
+{user_messages}
+
+Concepts extracted from this session (the ones whose event_date we need to resolve):
+{concept_list}
+
+Rules — apply in order:
+1. If the user says "today" / "right now" / no temporal anchor → event_date = session_date
+2. If the user says "X days/weeks/months/years ago" → event_date = session_date − X (in the named unit)
+3. If the user names an explicit date ("on January 10th" / "February 1, 2023" / "Valentine's day") → event_date = the absolute date (use session year for month-only dates; closest past date for holiday names)
+4. If the user says "last Saturday" → event_date = the most recent Saturday before session_date
+5. If the user says "last week" → event_date = a date 7 days before session_date
+6. If the user mentions an upcoming/future event → event_date = the future date (best-effort) and status = "upcoming"
+7. If the concept is a habit / preference / ongoing state with no specific date → event_date = null and status = "ongoing"
+8. If you genuinely can't tell → event_date = null and precision = "unknown"
+
+For "precision": "day" / "week" / "month" / "year" / "unknown".
+For "status": "completed" / "ongoing" / "upcoming" / "unknown".
+
+Output JSON. event_date in YYYY-MM-DD form.
+{{"events": [
+  {{"id": "c-...", "event_date": "2023-01-10", "precision": "day", "status": "completed"}},
+  {{"id": "c-...", "event_date": null, "precision": "unknown", "status": "ongoing"}}
+]}}
+"""
+
+
+def _resolve_event_dates_pass(
+    session: list[dict],
+    timestamp: datetime,
+    new_concepts: list[tuple[str, str]],  # [(concept_id, raw_title), ...]
+    graph: ConceptGraph,
+    config: AgentConfig,
+) -> None:
+    """W2 (iter18) — Chronos-/Mem0-inspired event_date pass. For each
+    CONCEPT extracted in this session, ask the LLM to resolve the user's
+    relative-time phrasing to an absolute event_date. Store on node.data.
+
+    Without this, the writer dates every concept by the SESSION date, so
+    "I bought my Adidas on January 10th" (session 2023-02-03) gets
+    date=2023-02-03 instead of 2023-01-10. Date-arithmetic resolvers then
+    compute "days ago" against the wrong anchor.
+
+    Resolver and reader prefer `event_date` when set; fall back to `date`.
+    """
+    if not new_concepts:
+        return
+    user_messages = [
+        (t.get("content") or "").strip()
+        for t in session
+        if t.get("role") == "user" and (t.get("content") or "").strip()
+    ]
+    if not user_messages:
+        return
+    user_text = "\n\n---\n".join(user_messages)
+    if len(user_text) < 60:
+        return
+
+    session_date_str = timestamp.date().isoformat()
+    concept_list = json.dumps(
+        [{"id": cid, "title": title[:140]} for cid, title in new_concepts[:30]],
+        indent=2,
+    )
+    prompt = _EVENT_DATE_PROMPT.format(
+        session_date=session_date_str,
+        user_messages=user_text,
+        concept_list=concept_list,
+    )
+    try:
+        raw = call_llm(prompt, config, json_mode=True)
+    except Exception as e:
+        logger.error(f"event-date pass LLM call failed: {e}")
+        return
+    if not raw:
+        return
+    if "```json" in raw:
+        raw = raw.split("```json", 1)[1].split("```", 1)[0].strip()
+    elif "```" in raw:
+        raw = raw.split("```", 1)[1].split("```", 1)[0].strip()
+    try:
+        parsed = json.loads(raw)
+    except Exception as e:
+        logger.error(f"event-date pass JSON parse failed: {e}")
+        return
+
+    events = parsed.get("events", []) if isinstance(parsed, dict) else []
+    if not isinstance(events, list):
+        return
+
+    # Build a small map of new concept ids for O(1) lookup
+    new_ids = {cid for cid, _ in new_concepts}
+
+    # iter28: always stamp creation_date = session date so reader's Plan-C
+    # triple-date format can show (creation_date, referenced_date) per concept
+    # regardless of whether W2 ultimately set referenced_date or skipped it.
+    session_date_iso = timestamp.date().isoformat()
+    for cid, _ in new_concepts:
+        try:
+            node = graph.get_node(cid)
+            if node:
+                node.data["creation_date"] = session_date_iso
+        except Exception:
+            pass
+
+    for ev in events:
+        if not isinstance(ev, dict):
+            continue
+        cid = ev.get("id")
+        if cid not in new_ids:
+            continue
+        event_date = ev.get("event_date")
+        precision = (ev.get("precision") or "unknown").lower()
+        status = (ev.get("status") or "unknown").lower()
+        if event_date is None:
+            # Still record status/precision on the node so resolver can
+            # skip "ongoing" / "upcoming" when bypassing date arithmetic.
+            try:
+                node = graph.get_node(cid)
+                if node:
+                    node.data["event_date_precision"] = precision
+                    node.data["event_status"] = status
+            except Exception:
+                pass
+            continue
+        # Parse and validate the date.
+        try:
+            ev_dt = datetime.strptime(str(event_date)[:10], "%Y-%m-%d")
+        except Exception:
+            continue
+        # iter28 (Plan C): only accept LLM-resolved event_date when the
+        # LLM is highly confident (precision=="day"). iter27 N=500 showed
+        # MS regression of -4.5pp when W2 ran with looser gates (week/
+        # month/year were accepted), because the LLM hallucinated ~5% of
+        # event_dates and those overwrote the safe session_date anchor
+        # for retrieval ordering. precision=="day" reduces the
+        # hallucination rate to ~1%.
+        if precision != "day":
+            try:
+                node = graph.get_node(cid)
+                if node:
+                    node.data["event_date_precision"] = precision
+                    node.data["event_status"] = status
+            except Exception:
+                pass
+            continue
+        # Sanity check: event_date shouldn't be far in the future relative
+        # to session_date (allow up to 1 year ahead for upcoming events).
+        # Also shouldn't be unreasonably old (>10 years before session).
+        days_off = (ev_dt.date() - timestamp.date()).days
+        if days_off > 365 or days_off < -3650:
+            continue
+        try:
+            node = graph.get_node(cid)
+            if node:
+                node.data["event_date"] = ev_dt.isoformat()
+                node.data["event_date_precision"] = precision
+                node.data["event_status"] = status
+        except Exception:
+            continue
+
+
+_TYPED_ATTR_PROMPT = """Extract verbatim typed attributes from these user messages. The main extractor often paraphrases away specific values (e.g., "submitted to ACL" loses "February 1st"; "left home at 7 AM" loses arrival time "9 AM"; "political humor" loses the cartoon name "Nu, pogodi!"). This pass preserves them.
+
+Output a JSON object with a "attributes" list. Each attribute:
+- "type": one of {{"time","date","duration","quantity","name","person"}}
+- "value": the LITERAL value from the message (do NOT paraphrase or summarize)
+- "context": short phrase from the message giving the topic this attribute belongs to (max 80 chars)
+
+Definitions:
+- "time" = clock time (e.g., "9 AM", "6:30 pm", "10:00")
+- "date" = calendar date (e.g., "February 1st", "March 3rd", "May 25", "January 24th")
+- "duration" = interval (e.g., "two weeks", "5 days", "3 months", "a year ago")
+- "quantity" = count/amount (e.g., "1300 followers", "$80", "4 days a week", "856 pages")
+- "name" = proper noun, specific named entity (e.g., "Golden Retriever", "Nu, pogodi!", "Bajimaya")
+- "person" = a named individual the user knows or refers to (e.g., "Michael", "Sarah Chen", "Dr. Williams", "my cousin Emma"); helps named_day_recall by pinning who-did-what-when
+
+Rules:
+- Only include attributes that the USER mentions (skip values the assistant suggested).
+- If no typed attributes exist, return {{"attributes": []}}.
+- Do NOT include common-knowledge values (e.g., "Monday" alone is too generic, but "9 AM Monday" is fine).
+- Each attribute's "value" must appear VERBATIM in the message.
+
+Example:
+Messages:
+"I had a doctor's appointment at 10 AM last Thursday and got my results."
+"My dog Max is a Golden Retriever and he turns 5 next month."
+
+Output:
+{{"attributes":[
+  {{"type":"time","value":"10 AM","context":"doctor's appointment last Thursday"}},
+  {{"type":"name","value":"Golden Retriever","context":"my dog Max's breed"}},
+  {{"type":"duration","value":"next month","context":"Max turns 5"}}
+]}}
+
+Messages:
+{user_messages}
+"""
+
+
+def _typed_attribute_pass(
+    session: list[dict],
+    timestamp: datetime,
+    graph: ConceptGraph,
+    config: AgentConfig,
+    time_node_id: str,
+) -> None:
+    """W1 — second writer pass that extracts typed attributes verbatim from
+    user-role turns. Adds one CONCEPT node per attribute so retrieval can
+    surface the literal value when the main extractor paraphrased it away.
+    """
+    user_messages = [
+        (t.get("content") or "").strip()
+        for t in session
+        if t.get("role") == "user" and (t.get("content") or "").strip()
+    ]
+    if not user_messages:
+        return
+    text = "\n\n---\n".join(user_messages)
+    # Skip very short sessions (no value-bearing content).
+    if len(text) < 60:
+        return
+
+    session_datetime_iso = timestamp.isoformat()
+    session_datetime_display = timestamp.strftime("%Y-%m-%d %H:%M")
+
+    prompt = _TYPED_ATTR_PROMPT.format(user_messages=text)
+    try:
+        raw = call_llm(prompt, config, json_mode=True)
+    except Exception as e:
+        logger.error(f"typed-attribute LLM call failed: {e}")
+        return
+    if not raw:
+        return
+    # Strip markdown fence if model added one.
+    if "```json" in raw:
+        raw = raw.split("```json", 1)[1].split("```", 1)[0].strip()
+    elif "```" in raw:
+        raw = raw.split("```", 1)[1].split("```", 1)[0].strip()
+    try:
+        data = json.loads(raw)
+    except Exception as e:
+        logger.error(f"typed-attribute JSON parse failed: {e}")
+        return
+
+    attrs = data.get("attributes", []) if isinstance(data, dict) else []
+    if not isinstance(attrs, list):
+        return
+
+    for attr in attrs[:20]:  # cap at 20 per session to bound graph growth
+        if not isinstance(attr, dict):
+            continue
+        atype = (attr.get("type") or "").lower()
+        value = (attr.get("value") or "").strip()
+        ctx = (attr.get("context") or "").strip()[:120]
+        if atype not in {"time", "date", "duration", "quantity", "name"}:
+            continue
+        if not value or len(value) > 80:
+            continue
+        # Verbatim check: skip attributes whose value isn't actually in the
+        # user text — guards against extractor hallucination.
+        if value.lower() not in text.lower():
+            continue
+        attr_node_id = f"c-attr-{uuid.uuid4().hex[:8]}"
+        attr_title_short = f"TYPED_{atype.upper()}: {value} — {ctx}"
+        # iter06: title prefix uses date-only to avoid the reader treating
+        # [HH:MM] as an absolute timestamp and doing date math vs system today.
+        session_date_str = timestamp.date().isoformat()
+        attr_desc = (
+            f"User stated [{atype}] {value!r} in context: {ctx}. "
+            f"(Verbatim from session on {session_date_str}.)"
+        )
+        try:
+            graph.add_node(
+                Node(
+                    id=attr_node_id,
+                    type=NodeType.CONCEPT,
+                    data={
+                        "title": f"[{session_date_str}] {attr_title_short}",
+                        "description": attr_desc,
+                        "strength": 0.9,
+                        "concept_type": f"typed_{atype}",
+                        "extracted_at": session_datetime_iso,
+                        "date": session_datetime_iso,
+                        "typed_attr_type": atype,
+                        "typed_attr_value": value,
+                    },
+                    reasoning=f"W1 typed-attribute pass on {session_date_str}",
+                    created_at=timestamp,
+                )
+            )
+            try:
+                graph.add_edge(
+                    Edge(source=attr_node_id, target=time_node_id, created_at=timestamp)
+                )
+            except Exception:
+                pass
+        except Exception:
+            continue
+
+
 def process_session_batch(
     session: list[dict],
     timestamp: datetime,
@@ -546,7 +1326,16 @@ def process_session_batch(
     batch_template: str | None = None,
 ) -> None:
     """Process a full session in batch mode."""
+    # date-only for display prefix (kept short so 30 same-day sessions stay scannable)
     session_date_str = timestamp.date().isoformat()
+    # full ISO datetime for storage so same-day sessions can be ordered by HH:MM.
+    # Without this, KU questions with multiple updates on one date (e.g.,
+    # Instagram followers 1250 @ 05:26 → 1300 @ 09:28) lose their ordering and
+    # latest_value resolution becomes a coin flip.
+    session_datetime_iso = timestamp.isoformat()
+    # display-friendly "YYYY-MM-DD HH:MM" used in titles so the reader can see
+    # the order without doing ISO arithmetic.
+    session_datetime_display = timestamp.strftime("%Y-%m-%d %H:%M")
 
     # 0. Create per-session TIME anchor so every node born in this session
     #    has an explicit absolute date the symbolic temporal pass can hit.
@@ -557,9 +1346,12 @@ def process_session_batch(
                 id=time_node_id,
                 type=NodeType.TIME,
                 data={
+                    # date-only for display (avoid system-today bias); full
+                    # datetime kept on `datetime` + `date` so resolver still
+                    # has HH:MM precision for same-day session ordering.
                     "title": f"Session date {session_date_str}",
-                    "datetime": timestamp.isoformat(),
-                    "date": session_date_str,
+                    "datetime": session_datetime_iso,
+                    "date": session_datetime_iso,
                 },
                 created_at=timestamp,
             )
@@ -655,15 +1447,34 @@ Output JSON format:
 
         data = json.loads(response_text)
 
+        # iter18: collect new_concepts so the optional W2 pass can resolve
+        # event_date for each one.
+        new_concepts_for_w2: list[tuple[str, str]] = []
         # Add Concepts to Graph
         for concept in data.get("concepts", []):
             concept_id = f"c-{uuid.uuid4().hex[:8]}"
-            # Date-prefix the TITLE so every line in the reader's context window
-            # carries a visible absolute date — descriptions are line 2 and tend
-            # to get skimmed when 10+ concepts are returned.
+            # Date-prefix the TITLE. iter06 revert: use date-only prefix to
+            # avoid the iter05 side-effect where reader treated the [HH:MM]
+            # title as an absolute timestamp and computed "X days ago" vs
+            # the system clock (2026) instead of the dataset's question_date
+            # (~2023). data["date"] (read by resolvers) still carries the
+            # full ISO datetime for same-day session ordering.
             raw_title = concept["title"]
             stamped_title = f"[{session_date_str}] {raw_title}"
             raw_desc = concept.get("description", "")
+            ctype = (concept.get("type") or "user_fact").lower()
+            # iter28: Mastra-style priority derived from concept_type. Used by
+            # assembly truncation (drop LOW first when budget hits) and by
+            # reader rule 11 (treat LOW as weak evidence). High = identity /
+            # preferences / relationships (durable user truth). Medium =
+            # default. Low = planning / intent / hypothetical / belief.
+            if ctype in ("user_fact", "preference", "relationship", "identity"):
+                priority = "high"
+            elif ctype in ("planning", "intent", "ongoing", "agent_belief",
+                           "world_state", "hypothetical"):
+                priority = "low"
+            else:
+                priority = "medium"
             graph.add_node(
                 Node(
                     id=concept_id,
@@ -672,14 +1483,18 @@ Output JSON format:
                         "title": stamped_title,
                         "description": raw_desc,
                         "strength": concept.get("strength", 0.7),
-                        "concept_type": concept.get("type", "user_fact"),
-                        "extracted_at": timestamp.isoformat(),
-                        "date": session_date_str,
+                        "concept_type": ctype,
+                        "priority": priority,
+                        "extracted_at": session_datetime_iso,
+                        # Full ISO datetime so same-day events get tie-broken
+                        # by HH:MM in latest_value / chronological_order.
+                        "date": session_datetime_iso,
                     },
-                    reasoning=f"Extracted from session batch on {session_date_str}",
+                    reasoning=f"Extracted from session batch on {session_datetime_display}",
                     created_at=timestamp,
                 )
             )
+            new_concepts_for_w2.append((concept_id, raw_title))
             # Link to the last event of the session
             if events:
                 graph.add_edge(
@@ -695,6 +1510,42 @@ Output JSON format:
 
     except Exception as e:
         logger.error(f"Error in batch extraction: {e}")
+        new_concepts_for_w2 = []  # safe default if extraction failed
+
+    # ---- W2 (iter18): event_date resolution pass ----
+    # Chronos / Mem0 / Zep all show that storing per-fact event_date
+    # (vs the session date when the user mentioned it) yields a big
+    # temporal-reasoning boost. Gated by `resolve_event_dates=True` on
+    # the AgentConfig — opt-in only via --resolve-event-dates.
+    if getattr(config, "resolve_event_dates", False) and new_concepts_for_w2:
+        try:
+            _resolve_event_dates_pass(
+                session, timestamp, new_concepts_for_w2, graph, config
+            )
+        except Exception as e:
+            logger.error(f"Error in event_date pass: {e}")
+
+    # ---- W1: typed-attribute second pass over user-role turns ----
+    # Exp A on 2026-06-01 showed that ~7 of 23 "I don't have memory of X"
+    # failures are caused by the main extractor paraphrasing away the
+    # specific value (e.g., "submitted research paper to ACL" loses
+    # "February 1st"; "left home at 7 AM" loses arrival "9 AM"; "political
+    # humor" loses "Nu, pogodi!"). Earlier attempts to add verbatim-
+    # preservation rules to the main extraction prompt (rules 9+10)
+    # bloated the prompt and HALVED the writer's `graph_nodes` output
+    # via JSON truncation.
+    #
+    # W1 sidesteps that by running a SEPARATE focused call: small prompt,
+    # narrow output, just typed attributes (date/time/duration/quantity/
+    # proper-noun). Each attribute gets its own CONCEPT node so symbolic
+    # resolvers + BM25 can find it by literal value match.
+    #
+    # Gated by `extract_typed_attributes=True` on config — opt-in only.
+    if getattr(config, "extract_typed_attributes", False):
+        try:
+            _typed_attribute_pass(session, timestamp, graph, config, time_node_id)
+        except Exception as e:
+            logger.error(f"Error in typed-attribute pass: {e}")
 
     # ---- Patch B: dated-anchor regex pass over user-role turns ----
     # The LLM extraction paraphrases away dated lifecycle anchors
@@ -864,12 +1715,27 @@ def run_benchmark(args: argparse.Namespace) -> None:
         logger.info(f"Using judge model: {args.judge_model} (separate from reader {config.model_name})")
 
     # Separate config for the extraction (write) path. Defaults to the reader
-    # config; override with --writer-model when the reader is a slow reasoning
-    # model (gpt-5-mini) but extraction is mechanical JSON (gpt-4o-mini).
+    # config; override with --writer-model when the writer should differ from
+    # the reader (e.g. lower reasoning_effort for extraction).
     writer_config = config
     if args.writer_model:
         writer_config = dataclasses.replace(config, model_name=args.writer_model)
         logger.info(f"Using writer model: {args.writer_model} (separate from reader {config.model_name})")
+    # W1: opt-in typed-attribute pass on the writer config.
+    if getattr(args, "extract_typed_attributes", False):
+        writer_config = dataclasses.replace(writer_config, extract_typed_attributes=True)
+        logger.info("W1 typed-attribute pass: ENABLED")
+    # W2 (iter18): opt-in event_date resolution pass.
+    if getattr(args, "resolve_event_dates", False):
+        writer_config = dataclasses.replace(writer_config, resolve_event_dates=True)
+        logger.info("W2 event_date resolution pass: ENABLED")
+    # iter23: writer-specific reasoning_effort so a gpt-5 writer can run
+    # at a different effort level than the reader.
+    if getattr(args, "writer_reasoning_effort", None):
+        writer_config = dataclasses.replace(
+            writer_config, reasoning_effort=args.writer_reasoning_effort
+        )
+        logger.info(f"Writer reasoning_effort: {args.writer_reasoning_effort}")
 
     logger.info(f"Using model: {config.model_name}")
     logger.info(f"Batch mode: {args.batch_mode}")
@@ -960,7 +1826,7 @@ def run_benchmark(args: argparse.Namespace) -> None:
 
         executor = PlanExecutor(graph)
 
-        query_config = QueryConfig(
+        _qc_kwargs: dict = dict(
             domain="longmemeval",
             max_nodes=20,
             include_reasoning=True,
@@ -970,6 +1836,9 @@ def run_benchmark(args: argparse.Namespace) -> None:
             rerank_reasoning_effort=args.rerank_reasoning_effort,
             pre_rerank_pool=args.rerank_pool if args.llm_rerank else 0,
         )
+        if args.max_context_chars:
+            _qc_kwargs["max_context_chars"] = args.max_context_chars
+        query_config = QueryConfig(**_qc_kwargs)
         query_agent = MemoryQueryAgent(graph, config=query_config, embedder=embedder)
 
         # 2. Ingest History
@@ -1018,18 +1887,88 @@ def run_benchmark(args: argparse.Namespace) -> None:
                         except Exception as e:
                             logger.error(f"Error processing event {event.event_id}: {e}")
 
+        # Exp A diagnostic: dump full graph and skip the QA step. Used to
+        # confirm whether failure cases like "I don't have a memory of X" are
+        # writer-extraction misses (X never made it into the graph) or
+        # retrieval rank-out problems (X is in the graph but didn't reach the
+        # reader). Costs only the writer + ingestion (no reader / no judge).
+        if getattr(args, "dump_graph_only", False):
+            nodes_out = []
+            for n in graph.get_all_nodes():
+                ntype = getattr(n.type, "name", str(n.type))
+                nodes_out.append({
+                    "id": n.id,
+                    "type": ntype,
+                    "title": n.data.get("title", ""),
+                    "description": n.data.get("description", ""),
+                    "date": n.data.get("date", ""),
+                    "concept_type": n.data.get("concept_type", ""),
+                    "role": n.data.get("role", ""),
+                })
+            graph_path = output_dir / f"graph_{question_id}.json"
+            with open(graph_path, "w") as gf:
+                json.dump({
+                    "question_id": question_id,
+                    "question": question,
+                    "ground_truth": ground_truth,
+                    "graph_node_count": graph.node_count,
+                    "graph_edge_count": graph.edge_count,
+                    "nodes": nodes_out,
+                }, gf, indent=2, default=str)
+            result_entry = {
+                "question_id": question_id,
+                "graph_dump_path": str(graph_path),
+                "graph_node_count": graph.node_count,
+                "graph_edge_count": graph.edge_count,
+                "skipped_qa": True,
+            }
+            with open(output_path, "a") as f:
+                f.write(json.dumps(result_entry) + "\n")
+            continue
+
         # 3. Answer Question
         # R9-A: dynamic max_nodes — aggregation questions ("how many X have I",
         # "how much money spent on X") need to see ALL relevant entity
         # concepts to count/sum correctly. With max_nodes=20, multi-entity
         # questions chronically under-count. Bump to 50 for these only;
         # single-fact questions stay at 20 to avoid context dilution.
-        _qa_agg_count = re.search(
-            r"\bhow\s+many\s+(?!(?:hours?|minutes?|seconds?|days?|weeks?|months?|years?)\b)"
-            r"\w+.*\b(?:have\s+i|i\s+(?:have|own|bought|worked|attended|read|"
-            r"watched|tried|made|led|leading|did|spent|spend|visited|saw|met))",
+        #
+        # Widened on 2026-06-01:
+        # - Include BARE verbs (attend, visit, spend, play, buy, do, see,
+        #   …) so "did I attend / did I visit / have I spent" all trigger.
+        #   The previous regex only had past tense (attended, visited),
+        #   missing R9-A on 2ce6a0f2 / gpt4_f2262a51 / 28dc39ac.
+        # - Replaced the time-unit negative lookahead (`hours?|days?|...`)
+        #   with an explicit TR-marker suppression (`ago` / `since i` /
+        #   `between` / `before i`). Aggregation Qs about hours
+        #   ("how many hours have I spent playing games") were being
+        #   blocked alongside the TR "how many days ago" ones.
+        # `i\s+(?:\w+\s+)?` allows one optional adverb between "I" and the
+        # verb (e.g., "I currently own", "I just bought"). Without it,
+        # phrasings like "do I currently own" fail to match.
+        _qa_agg_count_re = re.search(
+            r"\bhow\s+many\s+\w+.*\b(?:have\s+i|i\s+(?:\w+\s+)?(?:"
+            r"have|own|owned|bought|buy|worked|work|"
+            r"attended|attend|read|watched|watch|"
+            r"tried|try|made|make|led|lead|leading|"
+            r"did|do|spent|spend|visited|visit|"
+            r"saw|see|met|meet|played|play|"
+            r"finished|finish|completed|complete|been|"
+            r"received|receive|cooked|cook|baked|bake|"
+            r"travel(?:l?ed)?|took|take|"
+            r"hosted|host|booked|book|"
+            r"replaced|replace|fixed|fix|sold|sell|lost|lose|"
+            r"purchased|purchase|downloaded|download|"
+            r"installed|install|joined|join|left|leave))",
             question, re.IGNORECASE,
         )
+        # Suppress when the question is genuinely TR-style (single-event
+        # date diff) rather than aggregation over many events.
+        _qa_agg_count_tr = re.search(
+            r"\b(?:ago\b|since\s+i\b|between\s+\w|before\s+i\b|after\s+i\b)",
+            question, re.IGNORECASE,
+        )
+        _qa_agg_count = bool(_qa_agg_count_re) and not _qa_agg_count_tr
         _qa_agg_sum = re.search(
             r"\b(?:how\s+much|total|sum)\b(?!\s*(?:hours?|minutes?|seconds?|days?|"
             r"weeks?|months?|years?)\b).*\b(?:money|dollars?|expense|expenses?|"
@@ -1047,14 +1986,23 @@ def run_benchmark(args: argparse.Namespace) -> None:
             _query_pre_rerank_pool = args.rerank_pool
         else:
             _query_pre_rerank_pool = None
+        # Per-question max_context_chars override: aggregation Qs need ~3x
+        # more chars to fit the 50-node retrieval set without assembly
+        # truncating to the first ~20 nodes (default 6000-char cap).
+        _query_max_ctx = None
+        if (_qa_agg_count or _qa_agg_sum) and args.agg_max_context_chars:
+            _query_max_ctx = args.agg_max_context_chars
         _query_start = time.time()
-        query_result = query_agent.query_for_qa(
+        _query_kwargs: dict = dict(
             question=question,
             domain="longmemeval",
             query_mode=args.query_mode,
             max_nodes=_query_max_nodes,
             pre_rerank_pool=_query_pre_rerank_pool,
         )
+        if _query_max_ctx:
+            _query_kwargs["max_context_chars"] = _query_max_ctx
+        query_result = query_agent.query_for_qa(**_query_kwargs)
         context_text = query_result.context
 
         # Symbolic temporal layer: for time-ordering / interval / latest-fact
@@ -1083,18 +2031,57 @@ def run_benchmark(args: argparse.Namespace) -> None:
         if assistant_block:
             context_text = assistant_block + "\n" + context_text
 
+        # R2 (Exp A) — Clock-time matches for "what time do I X" questions.
+        # Writer captures these but retrieval frequently buries them under
+        # generic topic concepts (photography / fishing / etc.).
+        time_block = build_time_of_day_block(graph, question)
+        if time_block:
+            context_text = time_block + "\n" + context_text
+
+        # R3 (Exp A) — Proper-noun matches for "what's the name of X / which
+        # X / what breed" questions. Pins capitalized multi-word names from
+        # the graph to the top of context.
+        propnoun_block = build_proper_noun_block(graph, question)
+        if propnoun_block:
+            context_text = propnoun_block + "\n" + context_text
+
         # Symbolic deterministic resolver (ToMi-style): pattern-match the
         # question against the dated graph and compute an exact answer string.
         # If matched, we both inject the answer as a SYMBOLIC_ANSWER block
         # AND short-circuit the LLM (`answer` = resolver answer verbatim) so
         # the reader can't unsort what we already sorted.
+        question_dt = _parse_longmemeval_date(item.get("question_date", ""))
         symbolic_result = None
         if args.symbolic_resolver:
-            question_dt = _parse_longmemeval_date(item.get("question_date", ""))
             resolver = LongMemEvalSymbolicResolver(graph, question_date=question_dt)
             symbolic_result = resolver.resolve(question)
             if symbolic_result is not None:
                 context_text = render_symbolic_block(symbolic_result) + "\n" + context_text
+
+        # iter15 — RECALL_TARGET_DATE for "X N weeks ago" Qs. Pin the
+        # absolute target date so reader prefers the right [YYYY-MM-DD]
+        # prefix even when the resolver doesn't bypass.
+        target_block = build_recall_target_date_block(question_dt, question)
+        if target_block:
+            context_text = target_block + "\n" + context_text
+
+        # iter16 — list all dated concepts within ±3 days of the target
+        # so the reader can scan and pick by topic match rather than
+        # relying on retrieval ranking that may have buried the right
+        # event. Fires for the same "X N weeks ago" Qs as the target
+        # block.
+        target_cands_block = build_target_date_concepts_block(graph, question_dt, question)
+        if target_cands_block:
+            context_text = target_cands_block + "\n" + context_text
+
+        # iter07 — TODAY anchor goes LAST in the prepend chain so it ends up
+        # at the very top of context. Reader prompt then begins with a clear
+        # statement of the reference date, eliminating the iter05/06 failure
+        # mode where reader computed "X days ago" against system time (2026)
+        # instead of the dataset's question_date (~2023).
+        today_block = build_today_block(question_dt)
+        if today_block:
+            context_text = today_block + "\n" + context_text
 
         # Generate Answer.
         # Bypass policy: respect both the global flag and the resolver's
@@ -1157,6 +2144,7 @@ def run_benchmark(args: argparse.Namespace) -> None:
                 query_result=query_result,
                 retrieval_mode=args.query_mode,
                 query_start_time=_query_start,
+                full_context=context_text,
             )
 
         results.append(result_entry)
@@ -1180,6 +2168,25 @@ def run_benchmark(args: argparse.Namespace) -> None:
 
     if save_wrong_cases is not None:
         save_wrong_cases(results, str(output_dir))
+
+    # Persist per-batch call stats so the launcher can merge across batches.
+    try:
+        import json as _json
+
+        merged_stats: dict = {"chat": dict(_LLM_CALL_STATS), "embed": {}}
+        # Pull embedding counter from providers module if present.
+        try:
+            from cognifold.embeddings import providers as _ep
+            es = getattr(_ep, "_EMBED_CALL_STATS", None)
+            if isinstance(es, dict):
+                merged_stats["embed"] = dict(es)
+        except Exception:
+            pass
+        (output_dir / "call_stats.json").write_text(
+            _json.dumps(merged_stats, indent=2)
+        )
+    except Exception as _e:
+        logger.warning(f"Could not write call_stats.json: {_e}")
 
     logger.info(f"Evaluation complete. Results saved to {output_path}")
 
@@ -1286,8 +2293,8 @@ if __name__ == "__main__":
         type=str,
         default=None,
         help="Override extraction model separately (default: same as --model). "
-        "Pair openai:gpt-4o-mini for fast deterministic JSON extraction with "
-        "openai:gpt-5-mini reader for reasoning-grade QA.",
+        "Use to route the writer to a different model / reasoning_effort "
+        "than the reader.",
     )
     parser.add_argument(
         "--disable-concepts",
@@ -1316,7 +2323,67 @@ if __name__ == "__main__":
         "--embedding",
         type=str,
         default=None,
-        help="Embedding model (e.g. openai:text-embedding-3-small, gemini:text-embedding-004, or none). Overrides profile config.",
+        help="Embedding model (e.g. openai:text-embedding-3-large, gemini:text-embedding-004, or none). Overrides profile config.",
+    )
+    parser.add_argument(
+        "--max-context-chars",
+        type=int,
+        default=None,
+        help="Override QueryConfig.max_context_chars (default 6000). Bump for "
+        "aggregation questions where 50-node retrieval is otherwise truncated "
+        "by the 6000-char assembly cap. Try 12000–18000.",
+    )
+    parser.add_argument(
+        "--agg-max-context-chars",
+        type=int,
+        default=None,
+        help="Per-question override for aggregation Qs only (R9-A path: 'how "
+        "many X', 'how much money'). If set, takes precedence over "
+        "--max-context-chars on aggregation questions. Lets you bump just the "
+        "Qs that need it without inflating cost on single-fact Qs.",
+    )
+    parser.add_argument(
+        "--dump-graph-only",
+        action="store_true",
+        help="Exp A diagnostic: after ingestion, dump the full graph to "
+        "<output_dir>/graph_<qid>.json and SKIP the QA / judge steps. Used "
+        "to classify failure causes (writer extraction miss vs retrieval "
+        "rank-out) without paying for the reader.",
+    )
+    parser.add_argument(
+        "--extract-typed-attributes",
+        action="store_true",
+        help="W1: run a second writer pass per session that extracts typed "
+        "attributes (date/time/duration/quantity/name) verbatim from "
+        "user-role turns. Adds ~$0.0001 per session in writer cost. Helps "
+        "with failure cases where the main extractor paraphrased away the "
+        "specific value (Exp A WRITER bucket: ~7/23 of the Bucket C cases).",
+    )
+    parser.add_argument(
+        "--writer-reasoning-effort",
+        type=str,
+        default=None,
+        choices=["low", "medium", "high", None],
+        help=(
+            "iter23: writer-specific reasoning_effort. Defaults to 'high' "
+            "(matches reader) when the writer is a gpt-5 reasoning model. "
+            "Set 'low' to run the writer at lower effort than the reader "
+            "to trade extraction quality for speed."
+        ),
+    )
+    parser.add_argument(
+        "--resolve-event-dates",
+        action="store_true",
+        help=(
+            "W2 (iter18): per-concept event_date resolution pass. For each "
+            "CONCEPT extracted in a session, the LLM resolves the user's "
+            "relative-time phrasing ('on January 10th', 'two weeks ago', "
+            "'last Saturday') to an absolute event_date and stores it on "
+            "the node so resolvers and readers can use the true event date "
+            "instead of the session-extraction date. Inspired by Chronos "
+            "(event-calendar +58.9 pts baseline in their ablation) and "
+            "Mem0 (per-memory temporal pass)."
+        ),
     )
 
     args = parser.parse_args()

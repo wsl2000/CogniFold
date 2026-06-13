@@ -170,6 +170,13 @@ class ContextAssembler:
                 grouped[node_type] = []
             grouped[node_type].append(node)
 
+        # iter28b: REVERTED — priority-based sort within type group was too
+        # coarse a signal and overrode the fine-grained rerank score. The
+        # iter28 N=79 sample showed 14/79 regressions vs iter27 because
+        # less-relevant HIGH-priority concepts were pushed ahead of more-
+        # relevant MEDIUM-priority ones. priority is still stored on the
+        # node.data for potential future use, but does NOT affect ordering.
+
         # Sort by type order
         result: dict[str, list[NodeSummary]] = {}
         for t in type_order:

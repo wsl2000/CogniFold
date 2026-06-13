@@ -73,7 +73,7 @@ class EmbeddingConfig:
     def for_openai(
         cls,
         api_key: str | None = None,
-        model: str = "text-embedding-3-small",
+        model: str = "text-embedding-3-large",
     ) -> EmbeddingConfig:
         """Create a config for OpenAI embeddings."""
         return cls(

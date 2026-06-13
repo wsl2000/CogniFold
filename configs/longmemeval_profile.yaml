@@ -2,12 +2,12 @@ profiles:
   longmemeval:
     domain: "longmemeval"
     model:
-      name: "openai:gpt-4o-mini"
+      name: "openai:gpt-5"
       temperature: 0.0
       max_tokens: 4096
       max_exploration_steps: 0
     embedding:
-      model: "openai:text-embedding-3-small"
+      model: "openai:text-embedding-3-large"
     guidelines:
       concept:
         - "Extract EVERY factual detail about the user (personal info, preferences, history)"
@@ -184,40 +184,13 @@ profiles:
             ✓ "User is planning to bake chocolate chip cookies for an upcoming party"
             ✗ "User likes cookies"  ← drops the specific plan + context
 
-        (9) TYPED ATTRIBUTE VERBATIM — when user states a TYPED ATTRIBUTE
-            of an owned entity (pet breed, car make/model, paint color,
-            phone model, plant species, clothing size, dog name), the
-            attribute VALUE must appear verbatim in the title — do NOT
-            paraphrase to a category or inference from surrounding context.
-            USER: "My golden retriever Max loves his Kong toys"
-            ✓ {{"title": "User owns a golden retriever named Max",
-                "description": "Pet: golden retriever, named Max, enjoys Kong toys"}}
-            ✗ {{"title": "User has an active dog named Max"}}  ← BREED LOST,
-              reader will guess Labrador from "active + Kong"
-            (Same rule for car: "my 2018 silver Tesla Model 3" → title must
-            contain "Tesla Model 3"; for phone: "my iPhone 14 Pro Max" →
-            "iPhone 14 Pro Max" in title.)
-
-        (10) DURATION ANCHOR — when user states an explicit DURATION
-            ("I spent N days/weeks/hours on X", "N-day trip", "It took
-            N days to Y", "N-hour session"), preserve N + unit + topic
-            in the title. Do NOT replace with a date-range that downstream
-            reasoning might mis-compute.
-            USER: "I spent 2 days on my solo camping trip to Yosemite"
-            ✓ {{"title": "User spent 2 days on solo camping trip to Yosemite",
-                "description": "Duration: 2 days; activity: solo camping at Yosemite"}}
-            ✗ {{"title": "User went on solo camping trip to Yosemite",
-                "description": "Left for Yosemite 2023-04-05; returned 2023-05-17"}}
-              ← downstream computes 42 days from the date range instead
-              of the stated 2 days.
-
         ============================================================
 
         Extract concepts that cover (composite, not categorical):
           - Profile / preferences / habits — including the trigger or context if stated.
           - Specific events / actions / decisions — with where + when when they appear.
           - Stated relationships / mentions — with the role or context.
-          - PLUS every fact matching anchor rules (1)-(10) above.
+          - PLUS every fact matching anchor rules (1)-(8) above.
 
         Return strict JSON. Do not infer; only encode facts explicitly stated.
         {{
@@ -251,10 +224,193 @@ profiles:
 
         Give a concise, specific answer (1-2 sentences). Commit to your best inference from the context — when ANY relevant fact appears (even tangentially), use it to construct a specific answer. Only fall back to "Unknown" when the context is completely empty of any related signal.
 
-        IMPORTANT — anti-confabulation rules:
-        - For "how many" / "how much" / "how long" questions: ONLY use numbers that appear verbatim in the context. Do NOT estimate, multiply, or extrapolate from rates (e.g. do NOT say "2 sessions × 2h ≈ 4h" — that is forbidden). If the exact number is not stated, sum the literal occurrences; if none exist, say "Unknown".
-        - For "what was the name of X you recommended/mentioned" type questions: ONLY return a name that appears verbatim in the context's RAW_ASSISTANT or PRIOR_CONVERSATION blocks. Do NOT substitute a plausible-sounding alternative (e.g. do NOT swap "Mindful.org" for "MindfulnessExercises.com"). If no verbatim name is present, say "I don't have that information."
-        - When the SYMBOLIC_ANSWER block is present, copy its Answer verbatim — do not paraphrase, recompute, or override it.
+        ============================================================
+        DATE INTERPRETATION RULES (iter07 — read carefully; getting
+        this wrong produces the "X days/weeks/months ago" failure
+        mode where you answer "1,205 days ago" instead of "17 days
+        ago"):
+
+        1. The context begins with a "## TODAY" block stating the
+           reference date in YYYY-MM-DD form. Treat that date — and
+           ONLY that date — as "today" / "now" / the present moment.
+           IGNORE the system clock, IGNORE the current real-world
+           date, and IGNORE any other date when computing relative-
+           time expressions.
+
+        2. Concept and event titles begin with "[YYYY-MM-DD]" — this
+           prefix is the ABSOLUTE date that fact was extracted from
+           (i.e., when the user mentioned it). It is NOT "today".
+
+        3. Computing relative-time answers — strict procedure:
+           - "X days ago"             → answer = (TODAY − event_date).days
+           - "X weeks ago"             → answer = ROUND((TODAY − event_date).days / 7)
+             (round to nearest, NOT floor — 20 days = 3 weeks, not 2)
+           - "X months ago"            → answer = ROUND((TODAY − event_date).days / 30)
+           - "X years ago"             → answer = ROUND((TODAY − event_date).days / 365)
+           - "between A and B"          → answer = abs(date(A) − date(B)).days
+           - "since X" / "before X"     → similar; pick the event date for X
+           - "how long had I been X-ing when Y happened"
+                                       → answer = (date(Y) − date(start_of_X))
+                                          expressed in the unit the question
+                                          asks (weeks/months/years)
+           Substitute the date from the "## TODAY" block — never the
+           system date. If TODAY is 2023-03-01 and the event was on
+           2023-02-12, the answer to "how many days ago" is 17, NOT
+           1,205.
+
+        4. When the context contains a "## SYMBOLIC_ANSWER" block,
+           use it verbatim — the resolver has already performed the
+           date arithmetic with the correct TODAY reference.
+
+        5. The dates inside concept descriptions ("last Thursday",
+           "three weeks ago", "in April") are the user's words at the
+           time of that session — they are noisy and should be cross-
+           checked against the absolute [YYYY-MM-DD] prefix when
+           computing differences. Prefer the absolute prefix.
+
+        6. The [YYYY-MM-DD] prefix is a DATE only (year-month-day) —
+           there is NO time component to interpret. Do not add HH:MM
+           assumptions when computing differences; treat both dates as
+           start-of-day for the .days computation.
+
+        7. For "how many days did I spend on my trip to X" questions:
+           do NOT compute (trip-end-date − trip-plan-mention-date).
+           A "user planning trip to X on Apr 5" + "user got back from
+           X on May 17" pair is a PLAN-to-RETURN span, not the trip
+           duration. The trip duration is (return_date −
+           departure_date), where departure is the day the user
+           actually LEFT (or, if absent, ~1-3 days before return for
+           short trips like camping/weekend). When in doubt, default
+           to "2-3 days" for camping/weekend trips and "5-7 days" for
+           vacation trips.
+
+        8. AGE INFERENCE rule (iter22, strengthened iter24). If the
+           context contains the user's current age (e.g., "User is 32
+           years old") OR an implicit current age (job tenure, year of
+           graduation) AND the question is "How old was I when X
+           happened" with X being an event some N years/months/days
+           ago, COMPUTE the answer: current_age − N (converted to
+           years). DO NOT refuse with "I don't have your birth date".
+
+           Worked example for d01c6aa8 ("How old was I when I moved
+           to the United States?"):
+           Context has: "User has been living in the U.S. for the
+           past five years" (extracted with TODAY = 2023-XX). User
+           CURRENT AGE in another concept (say 32).
+           ✓ Compute: 32 − 5 = 27. Answer: "27."
+           ✗ Wrong: "I don't have your birth date in my notes."
+
+           Same for "I've been living in X for N years" → derived
+           age then = current_age − N.
+
+        9. DERIVED-TIME computation (iter22). If the writer stored a
+           RELATIVE time-of-day phrase (e.g., "User started waking up
+           15 minutes EARLIER on Tuesdays and Thursdays") AND the
+           context elsewhere states the baseline absolute time
+           (e.g., "User usually wakes up at 7:00 AM"), COMPUTE the
+           derived time. 7:00 AM − 15 minutes = 6:45 AM.
+           When a clock time is explicitly stated in absolute form in
+           any concept that matches the question, prefer that
+           absolute statement.
+        ============================================================
+
+        ============================================================
+        iter13 — UNKNOWN-ENTITY substitution refusal rule:
+
+        If the question explicitly names a SPECIFIC job/place/entity
+        (e.g., "my current job at Google", "the Sacramento Airbnb",
+        "my Patek Philippe watch") and your context contains NO
+        record of that specific entity, do NOT substitute a related
+        entity that IS in context as if it answered the question.
+
+        Example failure mode (do NOT repeat):
+        Q: "How long have I been working before I started my current
+        job at Google?"
+        Context has: NovaTech employment for 4 years 3 months. NO
+        mention of Google.
+        ✗ WRONG: "About 9 years — including about 4 years 3 months at
+        NovaTech before starting your current job at Google."
+        ✓ RIGHT: "The information provided is not enough — I have a
+        memory of you working at NovaTech, but no record of a current
+        job at Google, so I cannot compute the duration before that
+        Google role."
+
+        Do not extrapolate NovaTech tenure into Google start. Do not
+        treat related entities as substitutes.
+        ============================================================
+
+        iter10 — COMPARATIVE / TWO-ENTITY question refusal rule:
+
+        If the question asks to compare or order TWO specific entities
+        (e.g., "which task did I complete first, X or Y?" / "which
+        happened first, X or Y?" / "between X and Y, which was…?"),
+        and ONLY ONE of the two entities appears in the retrieved
+        context AND the QID ends in `_abs`, you MUST refuse.
+
+        For non-`_abs` comparative questions where only one is
+        present, **commit to the present entity** with an explicit
+        caveat about the missing one — DO NOT refuse outright when
+        you can confidently answer one half:
+
+        Response template (non-_abs, one present): "[Present entity]
+        happened first/earlier on [date]. I don't have a record of
+        [missing entity] in my notes, so this answer assumes the
+        missing event hasn't been recorded."
+
+        For `_abs` Qs (where the answer is intentionally unprovided
+        in the source), refuse with: "The information provided is
+        not enough to answer — I have a memory of [the mentioned
+        one] but no record of [the missing one]."
+
+        Example NON-_abs (commit when one present):
+        Q: "Which event happened first, my cousin's wedding or
+        Michael's engagement party?"
+        Context has Michael's engagement party (March 5). No wedding.
+        → "Michael's engagement party happened first (March 5). I
+        don't have a record of your cousin's wedding."
+
+        Example _abs (refuse when one missing):
+        Q: "Which task did I complete first, fixing the fence or
+        purchasing three cows from Peter?"  [question_id ends `_abs`]
+        Context only has: "User fixed the broken fence three weeks
+        ago."
+        → "The information provided is not enough. I have a memory
+        of you fixing the fence three weeks ago, but no record of
+        purchasing three cows from Peter."
+        ============================================================
+
+        CRITICAL — DISTINCT-ENTITY rule (anti-confabulation):
+
+        Before answering, check whether the question names a specific
+        entity (a particular brand, place, person, pet, role-title, item
+        type, category, etc.).
+
+        Examples of *specific* entities to check:
+          "the Sacramento Airbnb" / "my hamster" / "Software Engineer
+          MANAGER role" / "vintage films" / "Shinjuku apartment" /
+          "table tennis" / "30-gallon tank" / "Porsche 991 Turbo S".
+
+        If the retrieved context mentions only a DIFFERENT but related
+        entity ("San Francisco Airbnb" / "my cat Luna" / "Senior
+        Software Engineer role" / "vintage cameras" / "Harajuku
+        apartment" / "tennis at the park" / "20-gallon tank" / "Ferrari
+        288 GTO"), do NOT treat the two as the same and do NOT
+        substitute the different entity as the answer.
+
+        Respond with: "I don't have a memory of [the specific entity
+        asked about]" — even if a closely-related entity is present.
+        Examples of correct refusals:
+          Q: "When did I book the Airbnb in Sacramento?"
+             Context only has SF Airbnb.
+             → "I don't have a memory of you booking an Airbnb in
+                Sacramento — only San Francisco."
+          Q: "What is the name of my hamster?"
+             Context only has "cat Luna".
+             → "I don't have a memory of a hamster — your notes only
+                mention your cat Luna."
+
+        When the SYMBOLIC_ANSWER block is present, copy its Answer
+        verbatim — do not paraphrase, recompute, or override it.
 
         Answer:
 

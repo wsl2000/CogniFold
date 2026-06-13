@@ -19,8 +19,13 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
-# Maximum context size in bytes to store in results (prevents huge JSON files)
-MAX_CONTEXT_BYTES = 2048
+# Audit truncation is disabled (set to a value high enough to never trigger
+# in practice). Truncating the audit defeats the entire purpose of the audit —
+# the discarded tail is precisely the rank-21+ chunk where failure-case answers
+# tend to live. At N=500 × ~20K chars per record this comes out to ~10MB jsonl
+# files, well within manageable. Set to 1_000_000 so any reasonable context
+# (even pathological 100K-char prompts) is preserved verbatim.
+MAX_CONTEXT_BYTES = 1_000_000
 
 # Standard failure categories
 FAILURE_CATEGORIES = [
@@ -86,6 +91,7 @@ def enrich_eval_result(
     query_result: Any = None,
     retrieval_mode: str = "mergefold",
     query_start_time: Optional[float] = None,
+    full_context: Optional[str] = None,
 ) -> dict[str, Any]:
     """Enrich an eval_result dict with retrieval diagnostic fields.
 
@@ -125,6 +131,18 @@ def enrich_eval_result(
             eval_result["retrieved_node_count"] = len(nodes)
         except Exception:
             pass
+
+    # Full augmented context (the actual reader input — includes prepended
+    # symbolic / recency / temporal / assistant-recall blocks). Without this
+    # the audit hides what the reader actually saw and we can't tell whether
+    # a failure was a retrieval miss, a truncation, or a reader interpretation
+    # bug.
+    if isinstance(full_context, str):
+        ctx = full_context
+        if len(ctx) > MAX_CONTEXT_BYTES:
+            ctx = ctx[:MAX_CONTEXT_BYTES] + "...[truncated]"
+        eval_result["full_context"] = ctx
+        eval_result["full_context_length"] = len(full_context)
 
     # Retrieval mode
     eval_result["retrieval_mode"] = retrieval_mode

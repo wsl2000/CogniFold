@@ -1,0 +1,9 @@
+{
+  "correct": 400,
+  "partial": 5,
+  "incorrect": 95,
+  "error": 0,
+  "total": 500,
+  "score_strict": 80.0,
+  "score_partial": 80.5
+}

@@ -85,7 +85,7 @@ def call_llm(
         system_prompt: Optional system-level instruction (e.g. language).
         model: Override model name. Accepts "openai:<name>" prefix or
             raw name. When None, falls back to the legacy default
-            "gpt-4o-mini" for the OpenAI path.
+            "gpt-4o" for the OpenAI path.
         reasoning_effort: For gpt-5/o1/o3 reasoning models, pass through
             "low"/"medium"/"high". Ignored on non-reasoning models.
             When None and model is reasoning-class, defaults to "high".
@@ -98,7 +98,7 @@ def call_llm(
     Raises:
         RuntimeError: If no LLM API key is available.
     """
-    openai_model = "gpt-4o-mini"
+    openai_model = "gpt-4o"
     if model:
         openai_model = model.split(":", 1)[1] if model.startswith("openai:") else model
 
