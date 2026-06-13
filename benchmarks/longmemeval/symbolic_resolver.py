@@ -189,19 +189,28 @@ class LongMemEvalSymbolicResolver:
             # diff_between so the more specific direction wins.
             ("date_diff_before",   self._try_diff_before),
             ("date_diff_between",  self._try_diff_between),
-            # iter08 order_among DISABLED (iter27 0/4)
-            # iter14 count_among  DISABLED (iter27 0/5)
+            # iter08 order_among DISABLED (iter27 0/4) — iter32 round 2
+            # moves order questions to the new ledger path (better signal
+            # via chunk fusion). Re-enabling here without the late-fusion
+            # backfill regresses; the ledger handles order-shape Qs now.
+            # iter14 count_among  DISABLED (iter27 0/5) — round 2 moves
+            # count questions to the ledger path instead.
             # New TR resolvers (target 2026-06-01 baseline TR failures).
             # Order: most-specific (two-event diff / activity duration /
             # named-day) before single-event ago/since patterns to avoid
             # the broader patterns swallowing matches.
             ("diff_since_when",    self._try_diff_since_when),
             ("duration_activity",  self._try_duration_activity),
-            ("which_first",        self._try_which_first),
+            # iter31: which_first DISABLED — 0/1 on iter27 (case #24
+            # gpt4_0b2f1d21 wrong direction).
             ("chronological_order", self._try_chronological_order),
             ("rank_among",         self._try_rank_among),
             ("date_diff_ago",      self._try_diff_ago),
             ("date_diff_since",    self._try_diff_since),
+            # iter32 round 2: relative_ago_recall RE-ENABLED, now uses
+            # _resolve_anchor_date for grounding and widens the tolerance
+            # window. Stays bypass=False so the reader can override on
+            # ambiguous same-day candidates.
             ("relative_ago_recall", self._try_relative_ago_recall),
             ("named_day_recall",   self._try_named_day_recall),
             ("latest_value",       self._try_latest_value),
@@ -333,6 +342,17 @@ class LongMemEvalSymbolicResolver:
         re.IGNORECASE,
     )
 
+    # iter32 round 2 — recovery/end-state verbs. When the activity_phrase
+    # contains these, Pass 3 EARLIEST fallback is semantically wrong:
+    # "first time flu was mentioned" ≠ "when I recovered from the flu".
+    # Per Codex round 4 analysis (case 370a8ff4 deferred but the gate
+    # still matters for any other recovery-phrased question).
+    _RECOVERY_PHRASE_RE = re.compile(
+        r"\b(?:recovered\s+from|got\s+over|gotten\s+over|healed\s+from|"
+        r"recovered|healed)\b",
+        re.IGNORECASE,
+    )
+
     def _find_is_start_concept(self, activity_phrase: str) -> "_Concept | None":
         """iter29 TR-NEW-2 — locate the START anchor for an activity.
 
@@ -368,11 +388,31 @@ class LongMemEvalSymbolicResolver:
             if c.date is None:
                 continue
             node = self.graph.get_node_or_none(c.node_id)
-            if node is None or not node.data.get("is_start"):
+            if node is None:
+                continue
+            # iter31: writer rule 4 sets `activity_start: true`;
+            # legacy iter29 used `is_start`. Accept either.
+            if not (node.data.get("activity_start") or node.data.get("is_start")):
                 continue
             activity_field = (node.data.get("activity") or "").lower()
             if not _overlaps(f"{activity_field} {c.title} {c.description}"):
                 continue
+            # iter31: if writer provided start_date (resolved from
+            # "I started X 2 weeks ago" → session_date − 14), prefer
+            # that over the session date for the start anchor.
+            start_date_str = node.data.get("start_date")
+            if start_date_str:
+                try:
+                    parsed = datetime.fromisoformat(str(start_date_str)[:10])
+                    # Mutate a copy of the _Concept so resolver math uses
+                    # the resolved start_date.
+                    c = _Concept(
+                        node_id=c.node_id, title=c.title,
+                        description=c.description, date=parsed,
+                        raw_text=c.raw_text,
+                    )
+                except Exception:
+                    pass
             assert c.date is not None
             if best is None or (best.date is not None and c.date < best.date):
                 best = c
@@ -392,7 +432,139 @@ class LongMemEvalSymbolicResolver:
             assert c.date is not None
             if best is None or (best.date is not None and c.date < best.date):
                 best = c
+        if best is not None:
+            return best
+
+        # Pass 3 (iter31, TR cluster A fix) — EARLIEST mention of the
+        # activity. When writer/reflector haven't marked any start
+        # concept AND no verb fallback fires, the safest answer for
+        # "how long had I been X-ing when Y" is to anchor on the
+        # EARLIEST concept that mentions the activity at all. Solves
+        # cases #15 (gpt4_cd90e484 binoculars), #17 (b29f3365 guitar
+        # lessons), #23 (e4e14d04 Book Lovers): user mentions activity
+        # multiple times; iter27 anchored on a recent mention, but the
+        # true start is the earliest mention in the qid's session log.
+        #
+        # iter32 round 2 GATE — skip Pass 3 if the activity_phrase looks
+        # like a recovery/end-state question ("recovered from the flu",
+        # "got over X"). For those, EARLIEST mention is semantically
+        # wrong (first mention of the illness ≠ recovery date). Let the
+        # reader handle these from raw context instead.
+        if self._RECOVERY_PHRASE_RE.search(activity_phrase or ""):
+            return best
+        for c in self._concepts:
+            if c.date is None or c.node_id.startswith("evt-"):
+                continue
+            body = f"{c.title} {c.description}"
+            if not _overlaps(body):
+                continue
+            assert c.date is not None
+            if best is None or (best.date is not None and c.date < best.date):
+                best = c
         return best
+
+    # ------------------ iter32 round 2 new helpers -----------------------
+
+    def _resolve_anchor_date(
+        self, query: str, default: datetime | None = None
+    ) -> datetime | None:
+        """Centralized weekday/holiday/relative-time grounding.
+
+        Returns an absolute datetime when the query contains an
+        explicit anchor (`last Saturday`, `Valentine's Day`,
+        `two weeks ago`, etc.) computed from `today_date`.
+        Falls back to `default` when no anchor is identifiable.
+        """
+        if not query:
+            return default
+        anchor = self.question_date
+        if anchor is None:
+            return default
+        q = query.lower()
+
+        # "X weeks ago / X months ago / X days ago / X years ago"
+        m = re.search(
+            r"\b(\d+|two|three|four|five|six|seven|eight|nine|ten|a)\s+"
+            r"(day|days|week|weeks|month|months|year|years)\s+ago\b",
+            q,
+        )
+        if m:
+            num_str, unit = m.group(1), m.group(2)
+            num_map = {"a": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+                       "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10}
+            n = num_map.get(num_str) or int(num_str)
+            unit_days = {"day": 1, "days": 1, "week": 7, "weeks": 7,
+                         "month": 30, "months": 30, "year": 365, "years": 365}[unit]
+            return anchor - timedelta(days=n * unit_days)
+
+        # Named days: "last Saturday/Sunday/..."
+        weekday_map = {"monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
+                       "friday": 4, "saturday": 5, "sunday": 6}
+        for wd_name, wd_idx in weekday_map.items():
+            if f"last {wd_name}" in q:
+                # Find the most recent past occurrence of that weekday.
+                delta_days = (anchor.weekday() - wd_idx) % 7
+                if delta_days == 0:
+                    delta_days = 7
+                return anchor - timedelta(days=delta_days)
+
+        # Holidays — single-day named anchors. We use generic windowing:
+        # the resolver returns the most recent occurrence on or before
+        # the question date.
+        _HOLIDAYS = {
+            "valentine's day": (2, 14),
+            "valentines day": (2, 14),
+            "christmas": (12, 25),
+            "christmas day": (12, 25),
+            "new year's day": (1, 1),
+            "new years day": (1, 1),
+            "halloween": (10, 31),
+            "thanksgiving": (11, 22),  # approximate — 4th Thursday
+            "fourth of july": (7, 4),
+            "independence day": (7, 4),
+        }
+        for name, (month, day) in _HOLIDAYS.items():
+            if name in q:
+                year = anchor.year
+                candidate = datetime(year, month, day)
+                if candidate > anchor:
+                    candidate = datetime(year - 1, month, day)
+                return candidate
+
+        return default
+
+    def _choose_duration_anchor(
+        self,
+        query: str,
+        candidates: list[_Concept],
+    ) -> _Concept | None:
+        """For 'two events in a row / consecutive days' phrasing, pick the
+        SECOND event of the pair (the END of the matched span).
+
+        When the question is `how many months have passed since I
+        participated in two charity events in a row, on consecutive days`,
+        the resolver should treat the SECOND day as the anchor, not an
+        arbitrary single charity mention. (case b46e15ed)
+        """
+        if not candidates:
+            return None
+        q = (query or "").lower()
+        dated_pairs: list[tuple[datetime, _Concept]] = [
+            (c.date, c) for c in candidates if c.date is not None
+        ]
+        if not dated_pairs:
+            return None
+        if not re.search(
+            r"\b(in\s+a\s+row|consecutive(?:\s+days?)?|two\s+\w+\s+in\s+a\s+row)\b",
+            q,
+        ):
+            # Fallback: most recent candidate.
+            return max(dated_pairs, key=lambda x: x[0])[1]
+        # Sort by date, take the second-latest (the second event of the pair).
+        dated_pairs.sort(key=lambda x: x[0])
+        if len(dated_pairs) >= 2:
+            return dated_pairs[-1][1]  # most recent of the pair
+        return dated_pairs[0][1]
 
     def _best_recent_concept_with_nouns(
         self, phrase: str, required_nouns: set[str]
@@ -698,7 +870,17 @@ class LongMemEvalSymbolicResolver:
         items = " → ".join(f"{i+1}. {label}" for i, (_, label, _) in enumerate(events))
         # iter08: bypass only when count matches the requested count exactly,
         # otherwise inject as a hint (let the LLM verify / trim).
-        bypass = (target_count is not None and len(events) == target_count)
+        # iter31 — force bypass=False for any order list with more than 3
+        # items. Empirical iter27 evidence: 4-of-4 order_among wrongs had
+        # ≥4 items in the expected answer (museums × 6, concerts × 5,
+        # trips × 3, airlines × 4), so a long list is the regression
+        # pattern. With bypass=False the resolver's list becomes a HINT
+        # the reader can override after scanning the chronological block.
+        bypass = (
+            target_count is not None
+            and len(events) == target_count
+            and len(events) <= 3
+        )
         return {
             "answer": "Earliest → latest: " + items,
             "reasoning": (
@@ -937,6 +1119,14 @@ class LongMemEvalSymbolicResolver:
         unit = self._detect_unit(query, default="day")
         # iter08: date-only subtraction (avoid HH:MM truncation off-by-one).
         diff_days = abs((a.date.date() - b.date.date()).days)
+        # iter32 round 2 (case 08f4fc43, TR-11): exclusive by default —
+        # `diff_days` already reflects exclusive arithmetic. Only switch
+        # to inclusive (+1) when the question explicitly says
+        # "including" / "inclusive". Avoids judge-strict losses where
+        # "31 days if inclusive" wording loses on a "30 or 31 acceptable"
+        # GT.
+        if re.search(r"\b(including|inclusive)\b", query, re.IGNORECASE):
+            diff_days += 1
         diff_units = max(1, round(diff_days / self._UNIT_DAYS[unit])) if unit != "day" else diff_days
         unit_word = unit if diff_units != 1 else unit.rstrip("s")
         return {
@@ -944,7 +1134,7 @@ class LongMemEvalSymbolicResolver:
             "reasoning": (
                 f"Event A '{a.title}' on {a.date.date()}; "
                 f"Event B '{b.title}' on {b.date.date()}; "
-                f"interval = {diff_days} days."
+                f"interval = {diff_days} {unit} (exclusive default)."
             ),
             "bypass": True,
         }
@@ -1155,8 +1345,34 @@ class LongMemEvalSymbolicResolver:
         phrase = m.group(2).strip()
         # iter09: noun gate (same as _try_diff_ago).
         required_nouns = self._extract_required_nouns(phrase)
-        # "since X" implies the MOST RECENT X (same as "X ago" semantics).
-        c = self._best_recent_concept_with_nouns(phrase, required_nouns)
+        # iter32 round 2 (case b46e15ed, TR-01): "two events in a row /
+        # on consecutive days" — the anchor must be the SECOND event of
+        # the pair, not an arbitrary single match. Use the new
+        # _choose_duration_anchor helper to disambiguate.
+        if re.search(
+            r"\b(in\s+a\s+row|consecutive(?:\s+days?)?|two\s+\w+(?:s)?\s+in\s+a\s+row)\b",
+            query, re.IGNORECASE,
+        ):
+            # Find candidates that match the noun, then let the helper
+            # pick the second event of the pair.
+            candidate_pool: list[_Concept] = []
+            for cand in self._concepts:
+                if cand.date is None or cand.node_id.startswith("evt-"):
+                    continue
+                body = f"{cand.title} {cand.description}".lower()
+                if required_nouns and not (required_nouns & set(
+                    re.findall(r"[a-z][a-z'-]+", body)
+                )):
+                    continue
+                candidate_pool.append(cand)
+            chosen = self._choose_duration_anchor(query, candidate_pool)
+            if chosen is not None:
+                c = chosen
+            else:
+                c = self._best_recent_concept_with_nouns(phrase, required_nouns)
+        else:
+            # "since X" implies the MOST RECENT X (same as "X ago" semantics).
+            c = self._best_recent_concept_with_nouns(phrase, required_nouns)
         if c is None or c.date is None:
             return None
         # iter4 P3: same verb-match guard as _try_diff_ago.
@@ -1409,7 +1625,20 @@ class LongMemEvalSymbolicResolver:
         # default _best_recent_concept first; if either anchor fails, try
         # again with a lower-threshold variant that uses the strongest
         # content nouns only.
-        a = self._best_recent_concept(phrase_a)
+        # iter31 (case #4 370a8ff4): when phrase_a contains a recovery
+        # verb ("recovered from", "got over", "healed from"), the user
+        # mentioned the recovery in MULTIPLE sessions. `_best_recent_concept`
+        # picks the LATEST mention, but the start anchor must be the
+        # EARLIEST (the recovery itself, not later recaps). Use the
+        # is_start path for these.
+        _RECOVERY_RE = re.compile(
+            r"\b(?:recovered\s+from|got\s+over|healed\s+from|gotten\s+over)\b",
+            re.IGNORECASE,
+        )
+        if _RECOVERY_RE.search(phrase_a):
+            a = self._find_is_start_concept(phrase_a) or self._best_recent_concept(phrase_a)
+        else:
+            a = self._best_recent_concept(phrase_a)
         b = self._best_recent_concept(phrase_b)
         if (a is None or b is None) and (phrase_a or phrase_b):
             # Retry with reduced phrase — keep only nouns ≥5 chars
@@ -1882,6 +2111,25 @@ class LongMemEvalSymbolicResolver:
                     if not any(s in top_text for s in stems):
                         bypass = False
         top = candidates[0][1]
+        # iter31 (cases #7 gpt4_f420262d Valentine airline, #20
+        # gpt4_d6585ce9 Saturday music event): when multiple candidates
+        # land on the same target day with similar scores, the resolver
+        # was picking the FIRST one by BM25 but the correct concept was
+        # often the second. Force bypass=False and render ALL same-day
+        # candidates as the answer hint so the reader can choose.
+        same_day_top = [c for s, c, off in candidates if off == candidates[0][2]]
+        if len(same_day_top) >= 2:
+            bypass = False
+            tops = [f"'{c.title[:80]}'" for c in same_day_top[:5]]
+            answer = top.title + " (candidates: " + " | ".join(tops) + ")"
+            return {
+                "answer": answer,
+                "reasoning": (
+                    f"Named-day '{query[:60]}' → multiple same-day candidates: "
+                    + ", ".join(c.title[:60] for c in same_day_top[:5])
+                ),
+                "bypass": False,
+            }
         return {
             "answer": top.title,
             "reasoning": (

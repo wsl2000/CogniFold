@@ -65,7 +65,7 @@ export JUDGE_BASE_URL="https://openrouter.ai/api/v1"
 export EMBEDDING_API_KEY="$OPENROUTER_API_KEY"
 export EMBEDDING_BASE_URL="https://openrouter.ai/api/v1"
 
-export WRITER_REASONING_EFFORT="low"
+export WRITER_REASONING_EFFORT="medium"
 # Pacing no longer needed — commonstack 2026-06-05 update raised RPM
 # cap and max_completion_tokens limit; 5-thread burst of 50 × 24K
 # calls now succeeds 100%. Leave the hook in run_eval.py for future
@@ -85,7 +85,8 @@ echo "  W1:        OFF (was iter27 +; iter27 CHANGES self-noted MS −4.6)"
 echo "  W2:        OFF (same)"
 echo "  W3:        OFF (iter30 partial showed MS −29)"
 echo "  Reflector: OFF (unproven net gain; possible MS over-mark)"
-echo "  TR-α:      OFF (was iter30 +; TR-only block, drop for clarity)"
+echo "  TR-α:      ON (TR-only chronological topic-timeline block,"
+echo "             targets order_among + duration_since_start clusters)"
 echo "  output:    $FINAL_DIR"
 
 TODO_FILE=$(mktemp)
@@ -141,8 +142,9 @@ for ((i=0; i<N_PARALLEL; i++)); do
         --writer-model openai:openai/gpt-5.4-mini \
         --judge-model openai:openai/gpt-4o \
         --embedding openai:openai/text-embedding-3-small \
-        --writer-reasoning-effort low \
+        --writer-reasoning-effort medium \
         --symbolic-resolver --symbolic-temporal --symbolic-bypass \
+        --tr-topic-timeline \
         --llm-rerank --rerank-model openai:openai/gpt-5.4-mini \
         --rerank-reasoning-effort low --rerank-pool 100 \
         --agg-max-context-chars 15000 \

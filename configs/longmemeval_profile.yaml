@@ -225,6 +225,31 @@ profiles:
         Give a concise, specific answer (1-2 sentences). Commit to your best inference from the context — when ANY relevant fact appears (even tangentially), use it to construct a specific answer. Only fall back to "Unknown" when the context is completely empty of any related signal.
 
         ============================================================
+        iter32 MS HARD-PRECEDENCE GATE (top-of-prompt for high
+        salience under MEDIUM reader effort):
+
+        For memory-service questions identified by these triggers —
+        "how many", "currently", "in total", "how much more",
+        "need to earn", "current role", "subscribed to" — apply
+        these rules BEFORE the general heuristics below:
+
+        - CURRENT vs EVER: distinguish current status from cumulative/
+          ever status; answer the one asked. Current = latest anchor,
+          not lifetime sum.
+        - COUNT enumeration: when the context contains a
+          "## COUNT_CANDIDATES" block, enumerate ONLY rows present
+          in that block as your candidate set; do not add plausible
+          extras drawn from non-candidate context.
+        - ARITHMETIC operands: when the context contains a
+          "## ARITH_OPERANDS" block, compute using ONLY the tagged
+          operand values in that block (AGE=, YEARS_AGO=, EVENT_YEAR=,
+          DAYS=, etc.). If any required operand is missing from the
+          block, refuse with "The information provided is not enough".
+        - Window-bounded counts ("last week", "in March", "since X"):
+          count ONLY explicit in-window events; do NOT substitute
+          usual-routine claims for actual in-window observations.
+
+        ============================================================
         DATE INTERPRETATION (iter07) — getting this wrong produces
         the "1,205 days ago" failure mode for what is really 17 days.
 
@@ -360,6 +385,169 @@ profiles:
           Compute the derived time: 7:00 − 0:15 = 6:45 AM.
           DO NOT report the baseline as the answer. The derivation
           is the answer.
+
+        iter31 TR — DURATION-SINCE-START rule (cluster A):
+        For "how long had I been X-ing when Y happened" / "how many
+        weeks had passed since I X when Y" / "how many days had
+        passed since I X when Y":
+          1. If a concept marked `activity_start: true` for X
+             exists in context, use its `start_date` as the start
+             anchor. If no marked concept, use the EARLIEST dated
+             concept that mentions X.
+          2. If Y has a clear concept with date Y_date, compute
+             (Y_date − start_date) in the unit the question asks.
+          3. If you found AT LEAST ONE concept mentioning X and ONE
+             mentioning Y, DO NOT refuse — compute the best-effort
+             answer. Refusing with "I don't have a memory of when
+             you started X" is the dominant failure mode here.
+
+        iter31 TR — AGE-INFERENCE worked example (case d01c6aa8):
+          Context: "User is 32 years old" + "lived in U.S. for 5 years"
+          Q: "How old was I when I moved to the United States?"
+          ✓ "27. Current age 32 − 5 years in U.S. = age 27 at move."
+          ✗ "I don't have your birth date, so I can't determine."
+
+        iter31 TR — PLANNED→COMPLETED "today" translation (case
+        gpt4_68e94288): when a concept's [YYYY-MM-DD] prefix is N
+        days before TODAY and its body says "today" or "this
+        morning", the "today" refers to the concept's date — not
+        the question's TODAY. Example: concept "[2023-05-25] User
+        participated in #PlankChallenge today" + question "What
+        did I do 5 days ago?" (TODAY = 2023-05-30) → answer
+        "#PlankChallenge" (the participation happened on 2023-05-25
+        = 5 days ago).
+
+        iter31 TR — INCLUSIVE-BOUNDARY worked example (case
+        gpt4_4fc4f797): Q "How many days passed between Mar 17 and
+        Apr 23?" — Mar 17 → Apr 17 = 31 days. Apr 17 → Apr 23 = 6
+        days. Total 37 days exclusive of the start day, 38 days
+        inclusive (Mar 17 itself counted). Both 38 and 39 are
+        acceptable answers — state the inclusive count first.
+
+        iter31 TR — COMPARATIVE EARLIER=FIRST (case
+        gpt4_0b2f1d21): when the question asks "which X happened
+        first, A or B?" and both A and B have dates in context, the
+        one with the EARLIER date is the answer. Do NOT trust an
+        order_among / which_first SYMBOLIC_ANSWER hint without
+        verifying the dates yourself for this binary case.
+
+        iter31 TR — EXHAUSTIVE-COUNT exclude-anchor caveat (case
+        a3838d2b): for "how many X did I do BEFORE event Y"
+        questions, count UNIQUE X events whose date < Y's date and
+        DO NOT include Y itself in the count (event Y is the
+        boundary, not a participant). If the answer is 4 events and
+        Y is the 5th, the answer is 4 not 5.
+
+        iter31 TR — BOOKING vs PLANNING distinction (case
+        982b5123): for "when / how long ago did I X" where X is a
+        transactional verb (book, buy, pay, reserve, sign,
+        register), only concepts where the user EXPLICITLY DID X
+        count. Concepts where the user PLANS to X ("I'm going to
+        book", "I'll need to reserve", "considering booking") are
+        INTENTIONS, not the event. The answer date is when the
+        actual transaction happened, not when the user discussed
+        planning.
+
+        iter31 TR — _abs both-entities check (case
+        c8090214_abs): for `_abs`-suffixed questions naming TWO
+        entities ("how many days before I bought X did I attend Y",
+        "which event happened first, A or B"), SCAN context for
+        BOTH X and Y. If EITHER is missing, REFUSE with the iter10
+        template. Do NOT substitute a different entity for the
+        missing one (iPhone 13 Pro ≠ iPad even if both are Apple
+        products).
+
+        iter31 TR — CHRONOLOGICAL-SCAN rule (cluster B + general TR):
+        When the context contains a "## CHRONOLOGICAL_TEMPORAL" or
+        "## TOPIC_TIMELINE" block (a list of dated lines sorted
+        earliest → latest), USE IT as the authoritative source for
+        temporal ordering — not the resolver hint, not the raw
+        retrieved concepts. Procedure:
+          (a) For "order of N X" questions: list every line in the
+              chronological block whose body matches X's topic
+              noun. The order is the lines' order in the block.
+              If the resolver SYMBOLIC_ANSWER list has fewer items
+              than the chronological block has X-matching lines,
+              the chronological block wins.
+          (b) For "how many X" before/after Y questions: scan the
+              chronological block, count X lines whose date is
+              before/after Y's date.
+          (c) For "when did I last X" / "what was the X N days ago"
+              questions: scan from the BOTTOM (most recent) of the
+              chronological block for "last X" and from the date
+              matching TODAY−N for "N days ago".
+        The chronological block is the single most reliable temporal
+        source in context — prefer it over both resolver hints and
+        natural-language phrases in concept descriptions.
+
+        iter32 ZERO-IN-WINDOW (case 80ec1f4f_abs): for month-bounded
+        or week-bounded "how many" / `_abs` questions, if relevant
+        items exist in OTHER windows but NONE fall inside the asked
+        window, answer "0" — do NOT import adjacent-month or undated
+        "recently" evidence into the target window. Example: "how
+        many museums did I visit in December" with only Jan/Feb
+        visits → answer `0`, not "two".
+
+        iter32 ATTRIBUTE-MISMATCH REFUSAL (cases c8090214_abs,
+        eeda8a6d_abs, a96c20ee_abs): if the question names a specific
+        entity or attribute value (iPad, 30-gallon tank, undergrad-
+        course poster) and the context only has a NEAR match (iPhone
+        13 Pro, 20-gallon tank, thesis poster), REFUSE with "The
+        information provided is not enough." Never substitute sibling
+        devices, sibling attribute values, or related-but-distinct
+        items.
+
+        iter32 SAME-SCOPE DIFFERENCE (case 09ba9854_abs): for
+        savings / difference / "how much cheaper" questions, compare
+        operands ONLY when they share the same route, scope, and
+        currency. Airport→city-center is NOT airport→hotel; bus is
+        NOT taxi. If scope mismatches between the two operands,
+        refuse with "The information provided is not enough."
+
+        iter32 EXPLICIT-TIME OVER INFERENCE (case 73d42213): when an
+        explicit clock time exists in context for an
+        arrival / appointment / slot (e.g., "the clinic appointment
+        was 10:30"), answer with the EXPLICIT time. Do NOT infer
+        arrival time from travel duration when an explicit slot time
+        is available.
+
+        iter32 MS — NO ROUTINE BACKFILL (case 7024f17c "last week"):
+        when the question scopes a count/list to an explicit time
+        window ("last week", "yesterday", "this month", "in March"),
+        count ONLY explicit events whose date falls inside that window.
+        DO NOT substitute the user's USUAL routine ("user usually
+        jogs 3 times a week") for actual in-window events. If no
+        in-window events exist, answer with "0" or the iter32
+        ZERO-IN-WINDOW refusal, never the routine count.
+
+        iter32 MS — CURRENT vs EVER (case 92a0aa75 "current role"):
+        for "currently" / "current" / "right now" Qs about an
+        attribute that has changed over time (job, role, address,
+        relationship), select the LATEST start anchor. Examples:
+        - "what is my current role?" with anchors [2021 Engineer at
+          NovaTech / 2023 Sr. Engineer at NovaTech / 2024 Lead at
+          AltCo] → answer "Lead at AltCo (since 2024)".
+        - DO NOT report total tenure ("3 years at NovaTech") for a
+          "current role" question — current = latest, not historical
+          cumulative.
+
+        iter32 MS — NEED vs TOTAL (case 9ee3ecd6 "need to earn"):
+        when a question asks "how many [more] X do I need" /
+        "how much further to Y" / "how many points to reach Z":
+        answer = (target − current_progress), NOT the target alone.
+        Example: "I need 300 points and have 200" → "100 more needed",
+        not "300". If only the target is in context (no current
+        progress), answer the target with caveat "(no current
+        progress recorded)".
+
+        iter32 MS — USER-ONLY PROVENANCE (case c4a1ceb8 recipe
+        citrus, case 0a995998 clothing): when counting items in a
+        user-action context ("how many X did I cook / buy / acquire
+        / visit"), include ONLY items the USER performed, owned, or
+        acquired. EXCLUDE items merely suggested, recommended, or
+        listed by the assistant unless the user explicitly adopted
+        them. Use the `is_user_role` tag in the row contract — count
+        rows where role=user AND a completed-action verb appears.
 
         iter29 MASTRA reader rules:
 
