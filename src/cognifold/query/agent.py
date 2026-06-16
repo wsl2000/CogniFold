@@ -61,7 +61,7 @@ _DEDUP_STOPWORDS = frozenset({
     "these", "they", "this", "those", "through", "to", "too", "under", "until",
     "up", "very", "was", "we", "were", "what", "when", "where", "which", "while",
     "who", "whom", "why", "will", "with", "you", "your", "yours", "yourself",
-    "yourselves", "user", "mentioned", "noted", "stated", "said", "says", "also",
+    "yourselves", "user", "mentioned", "noted", "stated", "said", "says",
 })
 
 
@@ -157,7 +157,7 @@ def _semantic_merge_duplicates(
         full = graph.get_node_or_none(nid) if hasattr(graph, "get_node_or_none") else None
         resolved.append((s, full))
     embeddings: list[Any] = []
-    for s, full in resolved:
+    for _s, full in resolved:
         if full is None:
             embeddings.append(None)
             continue
@@ -908,7 +908,6 @@ class MemoryQueryAgent:
             concepts).
         """
         from cognifold.models.node import NodeType
-        from cognifold.query.models import NodeSummary
 
         entity_index = getattr(self.graph, "entity_index", None)
         existing_ids = {n.node_id for n in base.nodes}
@@ -1754,7 +1753,7 @@ class MemoryQueryAgent:
         reasoning_effort = reasoning_effort or self.config.rerank_reasoning_effort
 
         # Build a single prompt listing every candidate by index. Keep
-        # description short — for 50 candidates × 500 char desc + 500 char
+        # description short — for 50 candidates x 500 char desc + 500 char
         # title we'd burn ~50k input tokens, which is fine for gpt-5 but
         # wasteful. Truncate to a 240-char snapshot per candidate.
         lines = []
