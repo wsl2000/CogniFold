@@ -103,9 +103,7 @@ def call_llm(
         openai_model = model.split(":", 1)[1] if model.startswith("openai:") else model
 
     is_reasoning = (
-        openai_model.startswith("o1")
-        or openai_model.startswith("o3")
-        or "gpt-5" in openai_model
+        openai_model.startswith("o1") or openai_model.startswith("o3") or "gpt-5" in openai_model
     )
 
     # Try OpenAI first

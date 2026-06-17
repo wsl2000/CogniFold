@@ -86,7 +86,7 @@ class QueryConfig:
     use_llm_rerank: bool = False
     # Batched B-rerank: single LLM call ranks all candidates jointly,
     # rather than per-doc scoring. Required for gpt-5 reranker (per-doc
-    # would be 50× more calls). When True, agent uses rerank_with_llm_batched
+    # would be 50x more calls). When True, agent uses rerank_with_llm_batched
     # instead of rerank_with_llm. See my_prompt.md §1.2.
     use_llm_rerank_batched: bool = False
     rerank_model: str = "openai:gpt-5"
