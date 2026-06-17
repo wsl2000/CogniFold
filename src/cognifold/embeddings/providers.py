@@ -240,16 +240,13 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
         # endpoint. Needed when chat is routed through a provider that
         # doesn't host /embeddings (e.g., commonstack.ai).
         import os
+
         from cognifold.service.llm_keys import get_api_key
 
         embed_api_key = os.environ.get("EMBEDDING_API_KEY", "").strip() or None
         embed_base_url = os.environ.get("EMBEDDING_BASE_URL", "").strip() or None
 
-        self.api_key = (
-            embed_api_key
-            or config.api_key
-            or get_api_key("OPENAI_API_KEY")
-        )
+        self.api_key = embed_api_key or config.api_key or get_api_key("OPENAI_API_KEY")
         if not self.api_key:
             raise ValueError(
                 "OpenAI API key required. Set OPENAI_API_KEY or "
@@ -298,10 +295,8 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
             dimensions=self.config.dimensions,
         )
         try:
-            _EMBED_CALL_STATS = globals().setdefault(
-                "_EMBED_CALL_STATS", {}
-            )
-            bucket = _EMBED_CALL_STATS.setdefault(
+            embed_call_stats = globals().setdefault("_EMBED_CALL_STATS", {})
+            bucket = embed_call_stats.setdefault(
                 self.config.model,
                 {"calls": 0, "input_tokens": 0, "cost_usd": 0.0},
             )
@@ -312,7 +307,9 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
                 # OpenRouter reports authoritative cost; OpenAI direct does not.
                 cost = None
                 for attr in ("cost", "total_cost"):
-                    cost = getattr(usage, attr, None) or (usage.get(attr) if isinstance(usage, dict) else None)
+                    cost = getattr(usage, attr, None) or (
+                        usage.get(attr) if isinstance(usage, dict) else None
+                    )
                     if cost is not None:
                         break
                 if cost is not None:
@@ -351,10 +348,8 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
                 dimensions=self.config.dimensions,
             )
             try:
-                _EMBED_CALL_STATS = globals().setdefault(
-                    "_EMBED_CALL_STATS", {}
-                )
-                bucket = _EMBED_CALL_STATS.setdefault(
+                embed_call_stats = globals().setdefault("_EMBED_CALL_STATS", {})
+                bucket = embed_call_stats.setdefault(
                     self.config.model,
                     {"calls": 0, "input_tokens": 0, "cost_usd": 0.0},
                 )
@@ -364,7 +359,9 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
                     bucket["input_tokens"] += int(getattr(usage, "prompt_tokens", 0) or 0)
                     cost = None
                     for attr in ("cost", "total_cost"):
-                        cost = getattr(usage, attr, None) or (usage.get(attr) if isinstance(usage, dict) else None)
+                        cost = getattr(usage, attr, None) or (
+                            usage.get(attr) if isinstance(usage, dict) else None
+                        )
                         if cost is not None:
                             break
                     if cost is not None:
