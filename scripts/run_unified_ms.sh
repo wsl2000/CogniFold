@@ -27,6 +27,13 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
+# CRITICAL: force this worktree's src/cognifold ahead of any editable install
+# in .venv (which may point at a DIFFERENT checkout). The unified branch carries
+# iter31 src changes (writer-rule-4 activity_start/start_date in agent/batch.py)
+# that the main checkout lacks — without this, the run would silently use the
+# wrong writer code (a stack swap).
+export PYTHONPATH="$(pwd)/src${PYTHONPATH:+:$PYTHONPATH}"
+
 [ -f .env ] && set -a && source .env && set +a
 
 QID_LIST_FILE="${1:?need QID_LIST_FILE path}"
