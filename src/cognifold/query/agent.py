@@ -62,7 +62,7 @@ _DEDUP_STOPWORDS = frozenset({
     "up", "very", "was", "we", "were", "what", "when", "where", "which", "while",
     "who", "whom", "why", "will", "with", "you", "your", "yours", "yourself",
     "yourselves", "user", "mentioned", "noted", "stated", "said", "says",
-})
+})  # fmt: skip
 
 
 def _node_text_tokens(n: Any) -> set[str]:
@@ -71,10 +71,7 @@ def _node_text_tokens(n: Any) -> set[str]:
     title = getattr(n, "title", "") or ""
     desc = getattr(n, "description", "") or ""
     text = f"{title} {desc}".lower()
-    return {
-        t for t in _DEDUP_TOKEN_RE.findall(text)
-        if t not in _DEDUP_STOPWORDS and len(t) >= 2
-    }
+    return {t for t in _DEDUP_TOKEN_RE.findall(text) if t not in _DEDUP_STOPWORDS and len(t) >= 2}
 
 
 def _dedup_near_duplicates(
@@ -564,7 +561,9 @@ class MemoryQueryAgent:
             try:
                 if config.use_llm_rerank_batched:
                     scored_nodes = self.rerank_with_llm_batched(
-                        query, scored_nodes, config.max_nodes,
+                        query,
+                        scored_nodes,
+                        config.max_nodes,
                     )
                     query_metadata["reranked"] = "batched"
                 else:
@@ -850,10 +849,10 @@ class MemoryQueryAgent:
         self.config = dataclasses.replace(
             original_config,
             max_nodes=max_ctx,
-            max_context_chars=12000,           # Iter1: lift from 8000 → 12000
-            max_description_chars=2000,        # Iter1: 500 → 2000 to preserve raw turn batches
-            include_reasoning=False,   # Strip metadata to fit more facts in context
-            include_grounding=False,   # Strip grounding refs
+            max_context_chars=12000,  # Iter1: lift from 8000 → 12000
+            max_description_chars=2000,  # Iter1: 500 → 2000 to preserve raw turn batches
+            include_reasoning=False,  # Strip metadata to fit more facts in context
+            include_grounding=False,  # Strip grounding refs
         )
 
         try:
@@ -888,9 +887,7 @@ class MemoryQueryAgent:
         finally:
             self.config = original_config
 
-    def _boost_with_entity_events(
-        self, question: str, base: QueryResult
-    ) -> QueryResult:
+    def _boost_with_entity_events(self, question: str, base: QueryResult) -> QueryResult:
         """Augment retrieval with entity-anchored event nodes (LoCoMo iter1).
 
         Uses `graph.entity_index` (built post-ingestion in run_benchmark.py)
@@ -940,12 +937,9 @@ class MemoryQueryAgent:
         # events), then concepts/intents/time. Within events, keep relevance
         # order; the boosted events trail base events.
         base_events = [n for n in base.nodes if n.node_type == "event"]
-        base_concepts = [
-            n for n in base.nodes if n.node_type in ("concept", "intent", "fact")
-        ]
+        base_concepts = [n for n in base.nodes if n.node_type in ("concept", "intent", "fact")]
         base_other = [
-            n for n in base.nodes
-            if n.node_type not in ("event", "concept", "intent", "fact")
+            n for n in base.nodes if n.node_type not in ("event", "concept", "intent", "fact")
         ]
 
         merged = base_events + event_summaries + base_concepts + base_other
@@ -964,9 +958,7 @@ class MemoryQueryAgent:
         # cosine ≥0.85 collapses these clusters while distinct entities
         # (helmet vs chain vs lights) stay separate. Reuses NodeEmbedder
         # cache populated by hybrid retrieval — no extra API calls.
-        merged = _semantic_merge_duplicates(
-            merged, self._embedder, self.graph, threshold=0.85
-        )
+        merged = _semantic_merge_duplicates(merged, self._embedder, self.graph, threshold=0.85)
         # Cap total nodes to config.max_nodes
         merged = merged[: self.config.max_nodes]
 
@@ -1118,21 +1110,6 @@ class MemoryQueryAgent:
             query_type=QueryType.HYBRID,
             reference_time=reference_time,
             max_nodes=40,
-            **kwargs,
-        )
-
-    def _query_tomi_qa(
-        self,
-        question: str,
-        reference_time: datetime | None = None,
-        **kwargs: Any,
-    ) -> QueryResult:
-        """ToMi-specific QA: prioritize concept nodes for belief/state tracking."""
-        return self.query(
-            question,
-            query_type=QueryType.HYBRID,
-            reference_time=reference_time,
-            max_nodes=30,
             **kwargs,
         )
 
@@ -1776,7 +1753,9 @@ class MemoryQueryAgent:
 
         try:
             response = self._call_llm_with(
-                prompt, model=model, reasoning_effort=reasoning_effort,
+                prompt,
+                model=model,
+                reasoning_effort=reasoning_effort,
                 max_tokens=4096,
             )
         except Exception as e:

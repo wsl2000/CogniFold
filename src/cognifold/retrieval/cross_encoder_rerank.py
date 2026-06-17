@@ -45,11 +45,9 @@ def get_cross_encoder(model_name: str = "BAAI/bge-reranker-v2-m3") -> Any | None
     if model_name in _MODEL_CACHE:
         return _MODEL_CACHE[model_name]
     try:
-        from sentence_transformers import CrossEncoder
+        from sentence_transformers import CrossEncoder  # pyright: ignore[reportMissingImports]
     except ImportError:
-        logger.warning(
-            "sentence_transformers not installed; cross-encoder reranking disabled"
-        )
+        logger.warning("sentence_transformers not installed; cross-encoder reranking disabled")
         _MODEL_CACHE[model_name] = None
         return None
     try:
