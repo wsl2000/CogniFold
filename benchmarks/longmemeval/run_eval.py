@@ -778,8 +778,10 @@ def _build_forced_include_block(
     sub_queries: list[str],
     already_ids: set[str],
     *,
-    per_query_k: int = 6,
-    max_force: int = 18,
+    per_query_k: int = 6,   # iter33-MS refine: keep 6 — protects multi-item
+                            # count recall (gpt4_59c863d7 needs 5 model kits).
+    max_force: int = 12,    # iter33-MS refine C3 (mild): 18->12 caps total
+                            # prepend noise without cutting per-sub-query recall.
     header: str,
 ) -> tuple[str, set[str]]:
     """Run each entity/category sub-query through the EXISTING retrieval path
@@ -2597,6 +2599,11 @@ def run_benchmark(args: argparse.Namespace) -> None:
         # handling unchanged (HARD RULE 3: do not regress TR=88.7). The 7 R2
         # count targets (model kits / instruments / kitchen items / properties
         # / art events / bake / bikes) carry no such marker, so they still fire.
+        # iter33-MS refine: C2 (suppress R2 on "current/now") was CONSIDERED but
+        # REVERTED — it would kill gpt4_194be4b3 ("how many instruments do I
+        # *currently* own", an R2 count target needing the missing-4th surfaced),
+        # and KU (the class C2 protects) is not in the MS-133 set. Defer C2 to a
+        # later all-category run.
         _ms_count_category = "" if _qa_agg_count_tr else _extract_count_category(question)
         # Widen for aggregation, money-sum, AND the arithmetic/comparison
         # bridge class (R3a). Without widening, R1's forced-include block is
@@ -2643,7 +2650,11 @@ def run_benchmark(args: argparse.Namespace) -> None:
         # GATING: only fires when _ms_arith (R1/R3 class) OR _ms_count_category
         # (R2 class) is set. On TR / KU / SSU / SSA questions both are false,
         # so this entire block is INERT and those paths are unchanged.
-        if _ms_arith or _ms_count_category:
+        # iter33-MS refine C1: NEVER force-include on _abs abstention qids — the
+        # wrong-sibling roster injected at top-of-context fights the A1/A2
+        # abstention rules (a96c20ee_abs/09ba9854_abs over-answered). No
+        # confirmed flip depends on Tier-1 firing for an _abs qid.
+        if (_ms_arith or _ms_count_category) and not question_id.endswith("_abs"):
             try:
                 _already_ids = {
                     getattr(n, "node_id", None)

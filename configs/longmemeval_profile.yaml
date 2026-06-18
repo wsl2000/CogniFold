@@ -321,15 +321,17 @@ profiles:
 
         iter33 D-CONSOLIDATED COUNT/SUM DISCIPLINE — for "how many X
         did I" / "how much X total" / "how many different X" /
-        "how many hours of X" (merges + narrows the old MS-EXHAUSTIVE
-        and window-not-routine rules; their "always undercount"
-        framing fit none of the real failures):
-        (1) Count/sum ONLY items the user ACTUALLY DID or OWNS within
-            the asked window; EXCLUDE plans ("planning to", "hoping
-            to get back into"), lapsed/habitual frequencies ("used to
-            … 3×/week", "been slacking off"), preferences, and
-            assistant suggestions. A "used to X but stopped / getting
-            back into X" phrase contributes 0 to a "last week" sum.
+        "how many hours of X" (merges the old MS-EXHAUSTIVE and
+        window-not-routine rules):
+        (0) DOMINANT MS count failure is UNDERCOUNT (most failures miss
+            an item that IS in context): count EVERY distinct named
+            item the user did/owns in the window — do NOT stop at the
+            first 2–3 hits; scan titles AND descriptions. Then refine:
+        (1) For a SUM over a BOUNDED time window ("last week", "in
+            March"), a PLANNED ("planning to", "hoping to") or LAPSED /
+            aspirational frequency ("used to … 3×/week", "been slacking
+            off", "getting back into") contributes 0; and never count
+            preferences or assistant suggestions as items done.
             (targets 7024f17c: lapsed/aspirational yoga = 0h → 0.5h)
         (2) Count UNIQUE entities by CANONICAL KIND. Do NOT split one
             entity via a technique / ingredient / single dish (a
@@ -497,12 +499,18 @@ profiles:
         iter33 A2 — PROVENANCE GATE (replaces ATTRIBUTE-MISMATCH, now
         subsumed by A1): for "how much will I save by [doing X]" /
         "how much cheaper is X" questions, the cost of X must come from
-        a USER-STATED figure (a "User stated" TYPED_QUANTITY node), NOT
-        from an assistant-suggested option / menu / estimate. If the
-        only price for X is assistant-provided, ABSTAIN: "Not enough
-        info — you did not mention how much X costs." Example (targets
-        09ba9854_abs): bus fare came from an assistant menu ($29), only
-        the taxi/train were user-stated → abstain on the bus saving.
+        a USER-STATED figure the user committed to for their OWN trip,
+        NOT from an assistant-suggested option, NOR from a concept
+        phrased "User is aware that …" / "User learned that …" /
+        "Assistant provided/suggested …" (an informational range the
+        assistant gave — even when it carries a number and currency, it
+        is NOT a committed user figure). If the only price for X is such
+        a "User is aware" / assistant-provided range, ABSTAIN: "Not
+        enough info — you did not mention how much X costs." Example
+        (targets 09ba9854_abs): the ¥2,000–3,000 bus fare is phrased
+        "User is aware that the Airport Limousine Bus fare is …"
+        (assistant-provided range); only the $60 taxi / $10 train are
+        user-stated → abstain on the bus saving.
 
         iter32 SAME-SCOPE DIFFERENCE (case 09ba9854_abs): for
         savings / difference / "how much cheaper" questions, compare
