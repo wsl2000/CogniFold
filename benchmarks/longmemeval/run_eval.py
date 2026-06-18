@@ -2684,6 +2684,19 @@ def run_benchmark(args: argparse.Namespace) -> None:
                 else:
                     # R1 — bridge-entity second hop for age/duration/comparison.
                     _sub_queries = _extract_bridge_phrases(question)
+                    # iter33-MS refine R1-age: for age-difference questions
+                    # ("how old was I when X", "how many years older … than
+                    # when I Y"), the SECOND operand (the user's current age) is
+                    # a single self-report ("I just turned 32") that routinely
+                    # scores below the cutoff — a textbook retrieval miss
+                    # (c18a7dc8, a1cc6108). Add current-age probe sub-queries so
+                    # the operand is surfaced; D-COMPUTE's absent-operand gate
+                    # still abstains if it genuinely isn't there (no fabrication).
+                    if re.search(r"\bhow\s+(?:old|many\s+years)\b", question, re.IGNORECASE):
+                        _sub_queries += [
+                            "I just turned years old current age",
+                            "I am years old now currently",
+                        ]
                     _block_header = (
                         "## BRIDGE_ANCHORS (iter33-MS R1 — sessions matching the "
                         "named entity/event in the question, force-included so the "
