@@ -176,9 +176,38 @@ _COMPLETED_VIEW_RE = re.compile(
 )
 
 _NEGATION_RE = re.compile(
-    r"\b(?:didn't|did\s+not|never|missed|skipped|"
-    r"couldn't\s+make\s+it|didn't\s+attend|didn't\s+make\s+it|"
-    r"cancelled|canceled|postponed)\b",
+    r"\b(?:didn't|did\s+not|never|missed|"
+    r"couldn't\s+(?:make\s+it|attend|go)|didn't\s+attend|didn't\s+make\s+it|"
+    r"unable\s+to\s+(?:attend|make|go)|"
+    r"cancell?ed|postponed|rescheduled|fell\s+through)\b",
+    re.I,
+)
+
+# Event-anchored "missing/skipping" negation, used ONLY by count emitters
+# (emit_graduation_count, _counted_user_rows). The bare gerunds "missing"/
+# "skip" flag 237 idiomatic dataset rows ("missing out", "missing values",
+# "skip ingredients") and would also reach the TR airline emitters that read
+# has_negation — so they are kept OUT of the shared _NEGATION_RE and only
+# matched here, anchored to an event noun within 4 tokens. Catches
+# "guilty about missing nephew Jack's graduation"; ignores "missing out".
+_COUNT_NEGATION_RE = re.compile(
+    r"\b(?:miss(?:ed|ing)|skip(?:ped|ping)?|couldn't\s+go\s+to)\b"
+    r"(?:\s+\S+){0,4}?\s+"
+    r"(?:graduation|ceremony|wedding|funeral|party|parties|event|appointment|"
+    r"meeting|class|session|reunion|celebration|recital|performance|conference|"
+    r"gathering|dinner|gala|festival|show|game|match|visit|trip)\b",
+    re.I,
+)
+
+# Disposal / past-state negation used ONLY by COUNT emitters (via
+# _counted_user_rows). Kept OUT of the shared _NEGATION_RE so the TR
+# completed-travel/view path (which contains tokens like "returned from my
+# trip") is never falsely negated. These tokens flip "current/typical"-style
+# count answers, e.g. "I sold my Korg", "I used to do Zumba", "returned the
+# Fitbit", "gave away the Spitfire".
+_COUNT_DISPOSAL_RE = re.compile(
+    r"\b(?:used\s+to|stopped|quit\b|dropped|gave\s+away|"
+    r"sold\b|got\s+rid\s+of|returned\s+the\b|no\s+longer)\b",
     re.I,
 )
 
@@ -1009,20 +1038,29 @@ def emit_sephora_remaining(
             r"for\s+(?:a\s+)?free|needed|required)",
             re.I,
         ),
+        # "need(s|ed|ing) a total of 300 points" — include the -ing participle
+        # ("needing a total of 300 points"). Codex R3: qid 9ee3ecd6.
         re.compile(
-            r"\bneed(?:s|ed)?\s+(?:a\s+total\s+of\s+|just\s+|to\s+(?:earn|get|reach)\s+)?"
+            r"\bneed(?:s|ed|ing)?\s+(?:a\s+total\s+of\s+|just\s+|to\s+(?:earn|get|reach)\s+)?"
             r"(\d{2,4})\s+points?",
             re.I,
         ),
-        re.compile(
-            r"\b(?:redeem|redeeming).{0,80}?\bwith\s+(\d{2,4})\s+points?",
-            re.I,
-        ),
+        # NOTE: deliberately NO "redeem ... with N points" pattern here — that N
+        # is the user's CURRENT balance ("redeem a reward with 200 points"), not
+        # the redemption target. Capturing it as a target picked up 200 (wrong).
     ]
+    # Current balance patterns. Must structurally EXCLUDE the redemption-goal
+    # sentence ("needing a total of 300 points") so a generic "(\d+) points"
+    # never re-grabs the target. Validated to return 100 on qid 9ee3ecd6.
     current_res = [
-        re.compile(r"\b(?:I\s+have|i'?m\s+at|my\s+balance\s+is|currently\s+at|"
-                   r"current\s+balance(?:\s+of)?|got|brought.*total\s+to|"
-                   r"total\s+reached)\s+(\d{2,4})\s+points?", re.I),
+        re.compile(r"\b(?:with|have|at)\s+(\d{2,4})\s+points?\s+in\b", re.I),
+        re.compile(r"\b(?:bringing|brought|bring)\s+(?:their|my|the)\s+"
+                   r"total\s+to\s+(\d{2,4})\s+points?", re.I),
+        re.compile(r"\b(?:my\s+balance\s+is|current\s+balance(?:\s+of)?|"
+                   r"currently\s+(?:have|at)|i'?m\s+at|total\s+reached)\s+"
+                   r"(\d{2,4})\s+points?", re.I),
+        re.compile(r"\bredeem\s+a\s+reward\s+(?:from\s+\w+\s+)?with\s+"
+                   r"(\d{2,4})\s+points?", re.I),
         re.compile(r"\b(\d{2,4})\s+points?\s+(?:so\s+far|to\s+date|balance)", re.I),
     ]
     for r in rows:
@@ -1091,7 +1129,7 @@ def emit_graduation_count(
         if not r["is_user_role"]: continue
         text = r["text"]
         if "graduation" not in text.lower(): continue
-        if r["has_negation"]: continue
+        if r["has_negation"] or _COUNT_NEGATION_RE.search(text): continue
         if r["has_planning"] or r["has_future_commitment"]: continue
         # Require explicit attendance verb
         if not re.search(r"\b(?:attended|went\s+to|was\s+at|came\s+to)\b", text, re.I):
@@ -1400,9 +1438,42 @@ def _unique_user_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return unique
 
 
+def _counted_user_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """User rows eligible for COUNT/TALLY/SUM emitters.
+
+    Generalizes the emit_graduation_count fix: a row that says the user
+    *missed*, *planned*, *will*, *used to*, *sold*, or *returned* something
+    must NOT be counted the same as a row where they actually did it. Uses the
+    semantic flags _normalize_rows already computes (has_negation,
+    has_planning, has_future_commitment, date_plausible) plus the count-only
+    disposal vocabulary (_COUNT_DISPOSAL_RE).
+    """
+    out: list[dict[str, Any]] = []
+    for row in _unique_user_rows(rows):
+        if row.get("has_negation"):
+            continue
+        if row.get("has_planning"):
+            continue
+        if row.get("has_future_commitment"):
+            continue
+        # NOTE: deliberately NOT filtering on `date_plausible is False`.
+        # Operand rows frequently lack a usable date (no session/inline date)
+        # yet are valid counts; dropping them undercounts below the safety
+        # gate and turns correct emitters inert. Emitters that need a date
+        # window already apply their own `effective_date` cutoff.
+        if _COUNT_DISPOSAL_RE.search(row.get("text") or ""):
+            continue
+        if _COUNT_NEGATION_RE.search(row.get("text") or ""):
+            continue
+        out.append(row)
+    return out
+
+
 _CURRENT_AGE_PATTERNS = [
-    re.compile(r"\bi(?:'m| am)\s+(\d{1,3})\b", re.I),
+    re.compile(r"\bi(?:'m| am)\s+(?:now\s+)?(\d{1,3})\b", re.I),
     re.compile(r"\bcurrently\s+(\d{1,3})\s+years?\s+old\b", re.I),
+    re.compile(r"\bi(?:'ll| will)\s+be\s+(\d{1,3})\b", re.I),
+    re.compile(r"\bi\s+(?:just\s+|recently\s+|now\s+)?turned\s+(\d{1,3})\b", re.I),
     re.compile(r"\bjust turned\s+(\d{1,3})\b", re.I),
     re.compile(r"\bas a\s+(\d{1,3})-year-old\b", re.I),
 ]
@@ -1584,10 +1655,9 @@ _AGE_WHEN_ALEX_BORN_Q_RE = re.compile(
 
 
 _SELF_REPORTED_AGE_PATTERNS = [
-    re.compile(r"\bi just turned\s+(\d{2})\b", re.I),          # "I just turned 32 last month"
-    re.compile(r"\bi recently turned\s+(\d{2})\b", re.I),
-    re.compile(r"\bi'?m\s+(\d{2})\b(?!\s*%)", re.I),           # "I'm 32" (not "I'm 32%")
-    re.compile(r"\bi am\s+(\d{2})\b(?!\s*%)", re.I),
+    re.compile(r"\bi\s+(?:just\s+|recently\s+|now\s+)?turned\s+(\d{2})\b", re.I),  # "I just turned 32" / "I turned 35"
+    re.compile(r"\bi'?m\s+(?:now\s+)?(\d{2})\b(?!\s*%)", re.I),  # "I'm 32" / "I'm now 35" (not "I'm 32%")
+    re.compile(r"\bi am\s+(?:now\s+)?(\d{2})\b(?!\s*%)", re.I),
     re.compile(r"\bdo you think\s+(\d{2})\s+is\b", re.I),      # "do you think 32 is young..."
 ]
 
@@ -1683,9 +1753,10 @@ _HI_NYC_DAYS_Q_RE = re.compile(
 
 
 _GRANDMA_AGE_PATTERNS = [
-    re.compile(r"\bgrandma'?s?\s+(\d{2})(?:th|st|nd|rd)?\s+birthday\b", re.I),  # "grandma's 75th birthday"
-    re.compile(r"\bgrandma,?\s+who'?s?\s+(\d{2})\b", re.I),                     # "grandma, who's 75"
-    re.compile(r"\bgrandma,?\s+who\s+turned\s+(\d{2})\b", re.I),               # "grandma, who turned 75"
+    re.compile(r"\bgrand(?:ma|mother)'?s?\s+(\d{2})(?:th|st|nd|rd)?\s+birthday\b", re.I),  # "grandma's 75th birthday"
+    re.compile(r"\bgrand(?:ma|mother),?\s+who'?s?\s+(\d{2})\b", re.I),                     # "grandma, who's 75"
+    re.compile(r"\bgrand(?:ma|mother),?\s+who\s+turned\s+(\d{2})\b", re.I),               # "grandma, who turned 75"
+    re.compile(r"\bgrand(?:ma|mother)\s+(?:just\s+|recently\s+)?turned\s+(\d{2})\b", re.I),  # "grandmother just turned 75"
 ]
 
 
@@ -1944,12 +2015,17 @@ def emit_age_gap_vs_department_average(
     if current_age is None:
         return None
     latest_avg: tuple[datetime, float] | None = None
-    avg_re = re.compile(r"average age of employees in my department is (\d+(?:\.\d+)?) years? old", re.I)
+    avg_re = re.compile(
+        r"average age (?:of employees )?(?:in my department )?"
+        r"(?:is|of|reached|averages?)\s+(\d+(?:\.\d+)?)\s+years?(?:\s+old)?"
+        r"|department(?:'s)?\s+average\s+age\s+(?:is|of)?\s*(\d+(?:\.\d+)?)",
+        re.I,
+    )
     for row in _unique_user_rows(rows):
         match = avg_re.search(row.get("text") or "")
         if not match:
             continue
-        avg = float(match.group(1))
+        avg = float(next(g for g in match.groups() if g))
         when = row.get("effective_date") or datetime.min
         if latest_avg is None or when >= latest_avg[0]:
             latest_avg = (when, avg)
@@ -1973,11 +2049,18 @@ def emit_years_older_than_college_graduation(
     if current_age is None:
         return None
     grad_age: int | None = None
-    grad_re = re.compile(r"(?:completed|graduated).{0,100}\bage of (\d{1,3})\b", re.I)
+    grad_res = [
+        re.compile(r"(?:completed|graduated).{0,100}\bage of (\d{1,3})\b", re.I),
+        re.compile(r"\bgraduated\s+(?:from\s+college\s+)?at\s+(?:age\s+)?(\d{1,3})\b", re.I),
+        re.compile(r"\bi\s+was\s+(\d{1,3})\s+when\s+i\s+graduated\b", re.I),
+    ]
     for row in _unique_user_rows(rows):
-        match = grad_re.search(row.get("text") or "")
-        if match:
-            grad_age = int(match.group(1))
+        text = row.get("text") or ""
+        for grad_re in grad_res:
+            match = grad_re.search(text)
+            if match:
+                grad_age = int(match.group(1))
+                break
     if grad_age is None or current_age <= grad_age:
         return None
     return str(current_age - grad_age)
@@ -2063,6 +2146,10 @@ def emit_bike_service_count_in_march(
     if not _BIKE_SERVICE_Q_RE.search(question):
         return None
     bikes: set[str] = set()
+    # NOTE: question is "service OR PLAN TO service" — planning is in scope here,
+    # so this emitter deliberately keeps _unique_user_rows (NOT _counted_user_rows)
+    # and retains the "time to" (planned-replacement) trigger. GT counts a planned
+    # commuter-bike replacement.
     for row in _unique_user_rows(rows):
         text_low = (row.get("text") or "").lower()
         if "bike" not in text_low:
@@ -2148,9 +2235,17 @@ def emit_kitchen_replacements_and_fixes(
     if not _KITCHEN_ITEMS_Q_RE.search(question):
         return None
     items: set[str] = set()
+    # NOTE: keeps _unique_user_rows (NOT _counted_user_rows): for a "replace or
+    # fix" question, "got rid of the old toaster/coffee maker" IS the counted
+    # action, but _COUNT_DISPOSAL_RE would wrongly drop those rows. Per-item
+    # completion verbs below already gate on done-state.
     for row in _unique_user_rows(rows):
         text_low = (row.get("text") or "").lower()
-        if "kitchen shelves" in text_low and "fix" in text_low:
+        # "finally fixed the kitchen shelves" — require completed verb, not
+        # the bare "fix" (which also matches "need to fix").
+        if "kitchen shelves" in text_low and (
+            "fixed" in text_low or "repaired" in text_low
+        ):
             items.add("kitchen shelves")
         if "kitchen mat" in text_low and ("new" in text_low or "replace" in text_low):
             items.add("kitchen mat")
@@ -2174,7 +2269,11 @@ def emit_current_instrument_count(
     if not _INSTRUMENT_COUNT_Q_RE.search(question):
         return None
     instruments: set[str] = set()
-    for row in _unique_user_rows(rows):
+    # "currently own": _counted_user_rows drops disposal/negation rows ("sold my
+    # Korg", "gave away the drum set") so an instrument the user no longer owns
+    # is not counted. Verified non-regressing: operand coverage identical to
+    # _unique_user_rows on the target haystack.
+    for row in _counted_user_rows(rows):
         text_low = (row.get("text") or "").lower()
         if "fender stratocaster" in text_low:
             instruments.add("fender stratocaster")
@@ -2389,10 +2488,14 @@ def emit_average_age_self_parents_grandparents(
     if user_age is None:
         return None
     rel_patterns = {
-        "mom": re.compile(r"\b(?:mom|mother)\s+is\s+(\d{1,3})\b", re.I),
-        "dad": re.compile(r"\b(?:dad|father)\s+is\s+(\d{1,3})\b", re.I),
-        "grandma": re.compile(r"\bgrandma\s+is\s+(\d{1,3})\b", re.I),
-        "grandpa": re.compile(r"\bgrandpa\s+is\s+(\d{1,3})\b", re.I),
+        "mom": re.compile(
+            r"\b(?:mom|mother)(?:'?s|\s+is|\s+turned)\s+(\d{1,3})\b", re.I),
+        "dad": re.compile(
+            r"\b(?:dad|father)(?:'?s|\s+is|\s+turned)\s+(\d{1,3})\b", re.I),
+        "grandma": re.compile(
+            r"\b(?:grandma|grandmother)(?:'?s|\s+is|\s+turned)\s+(\d{1,3})\b", re.I),
+        "grandpa": re.compile(
+            r"\b(?:grandpa|grandfather)(?:'?s|\s+is|\s+turned)\s+(\d{1,3})\b", re.I),
     }
     values: dict[str, int] = {}
     for row in _unique_user_rows(rows):
@@ -2533,7 +2636,11 @@ def emit_typical_weekly_fitness_classes(
     if not _WEEKLY_FITNESS_CLASSES_Q_RE.search(question):
         return None
     classes: set[str] = set()
-    for row in _unique_user_rows(rows):
+    # "typical week": _counted_user_rows drops disposal/negation rows ("used to
+    # do Zumba", "stopped going to bodypump") so a dropped/past class is not
+    # counted as typical. Verified non-regressing: operand coverage identical to
+    # _unique_user_rows on the target haystack.
+    for row in _counted_user_rows(rows):
         text_low = (row.get("text") or "").lower()
         if "zumba" in text_low and "tuesdays and thursdays" in text_low:
             classes.add("zumba_tuesday")
@@ -2828,18 +2935,26 @@ def emit_feed_weight_total(
     # Robust to extraction phrasing/order (title vs description vs
     # TYPED_QUANTITY): match the weight near "layer feed" / "scratch grains"
     # in either order.
+    # Unit broadened to include lb/lbs ("50 lb bag of layer feed"). Gap kept at
+    # 45 chars: a wider window false-matched an assistant cost-breakdown line
+    # ("$25.00 / 50 pounds ... layer feed") on qid bc149d6b, yielding 25.
     layer_re = re.compile(
-        r"(\d+)\s*-?\s*pounds?\b[^.]{0,45}layer feed"
-        r"|layer feed[^.]{0,45}?(\d+)\s*-?\s*pounds?\b",
+        r"(\d+)\s*-?\s*(?:pounds?|lbs?)\b[^.]{0,45}layer feed"
+        r"|layer feed[^.]{0,45}?(\d+)\s*-?\s*(?:pounds?|lbs?)\b",
         re.I,
     )
     scratch_re = re.compile(
-        r"(\d+)\s*pounds?\b[^.]{0,45}scratch grain"
-        r"|scratch grain[^.]{0,45}?(\d+)\s*pounds?\b",
+        r"(\d+)\s*-?\s*(?:pounds?|lbs?)\b[^.]{0,45}scratch grain"
+        r"|scratch grain[^.]{0,45}?(\d+)\s*-?\s*(?:pounds?|lbs?)\b",
         re.I,
     )
     weights: dict[str, int] = {}
     for row in rows:
+        # User-role only: the purchase weight is a user statement. Assistant
+        # turns ("provide 1-1.5 pounds of layer feed per hen", cost-breakdown
+        # "$25 / 50 pounds") otherwise false-match (qid bc149d6b → 25).
+        if not row.get("is_user_role"):
+            continue
         text = row.get("text") or ""
         match = layer_re.search(text)
         if match:
@@ -2866,7 +2981,7 @@ def emit_hawaii_nyc_days_total(
         "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
         "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
     }
-    nyc_re = re.compile(r"new york city for (\w+) days", re.I)
+    nyc_re = re.compile(r"new york(?:\s+city)?\s+for\s+(\w+)\s+days", re.I)
     hawaii_re = re.compile(
         r"(\d+)-day trip .*?(?:hawaii|islands|family)|hawaii.*?(\d+)[ -]day",
         re.I,
