@@ -333,11 +333,16 @@ profiles:
             off", "getting back into") contributes 0; and never count
             preferences or assistant suggestions as items done.
             (targets 7024f17c: lapsed/aspirational yoga = 0h → 0.5h)
-        (2) Count UNIQUE entities by CANONICAL KIND. Do NOT split one
-            entity via a technique / ingredient / single dish (a
-            fermentation workshop is NOT a cuisine). MERGE mentions
-            sharing the same host / place / session / date.
-            (targets d23cf73b: sauerkraut technique excluded → 4)
+        (2) Do NOT split ONE entity across its technique / ingredient /
+            single dish (a fermentation workshop is NOT a separate
+            cuisine). BUT two items with DIFFERENT names, hosts, or
+            dates are DISTINCT — count them SEPARATELY; do NOT merge
+            distinct items into one. When unsure whether two mentions
+            are the same item, treat them as DISTINCT (undercount is
+            the dominant failure).
+            (targets d23cf73b: sauerkraut technique ≠ cuisine → 4;
+            and stops the over-merge that under-counted distinct
+            citrus / festivals / weddings / devices)
         (3) For LOOSE-RECENCY windows ("last month / past month /
             recently"), an item the USER labels with the SAME loose
             phrase COUNTS — do not apply a strict calendar cutoff to
