@@ -141,6 +141,7 @@ for ((i=0; i<N_PARALLEL; i++)); do
         --llm-rerank --rerank-model openai:openai/gpt-5.4-mini \
         --rerank-reasoning-effort low --rerank-pool 100 \
         --agg-max-context-chars 15000 \
+        --extract-typed-attributes \
         --question-ids "$IDS_CSV" \
         --output-dir "$OUTDIR" \
         --batch-mode --llm-eval \
