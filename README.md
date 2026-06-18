@@ -2,14 +2,27 @@
 
 <h1>CogniFold: Always-On Proactive Memory<br/>via Cognitive Folding</h1>
 
-<a href="https://huggingface.co/datasets/OpenNorve/CogEval-Bench" target="_blank"><img alt="CogEval-Bench Dataset" src="https://img.shields.io/badge/Dataset-CogEval--Bench-FFD21E?logo=huggingface&logoColor=black" height="22px"></a>
-<a href="https://arxiv.org/abs/2605.13438" target="_blank"><img alt="Paper" src="https://img.shields.io/badge/Technical_Report-arXiv-EC1C24?logo=arxiv&logoColor=white" height="22px"></a>
-<a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/License-Apache--2.0-blue.svg" height="22px"></a>
-<a href="https://www.python.org/"><img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white" height="22px"></a>
+<a href="https://opennorve.github.io/CogniFold/" target="_blank"><img alt="Live Demo" src="https://img.shields.io/badge/%F0%9F%A7%A0_Live_Demo-opennorve.github.io-7C3AED?style=flat-square" height="22px"></a>
+<a href="https://opennorve.github.io/CogniFold/" target="_blank"><img alt="Brain Memory Coverage" src="https://img.shields.io/badge/Brain_Memory_Coverage-~60%25-8B5CF6?style=flat-square" height="22px"></a>
+<a href="https://arxiv.org/abs/2605.13438" target="_blank"><img alt="Paper" src="https://img.shields.io/badge/Technical_Report-arXiv-B31B1B?logo=arxiv&logoColor=white&style=flat-square" height="22px"></a>
+<a href="https://huggingface.co/datasets/OpenNorve/CogEval-Bench" target="_blank"><img alt="CogEval-Bench Dataset" src="https://img.shields.io/badge/Dataset-CogEval--Bench-FFD21E?logo=huggingface&logoColor=black&style=flat-square" height="22px"></a>
+<br/>
+<a href="https://github.com/OpenNorve/CogniFold/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/OpenNorve/CogniFold/actions/workflows/ci.yml/badge.svg?branch=main" height="22px"></a>
+<a href="docs/INTEGRATIONS.md"><img alt="MCP" src="https://img.shields.io/badge/MCP-Claude_Code_·_Desktop_·_Cursor-000000?style=flat-square" height="22px"></a>
+<a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/License-Apache--2.0-2563EB?style=flat-square" height="22px"></a>
+<a href="https://www.python.org/"><img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white&style=flat-square" height="22px"></a>
 
 </div>
 
-<p><em>A <strong>brain-inspired always-on agent memory</strong> that folds continuously arriving events into self-emerging cognitive structure — designed for the next generation of proactive assistants.</em></p>
+<p><em>A <strong>brain-inspired always-on agent memory</strong> that folds continuously arriving events into self-emerging cognitive structure — designed for the next generation of proactive assistants. Neural-inspired by design: memory systems are mapped to the brain regions that implement them, not metaphorically borrowed.</em></p>
+
+<p align="center"><strong>🧠 Brain Memory Coverage: ~60%</strong> of the human memory taxonomy modeled (working, episodic, semantic, prospective, temporal) — see the live breakdown at <a href="https://opennorve.github.io/CogniFold/">opennorve.github.io/CogniFold</a> or query <code>GET /api/v1/brain/coverage</code>.</p>
+
+<div align="center">
+
+<a href="https://opennorve.github.io/CogniFold/"><b>🌐 Live Demo</b></a> &nbsp;·&nbsp; <a href="docs/ARCHITECTURE.md"><b>🏗️ Architecture</b></a> &nbsp;·&nbsp; <a href="docs/DEPLOYMENT.md"><b>🚀 Deploy</b></a> &nbsp;·&nbsp; <a href="docs/INTEGRATIONS.md"><b>🔌 Integrations</b></a> &nbsp;·&nbsp; <a href="docs/PROMPTS.md"><b>✍️ Prompt Profiles</b></a> &nbsp;·&nbsp; <a href="docs/NORTH_STAR_METHODOLOGY.md"><b>🧭 North Star</b></a>
+
+</div>
 
 <div align="center">
 
@@ -26,8 +39,10 @@
 - [🎬 Demo](#-demo)
 - [🛠️ Installation](#️-installation)
 - [🚀 Quick Start](#-quick-start)
+- [🔌 Integrations & Deployment](#-integrations--deployment)
 - [⚙️ Key Configurations](#️-key-configurations)
 - [🔁 Benchmark Evaluation](#-benchmark-evaluation)
+- [🗺️ Roadmap: modeling the rest of the brain](#️-roadmap-modeling-the-rest-of-the-brain)
 - [📂 Project Structure](#-project-structure)
 - [🔗 Citation](#-citation)
 - [📜 License](#-license)
@@ -91,7 +106,7 @@ Details and tunables: [⚙️ Key Configurations](#️-key-configurations).
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/MergeFold/CogniFold.git
+git clone https://github.com/OpenNorve/CogniFold.git
 cd CogniFold
 
 # 2. Install (pick one)
@@ -190,6 +205,17 @@ curl -X POST http://localhost:8000/api/v1/sessions
 curl http://localhost:8000/docs                 # OpenAPI / Swagger UI
 ```
 
+## 🔌 Integrations & Deployment
+
+CogniFold is more than a library — it ships as an HTTP service, an MCP server, and a live showcase, so it drops into existing agent stacks without glue code.
+
+| Surface | How | Docs |
+|---|---|---|
+| **MCP server** | Plug CogniFold memory into Claude Code / Claude Desktop / Cursor — `pip install 'cognifold[mcp]'`, then run `cognifold-mcp`. Tools: `remember`, `query`, `graph_stats`, `list_intents`. | [INTEGRATIONS.md](docs/INTEGRATIONS.md) |
+| **One-command backend** | `make serve` (local) · `docker compose up` (container) · Cloud Run (CD already wired). | [DEPLOYMENT.md](docs/DEPLOYMENT.md) |
+| **Scenario prompt profiles** | `cognifold --list-profiles`; then `run`/`query --profile <name>` to switch scenario-tuned prompts. | [PROMPTS.md](docs/PROMPTS.md) |
+| **Brain-coverage API** | `GET /api/v1/brain/coverage` — the live data behind the [brain visualization](https://opennorve.github.io/CogniFold/). | [Live site](https://opennorve.github.io/CogniFold/) |
+
 ## ⚙️ Key Configurations
 
 ### Retrieval modes (Memory Query Agent)
@@ -233,6 +259,24 @@ Environment overrides accepted by `scripts/reproduce.sh`: `MODEL=...`, plus the 
 
 ## 🔁 Benchmark Evaluation
 
+### Headline results
+
+| Benchmark | Metric | CogniFold | Note |
+|---|---|:---:|---|
+| **CogEval-Bench** | Proactivity | **0.614** | only system non-zero on Purity **and** Proactivity |
+| **BABILong** | EM | **96.0%** | intent routing |
+| **SafetyBench** | Accuracy | **94.3%** | exceeds GPT-4 zero-shot (88.9%) |
+| **MuTual** | Accuracy | **93.2%** | near-SOTA dialogue coherence |
+| **ToMi** | EM | **91.6%** | symbolic belief tracker |
+| **LoCoMo** | J-Score | **82.8%** | +15.9 pp over Mem0 (Mem0 protocol, `--event-stream`) |
+| **StreamingQA** | EM / F1 | **78.4% / 0.573** | streaming temporal QA |
+| **NarrativeQA** | F1 / ROUGE-L | **0.720 / 0.712** | long-form comprehension |
+| **MuSiQue** | EM / F1 | **41.2% / 0.587** | exceeds HippoRAG 2 (F1 0.486) |
+
+<sub>Full protocol, dates, and ablations in <a href="docs/BENCHMARK.md">docs/BENCHMARK.md</a>. Numbers reproduce via <code>bash scripts/reproduce.sh</code>.</sub>
+
+### Running the suite
+
 One wrapper for everything — sane defaults, dataset auto-downloaded on first run, paper-faithful flags applied per benchmark.
 
 ```bash
@@ -254,6 +298,16 @@ bash scripts/reproduce.sh all
 ```
 
 Each run writes `benchmarks/<name>/output/benchmark_results.json`. Override the reader model via env: `MODEL=openai:gpt-4o bash scripts/reproduce.sh locomo`. The `--event-stream` flag is **automatically applied to LoCoMo** (it gates the inter-session consolidation pass central to the always-on memory thesis); all other benchmarks discharge consolidation through the shared `base_runner` post-ingestion hook.
+
+## 🗺️ Roadmap: modeling the rest of the brain
+
+CogniFold maps its mechanisms onto the human-memory taxonomy (Squire + Baddeley + CoALA) and reports an **honest coverage figure** — currently **~60%**. The live, machine-readable breakdown is `GET /api/v1/brain/coverage` and the interactive view is the [showcase site](https://opennorve.github.io/CogniFold/). True to the [North Star](docs/NORTH_STAR_METHODOLOGY.md), a mechanism only counts once it earns measurable payoff — we don't claim biological fidelity we haven't shipped.
+
+| Status | Memory system | In CogniFold |
+|:--:|---|---|
+| ✅ Covered | Working · Episodic · Semantic · Prospective (intent) | hierarchical context · `event`/`concept`/`intent` nodes |
+| 🟡 Partial | Temporal · Consolidation · Forgetting | `time` nodes · inter-session consolidation · recency decay + prune |
+| ⬜ Planned | Procedural · Priming · Conditioning · Affective tagging · Sensory | tracked on the coverage map; pulled in as tasks demand them |
 
 ## 📂 Project Structure
 

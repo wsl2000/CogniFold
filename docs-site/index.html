@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CogniFold — A brain-inspired always-on agent memory</title>
+  <meta name="description" content="CogniFold folds events into self-emerging cognitive structure: a brain-inspired, always-on agent memory with proactive intent crystallization. ~60% of human memory systems modeled." />
+  <link rel="canonical" href="https://opennorve.github.io/CogniFold/" />
+  <meta name="theme-color" content="#ffffff" />
+  <meta name="color-scheme" content="light" />
+
+  <!-- Favicon (neural brain glyph) -->
+  <link rel="icon" type="image/svg+xml" href="favicon.svg" />
+  <link rel="apple-touch-icon" href="favicon.svg" />
+
+  <!-- Open Graph -->
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="CogniFold" />
+  <meta property="og:title" content="CogniFold — A brain-inspired always-on agent memory" />
+  <meta property="og:description" content="An always-on agent memory that folds events into self-emerging cognitive structure. ~60% of human memory systems modeled, with proactive intent crystallization." />
+  <meta property="og:url" content="https://opennorve.github.io/CogniFold/" />
+  <meta property="og:image" content="https://opennorve.github.io/CogniFold/assets/og-image.svg" />
+  <meta property="og:image:type" content="image/svg+xml" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:image:alt" content="CogniFold — a brain-inspired agent memory; ~60% of human memory systems modeled." />
+
+  <!-- Twitter / X card -->
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="CogniFold — A brain-inspired always-on agent memory" />
+  <meta name="twitter:description" content="An always-on agent memory that folds events into self-emerging cognitive structure. ~60% of human memory systems modeled." />
+  <meta name="twitter:image" content="https://opennorve.github.io/CogniFold/assets/og-image.svg" />
+  <meta name="twitter:image:alt" content="CogniFold — memory-system coverage map." />
+
+  <!-- System fonts only; no web-font dependency. -->
+  <link rel="stylesheet" href="css/styles.css" />
+</head>
+<body>
+
+  <!-- ============ Sticky translucent nav ============ -->
+  <header class="nav" id="nav">
+    <div class="nav__inner">
+      <a class="nav__brand" href="#top" aria-label="CogniFold home">
+        <span class="nav__mark" aria-hidden="true">
+          <svg viewBox="0 0 40 40" width="28" height="28">
+            <path d="M8 26 Q10 10 20 10 Q30 10 32 26 Q26 32 20 30 Q14 32 8 26 Z"
+                  fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" />
+            <path d="M20 11 Q19 20 20 30 M13 14 Q19 18 13 24 M27 14 Q21 18 27 24"
+                  fill="none" stroke="currentColor" stroke-width="1.1" opacity="0.7" />
+          </svg>
+        </span>
+        <span class="nav__word">CogniFold</span>
+      </a>
+      <nav class="nav__links" id="navLinks" aria-label="Primary">
+        <a href="#brain">The Brain</a>
+        <a href="#architecture">Architecture</a>
+        <a href="#benchmarks">Results</a>
+        <a href="#quickstart">Quickstart</a>
+        <a class="nav__gh" href="https://github.com/OpenNorve/CogniFold" target="_blank" rel="noopener">GitHub</a>
+      </nav>
+      <button class="nav__menu" id="navMenu" aria-label="Toggle navigation" aria-expanded="false">
+        <span></span><span></span><span></span>
+      </button>
+    </div>
+  </header>
+
+  <main id="top">
+    <!-- ============ 1. HERO ============ -->
+    <section class="hero" id="hero">
+      <div class="hero__inner reveal">
+        <p class="hero__eyebrow">Brain-inspired agent memory</p>
+        <h1 class="hero__title">CogniFold</h1>
+        <p class="hero__tagline">
+          An always-on agent memory that folds events into self-emerging
+          cognitive structure, with proactive intent crystallization.
+        </p>
+
+        <div class="hero__ring" id="heroRing" aria-label="Approximately 60 percent of human memory systems modeled">
+          <!-- coverage ring injected by app.js -->
+        </div>
+
+        <div class="hero__cta">
+          <a class="pill pill--ink" href="https://github.com/OpenNorve/CogniFold" target="_blank" rel="noopener">
+            View on GitHub
+          </a>
+          <a class="pill pill--ghost" href="https://arxiv.org/abs/2605.13438" target="_blank" rel="noopener">
+            Read the paper
+          </a>
+        </div>
+
+        <p class="hero__note">Apache-2.0 · Python · MCP-compatible</p>
+
+        <div class="hero__stats" role="list" aria-label="At a glance">
+          <div class="hero__stat" role="listitem"><b>12</b><span>memory systems mapped</span></div>
+          <div class="hero__stat" role="listitem"><b>~60%</b><span>coverage (weight-normalized)</span></div>
+          <div class="hero__stat" role="listitem"><b>9</b><span>public benchmarks reported</span></div>
+        </div>
+      </div>
+      <div class="ink-divider" aria-hidden="true"></div>
+    </section>
+
+    <!-- ============ 2. MEMORY-SYSTEM COVERAGE — interactive map ============ -->
+    <section class="brain-sec" id="brain">
+      <div class="section-head reveal">
+        <p class="kicker">Coverage map</p>
+        <h2 class="display">Memory systems</h2>
+        <p class="lede">
+          CogniFold maps twelve human memory systems onto its topology. Each brain region links to a
+          system — hover, tab, or tap to inspect its mechanism, evidence, and status.
+        </p>
+      </div>
+
+      <div class="brain-layout">
+        <figure class="brain-stage reveal" aria-label="Interactive brain diagram mapping human memory systems to CogniFold mechanisms">
+          <div id="brainHost" class="brain-host"></div>
+          <figcaption class="brain-legend" aria-hidden="true">
+            <span class="lg lg--covered"><i></i>covered</span>
+            <span class="lg lg--partial"><i></i>partial</span>
+            <span class="lg lg--planned"><i></i>planned</span>
+            <span class="lg lg--hint">tab / hover a region</span>
+          </figcaption>
+        </figure>
+
+        <aside class="notebook reveal" aria-live="polite">
+          <article class="notecard" id="notecard">
+            <!-- populated by app.js; full list is in the table below -->
+          </article>
+        </aside>
+      </div>
+
+      <!-- Full reference table: all 12 systems visible at once -->
+      <div class="systbl-wrap reveal">
+        <table class="systbl" id="systemsTable">
+          <caption>All twelve memory systems · mapped to CogniFold mechanisms</caption>
+          <thead>
+            <tr>
+              <th scope="col">Memory system</th>
+              <th scope="col">Taxonomy</th>
+              <th scope="col">Brain region</th>
+              <th scope="col">Status</th>
+              <th scope="col">CogniFold mechanism</th>
+            </tr>
+          </thead>
+          <tbody id="systemsTableBody"><!-- rows injected by app.js --></tbody>
+        </table>
+      </div>
+      <div class="ink-divider ink-divider--flip" aria-hidden="true"></div>
+    </section>
+
+    <!-- ============ 3. ARCHITECTURE — tri-layer CLS loop ============ -->
+    <section class="arch" id="architecture">
+      <div class="section-head reveal">
+        <p class="kicker">Architecture</p>
+        <h2 class="display">The folding loop</h2>
+        <p class="lede">
+          A Complementary Learning Systems design for agents: episodes are captured, folded into
+          concepts, and crystallized forward into intent. Proactive intent is the differentiator.
+        </p>
+      </div>
+
+      <div class="arch__diagram reveal" id="archDiagram" aria-label="Three-layer memory loop: Event, Concept, Intent, anchored by Time">
+        <!-- CLS diagram injected by app.js -->
+      </div>
+
+      <p class="arch__explainer reveal">
+        Every event enters as a verbatim <strong>EVENT</strong> node in the hippocampal layer.
+        As events recur, the agent folds them into generalized <strong>CONCEPT</strong> nodes in the
+        neocortical layer — grounded knowledge with explainable provenance back to the episodes that
+        formed it. From accumulated concepts and time anchors, the prefrontal layer crystallizes
+        <strong>INTENT</strong> nodes: commitments to act at the right future moment. This
+        <strong>proactive intent crystallization</strong> is what sets CogniFold apart from passive
+        memory stores — remembering to act becomes a property of the topology, not a separate policy.
+        Retrieval then closes the loop, letting intent reshape what the agent attends to next.
+      </p>
+
+      <div class="arch__cards">
+        <div class="arch-card reveal" data-layer="event">
+          <span class="arch-card__sigil" aria-hidden="true">α</span>
+          <h3>Hippocampal · EVENT</h3>
+          <p>Verbatim episodes captured the moment they happen — what occurred, when, and to whom.</p>
+        </div>
+        <div class="arch-card reveal" data-layer="concept">
+          <span class="arch-card__sigil" aria-hidden="true">β</span>
+          <h3>Neocortical · CONCEPT</h3>
+          <p>Repeated events fold into grounded, generalized knowledge with explainable reasoning.</p>
+        </div>
+        <div class="arch-card reveal" data-layer="intent">
+          <span class="arch-card__sigil" aria-hidden="true">γ</span>
+          <h3>Prefrontal · INTENT</h3>
+          <p>Concepts and time anchors crystallize into proactive intent — remembering to act, by topology.</p>
+        </div>
+      </div>
+      <p class="arch__note note">Time is the fourth axis, threading through every layer.</p>
+      <div class="ink-divider" aria-hidden="true"></div>
+    </section>
+
+    <!-- ============ 4. BENCHMARKS ============ -->
+    <section class="ledger" id="benchmarks">
+      <div class="section-head reveal">
+        <p class="kicker">Results</p>
+        <h2 class="display">Benchmarks</h2>
+        <p class="lede">CogniFold's measured results on public benchmarks. Figures are CogniFold's own; no competitor numbers are shown.</p>
+      </div>
+      <div class="ledger__grid" id="ledgerGrid">
+        <!-- benchmark cards injected by app.js -->
+      </div>
+      <div class="ink-divider ink-divider--flip" aria-hidden="true"></div>
+    </section>
+
+    <!-- ============ 5. QUICKSTART + INTEGRATIONS ============ -->
+    <section class="quick" id="quickstart">
+      <div class="section-head reveal">
+        <p class="kicker">Quickstart</p>
+        <h2 class="display">Get started</h2>
+        <p class="lede">Install, run the server, and connect any MCP-capable agent.</p>
+      </div>
+
+      <div class="quick__layout">
+        <div class="recipe reveal">
+          <div class="recipe__tab">shell</div>
+          <pre class="recipe__code"><code><span class="c"># install</span>
+pip install cognifold
+
+<span class="c"># run the memory server</span>
+cognifold serve --port 8800
+
+<span class="c"># connect any MCP-capable agent</span>
+cognifold mcp --transport stdio</code></pre>
+        </div>
+
+        <ul class="quick__links reveal" aria-label="Documentation links">
+          <li><a href="../docs/DEPLOYMENT.md"><span class="idx">01</span> Deployment guide</a></li>
+          <li><a href="../docs/INTEGRATIONS.md"><span class="idx">02</span> Integrations &amp; MCP</a></li>
+          <li><a href="../docs/PROMPTS.md"><span class="idx">03</span> Prompt library</a></li>
+          <li><a href="https://github.com/OpenNorve/CogniFold" target="_blank" rel="noopener"><span class="idx">04</span> Source on GitHub</a></li>
+        </ul>
+      </div>
+      <div class="ink-divider" aria-hidden="true"></div>
+    </section>
+  </main>
+
+  <!-- ============ 6. FOOTER ============ -->
+  <footer class="footer">
+    <div class="footer__inner reveal">
+      <p class="footer__brand display">CogniFold</p>
+      <p class="footer__meta">
+        Apache-2.0 ·
+        <a href="https://arxiv.org/abs/2605.13438" target="_blank" rel="noopener">arXiv:2605.13438</a> ·
+        <a href="https://github.com/OpenNorve/CogniFold" target="_blank" rel="noopener">OpenNorve / CogniFold</a>
+      </p>
+    </div>
+  </footer>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
