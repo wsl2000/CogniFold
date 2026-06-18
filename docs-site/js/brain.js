@@ -1,8 +1,9 @@
 // brain.js — the interactive "Memory Brain", rendered as clean neural ink.
-// Crisp vector SVG (no hand-drawn/rough styling): a smooth brain outline, ink
-// region shapes, and a neuron network whose synapses pulse with an electric
-// accent on interaction, plus a slow ambient idle shimmer. Honors
-// prefers-reduced-motion (then static).
+// Crisp vector SVG (no hand-drawn/rough styling): a smooth brain outline, soft
+// elliptical region shapes placed anatomically, labels lifted into the margins
+// with thin leader lines (so nothing overlaps), and a neuron network whose
+// synapses pulse with an electric accent on interaction, plus a slow ambient
+// idle shimmer. Honors prefers-reduced-motion (then static).
 //
 // Pure native SVG — no external library — so it always renders.
 
@@ -28,73 +29,74 @@ const reduceMotion =
   window.matchMedia &&
   window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-// --- Region geometry (lateral view, hand-tuned) -------------------------
-// Each region: closed polygon, a label anchor, and the memory systems it hosts.
+// --- Region geometry (lateral view, frontal lobe facing left) -----------
+// Each region is a soft ellipse (cx, cy, rx, ry) placed anatomically inside
+// the cerebrum hull, plus the memory systems it hosts and a margin label
+// (labelAt / labelAnchor) connected back to the region by a thin leader line.
 const REGIONS = [
   {
     id: "prefrontal",
     label: "prefrontal cortex",
     systems: ["working", "prospective"],
-    labelAt: [150, 150],
-    poly: [[120, 250], [110, 190], [140, 150], [210, 140], [250, 175], [235, 235], [185, 270]],
+    cx: 224, cy: 200, rx: 48, ry: 44,
+    labelAt: [38, 150], labelAnchor: "start",
   },
   {
     id: "neocortex",
     label: "neocortex",
     systems: ["semantic", "priming"],
-    labelAt: [430, 95],
-    poly: [[235, 150], [300, 110], [400, 95], [500, 110], [560, 160], [520, 215], [420, 215], [320, 210], [250, 190]],
-  },
-  {
-    id: "hippocampus",
-    label: "hippocampus",
-    systems: ["episodic", "temporal"],
-    labelAt: [355, 365],
-    poly: [[300, 320], [360, 300], [420, 315], [445, 345], [410, 372], [345, 372], [305, 350]],
-  },
-  {
-    id: "basal",
-    label: "basal ganglia",
-    systems: ["procedural"],
-    labelAt: [470, 300],
-    poly: [[440, 270], [500, 260], [545, 285], [535, 325], [480, 330], [450, 305]],
-  },
-  {
-    id: "amygdala",
-    label: "amygdala",
-    systems: ["affective", "conditioning"],
-    labelAt: [275, 395],
-    poly: [[250, 360], [295, 350], [320, 375], [300, 405], [255, 400], [240, 380]],
-  },
-  {
-    id: "cerebellum",
-    label: "cerebellum",
-    systems: ["procedural"],
-    labelAt: [600, 380],
-    poly: [[540, 320], [620, 310], [675, 350], [675, 420], [610, 450], [545, 420], [525, 365]],
+    cx: 392, cy: 170, rx: 94, ry: 46,
+    labelAt: [392, 78], labelAnchor: "middle",
   },
   {
     id: "sensory",
     label: "sensory cortices",
     systems: ["sensory"],
-    labelAt: [555, 130],
-    poly: [[505, 115], [575, 130], [600, 170], [560, 200], [515, 185], [510, 145]],
+    cx: 534, cy: 200, rx: 48, ry: 42,
+    labelAt: [726, 150], labelAnchor: "end",
+  },
+  {
+    id: "basal",
+    label: "basal ganglia",
+    systems: ["procedural"],
+    cx: 374, cy: 240, rx: 40, ry: 26,
+    labelAt: [726, 234], labelAnchor: "end",
+  },
+  {
+    id: "hippocampus",
+    label: "hippocampus",
+    systems: ["episodic", "temporal"],
+    cx: 372, cy: 292, rx: 54, ry: 26,
+    labelAt: [300, 396], labelAnchor: "middle",
+  },
+  {
+    id: "amygdala",
+    label: "amygdala",
+    systems: ["affective", "conditioning"],
+    cx: 288, cy: 292, rx: 30, ry: 24,
+    labelAt: [38, 322], labelAnchor: "start",
+  },
+  {
+    id: "cerebellum",
+    label: "cerebellum",
+    systems: ["procedural"],
+    cx: 554, cy: 318, rx: 58, ry: 40,
+    labelAt: [726, 332], labelAnchor: "end",
   },
 ];
 
 // Annotated nodes (not anatomical regions): consolidation & forgetting.
 const ANNOT_NODES = [
-  { id: "consolidation", at: [320, 470], leadTo: [400, 360], label: "consolidation" },
-  { id: "forgetting", at: [600, 480], leadTo: [560, 400], label: "forgetting" },
+  { id: "consolidation", at: [150, 432], leadTo: [372, 318], label: "consolidation" },
+  { id: "forgetting", at: [566, 432], leadTo: [470, 296], label: "forgetting" },
 ];
 
 // Brain outer hull (the iconic side-profile cortex) for the inked outline.
 const HULL = [
-  [110, 250], [105, 185], [150, 130], [240, 100], [360, 86],
-  [480, 92], [575, 120], [630, 165], [660, 215],
-  [675, 345], [678, 420], [620, 458], [545, 430],
-  [470, 445], [400, 455], [320, 470], [255, 440],
-  [220, 405], [180, 380], [150, 340], [122, 300],
+  [160, 250], [152, 190], [180, 150], [235, 122], [320, 107],
+  [420, 105], [510, 120], [565, 150], [592, 195], [590, 248],
+  [560, 292], [495, 315], [420, 325], [345, 326], [285, 318],
+  [238, 300], [198, 278],
 ];
 
 // --- helpers ------------------------------------------------------------
@@ -112,13 +114,6 @@ function aggregateStatus(systemIds, systemsById) {
     if (s === "partial") best = "partial";
   }
   return best;
-}
-
-function centroid(poly) {
-  const n = poly.length;
-  let x = 0, y = 0;
-  for (const [px, py] of poly) { x += px; y += py; }
-  return [x / n, y / n];
 }
 
 // Catmull-Rom → cubic Bézier: turns a point loop into a smooth closed path.
@@ -194,28 +189,26 @@ export function renderBrain(host, data, onSelect) {
   }));
   // a couple of smooth gyri folds
   lHull.appendChild(el("path", {
-    d: "M 160 220 C 240 180 330 205 410 175 C 470 153 530 195 580 180",
-    fill: "none", stroke: PALETTE.line, "stroke-width": 1, opacity: 0.6,
+    d: "M 200 196 C 280 166 360 192 440 170 C 498 152 545 186 575 176",
+    fill: "none", stroke: PALETTE.line, "stroke-width": 1, opacity: 0.55,
   }));
   lHull.appendChild(el("path", {
-    d: "M 150 300 C 250 280 350 300 450 280 C 510 268 560 295 560 300",
-    fill: "none", stroke: PALETTE.line, "stroke-width": 1, opacity: 0.6,
+    d: "M 196 256 C 280 240 360 256 440 240 C 496 229 545 252 560 256",
+    fill: "none", stroke: PALETTE.line, "stroke-width": 1, opacity: 0.55,
   }));
-  // brain stem
+  // brain stem (between cerebrum and cerebellum, curving down)
   lHull.appendChild(el("path", {
-    d: "M 330 470 C 330 500 345 525 360 540",
+    d: "M 458 318 C 456 350 466 382 480 404",
     fill: "none", stroke: PALETTE.ink, "stroke-width": 1.8, "stroke-linecap": "round",
   }));
 
   // ---- neuron network ----
-  const realRegions = REGIONS.filter((r) => r.poly);
   const neuronPts = [];
-  realRegions.forEach((reg) => {
-    const [cx, cy] = centroid(reg.poly);
+  REGIONS.forEach((reg) => {
     const status = aggregateStatus(reg.systems, systemsById);
-    neuronPts.push({ x: cx, y: cy, status, color: PALETTE[status], regionId: reg.id });
+    neuronPts.push({ x: reg.cx, y: reg.cy, status, color: PALETTE[status], regionId: reg.id });
   });
-  const filler = [[210, 200], [380, 150], [470, 180], [300, 250], [430, 250], [500, 360], [250, 320]];
+  const filler = [[300, 150], [455, 148], [330, 208], [462, 212], [262, 250], [474, 286]];
   filler.forEach(([x, y]) => {
     neuronPts.push({ x, y, status: "covered", color: PALETTE.covered, regionId: null, scale: 0.6 });
   });
@@ -260,7 +253,7 @@ export function renderBrain(host, data, onSelect) {
 
   // ---- interactive regions ----
   const regionEls = new Map();
-  realRegions.forEach((reg) => {
+  REGIONS.forEach((reg) => {
     const status = aggregateStatus(reg.systems, systemsById);
     const color = PALETTE[status];
     const g = el("g", {
@@ -271,24 +264,34 @@ export function renderBrain(host, data, onSelect) {
     });
     g.dataset.region = reg.id;
 
-    const shape = el("path", {
-      d: smoothClosedPath(reg.poly),
+    // Leader line from the margin label to the region centre — drawn first so
+    // the ellipse covers its inner end (reads as touching the region edge).
+    g.appendChild(el("line", {
+      class: "region__leader",
+      x1: reg.labelAt[0], y1: reg.labelAt[1] - 4, x2: reg.cx, y2: reg.cy,
+      stroke: PALETTE.line, "stroke-width": 0.9, opacity: 0.45,
+    }));
+
+    const shape = el("ellipse", {
+      cx: reg.cx, cy: reg.cy, rx: reg.rx, ry: reg.ry,
       fill: status === "planned" ? "none" : color,
       "fill-opacity": status === "covered" ? 0.14 : 0.08,
       stroke: color,
       "stroke-width": status === "planned" ? 1.1 : 1.6,
       "stroke-opacity": STATUS_ALPHA[status],
-      "stroke-linejoin": "round",
     });
     if (status === "planned") shape.setAttribute("stroke-dasharray", "4 5");
     g.appendChild(shape);
 
-    // transparent hit area
-    g.appendChild(el("path", { class: "region__hit", d: smoothClosedPath(reg.poly), fill: "transparent" }));
+    // transparent hit area (a touch larger than the shape)
+    g.appendChild(el("ellipse", {
+      class: "region__hit", cx: reg.cx, cy: reg.cy, rx: reg.rx + 4, ry: reg.ry + 4, fill: "transparent",
+    }));
 
-    // label
-    const [lx, ly] = reg.labelAt;
-    const label = el("text", { class: "region__label", x: lx, y: ly, "text-anchor": "middle" });
+    // margin label
+    const label = el("text", {
+      class: "region__label", x: reg.labelAt[0], y: reg.labelAt[1], "text-anchor": reg.labelAnchor || "middle",
+    });
     label.textContent = reg.label;
     g.appendChild(label);
 
