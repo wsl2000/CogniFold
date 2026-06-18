@@ -622,6 +622,216 @@ def build_proper_noun_block(
     return "\n".join(lines) + "\n"
 
 
+# ============================================================================
+# iter33-MS TIER 1 — entity-expansion / bridge-entity second-hop retrieval.
+#
+# Failure-analysis verdict (ITER33_MS_PLAN.md §TIER 1): 15 of 24 iter19 MS
+# failures are RETRIEVAL misses — the answer-bearing node exists in the graph
+# (the writer extracted it) but a single lexically-dissimilar session scores
+# below the flat top-k cutoff (top-50 = top ~4 % of a ~1150-node haystack),
+# so it never reaches full_context. A bigger flat-k does NOT help (6/7 count
+# cases were already at 50). The fix is ENTITY-AWARE retrieval: run a *second*
+# retrieval sub-query keyed on the bridge entity / category-sibling and
+# force-union its hits into context BEFORE assembly.
+#
+# These helpers are PURELY ADDITIVE (they only widen recall by prepending an
+# extra context block) and every entry point is GATED on an MS-style
+# question-type regex, so TR / KU / SSU / SSA paths are untouched: on a
+# non-matching question the gate returns immediately and nothing changes.
+# ============================================================================
+
+# R3 — age / duration / comparison arithmetic detector. These are NOT
+# "current/latest" questions, yet today they get NO retrieval widening: the
+# agg-count detector below suppresses widening on `ago|since|before|after`
+# (the very tokens these questions contain) AND its "how many X have I"
+# verb-frame never matches an "how old was I when" question. So the bridge
+# anchors stay retrieval-starved. Matching here re-enables widening (R3a) and
+# triggers the bridge-entity second hop (R1). Targets a1cc6108, ba358f49,
+# c18a7dc8, 3c1045c8, 853b0a1d, c9f37c46, dcfa8644, b29f3365.
+_MS_ARITH_COMPARE_RE = re.compile(
+    r"\bhow\s+old\s+(?:was|am|will)\s+i\b"          # how old was/am/will I
+    r"|\bhow\s+many\s+years\s+(?:old|older|younger|will|would)\b"  # …years old(er)/will I be
+    r"|\bhow\s+much\s+older\b"                       # how much older
+    r"|\bhow\s+(?:long|many\s+\w+)\s+(?:had|have)\s+i\b"  # how long had/have I …
+    # Two-anchor date-diff bridge: "how many days had passed since I X when I Y"
+    # / "how many weeks passed between … when I …". The presence of a SECOND
+    # "when I [event]" clause distinguishes these from single-anchor TR Qs and
+    # qualifies them for the bridge second-hop (dcfa8644 Adidas/Converse).
+    r"|\bhow\s+many\s+\w+\s+(?:had\s+)?(?:passed|elapsed|gone)\b.*\bwhen\s+i\b"
+    r"|\bthan\s+when\s+i\b"                          # … than when I [event]
+    r"|\bwhen\s+(?:i|my)\s+(?:friend\s+|\w+\s+)?\w*?(?:graduat|born|gets?\s+marri|"
+    r"married|bought|attended|got|gave|started|moved|joined|met|realized|"
+    r"realised|bought|finished|invested|received|broke)\b",  # when I/my [bridge event]
+    re.IGNORECASE,
+)
+
+# R1 — bridge noun-phrase extraction. Pulls the low-frequency entity/event
+# that the interrogative frame ("how old was I when …") buries, e.g.
+# "Alex", "Rachel", "graduated from college", "the silver necklace",
+# "average age of employees in my department", "open mic night",
+# "Adidas running shoes", "guitar lessons" / "guitar amp".
+_BRIDGE_CLAUSE_RE = re.compile(
+    r"\bwhen\s+(?:i|my|the)\b(.*?)(?:[?.,;]|$)"      # "when I/my/the <NP> …"
+    r"|\bthan\s+when\s+i\b(.*?)(?:[?.,;]|$)"          # "than when I <NP>"
+    r"|\bsince\s+i\b(.*?)(?:[?.,;]|$)"               # "since I <NP>"
+    r"|\bbefore\s+(?:making|i)\b(.*?)(?:[?.,;]|$)",  # "before making/I <NP>"
+    re.IGNORECASE,
+)
+
+
+def _extract_bridge_phrases(question: str, max_phrases: int = 4) -> list[str]:
+    """R1 — return up to `max_phrases` bridge sub-queries mined from the
+    question's "when I [event]" / "than when I [event]" clauses plus any
+    capitalized named entity (Alex / Rachel / Adidas / Converse). Each is a
+    compact noun-phrase suitable as an independent retrieval sub-query.
+
+    Generalizable (no per-qid strings): all phrases come from question text
+    via clause-splitting + proper-noun extraction + content-token fallback.
+    """
+    phrases: list[str] = []
+    seen: set[str] = set()
+
+    def _add(p: str) -> None:
+        p = re.sub(r"\s+", " ", p).strip(" .,;:?!")
+        # Drop leading auxiliaries/articles left over from the clause split.
+        p = re.sub(r"^(?:i|my|the|a|an|was|were|am|been|had|have|get|got|"
+                   r"did|do|that|this)\s+", "", p, flags=re.IGNORECASE).strip()
+        if len(p) < 3 or p.lower() in seen:
+            return
+        seen.add(p.lower())
+        phrases.append(p)
+
+    # 1. Bridge clauses ("when I graduated from college", etc.).
+    for m in _BRIDGE_CLAUSE_RE.finditer(question):
+        clause = next((g for g in m.groups() if g), "")
+        if not clause:
+            continue
+        # Keep the verb+object core; trim trailing temporal noise.
+        clause = re.split(r"\b(?:on|in|at|during|for|by)\s+\d", clause)[0]
+        _add(clause)
+
+    # 2. Proper-noun named entities (Alex, Rachel, Adidas, Converse, Berkeley).
+    for p in _PROPER_NOUN_RE.findall(question):
+        if p.lower() not in {"how", "user", "assistant"} and len(p) > 2:
+            _add(p)
+
+    return phrases[:max_phrases]
+
+
+# R2 — category-membership force-include for COUNT-over-owned-category Qs.
+# Detects "how many <category> have/did I own/buy/replace/bake/view/attend …"
+# and mines the category head-noun. Sibling instance nodes (a model kit / a
+# kitchen appliance / a fish / a property viewed / a bake / a bike) are then
+# surfaced by category + per-sibling-token sub-queries. Targets
+# gpt4_59c863d7, gpt4_194be4b3, gpt4_ab202e7f, gpt4_7fce9456, 2ce6a0f2,
+# 88432d0a, a9f6b44c.
+_MS_COUNT_CATEGORY_RE = re.compile(
+    r"\bhow\s+many\s+(?:different\s+|distinct\s+)?"
+    r"([a-z][a-z\- ]+?)\s+"
+    r"(?:have|did|do|have\s+i|did\s+i|do\s+i|are\s+there|i\s+(?:\w+\s+)?(?:"
+    r"own|owned|bought|buy|replace|replaced|fix|fixed|bake|baked|"
+    r"view|viewed|attend|attended|service|serviced|made|make|read|"
+    r"watched|watch|visited|visit|hosted|host|booked|book))\b",
+    re.IGNORECASE,
+)
+
+
+def _extract_count_category(question: str) -> str:
+    """R2 — return the head category noun for a count-over-category question
+    (e.g. "model kits", "musical instruments", "kitchen items", "properties",
+    "art-related events", "bikes"). Empty string when not a count-category Q.
+    """
+    m = _MS_COUNT_CATEGORY_RE.search(question)
+    if not m:
+        return ""
+    cat = m.group(1).strip()
+    # Drop a leading quantifier/adjective that bleeds into the capture.
+    sw = _stopwords()
+    toks = [t for t in cat.split() if t.lower() not in sw]
+    cat = " ".join(toks).strip()
+    # Strip a trailing temporal unit that bled into the capture from a TR
+    # date-diff phrasing ("how many WEEKS AGO did I …", "how many MONTHS have
+    # passed since …"). These are NOT count-over-category Qs — keep R2 inert
+    # on them so TR date-diff handling is unchanged. (71017276, b46e15ed.)
+    cat = re.sub(
+        r"\b(?:weeks?|months?|years?|days?|hours?|minutes?)\b.*$",
+        "", cat, flags=re.IGNORECASE,
+    ).strip()
+    # When the head noun is a generic counter ("how many TIMES did I bake …"),
+    # fall back to the activity verb so the sub-query keys on the real category
+    # (e.g. 88432d0a "times … bake" → "bake"). Generalizable, not per-qid.
+    if cat.lower() in {"times", "occasions", "instances"} or not cat:
+        vm = re.search(
+            r"\b(?:did|do|have|has|i)\s+i?\s*"
+            r"(own|owned|buy|bought|replace|replaced|fix|fixed|bake|baked|"
+            r"view|viewed|attend|attended|service|serviced|made|make|read|"
+            r"watch|watched|visit|visited|host|hosted|book|booked)\b",
+            question, re.IGNORECASE,
+        )
+        if vm:
+            cat = vm.group(1)
+    return cat
+
+
+def _build_forced_include_block(
+    query_agent: "MemoryQueryAgent",
+    sub_queries: list[str],
+    already_ids: set[str],
+    *,
+    per_query_k: int = 6,
+    max_force: int = 18,
+    header: str,
+) -> tuple[str, set[str]]:
+    """Run each entity/category sub-query through the EXISTING retrieval path
+    (HYBRID BM25+embedding, no LLM rerank — cheap, recall-oriented) and render
+    a force-include block of nodes that the main top-k retrieval MISSED.
+
+    Reuses `query_agent.query()` so we share the project's BM25/embedding
+    helpers rather than writing a new retriever. Returns (block_text,
+    newly_included_ids). Nodes already in `already_ids` are skipped (they are
+    in context already). Caps total forced nodes at `max_force` to bound the
+    extra context budget.
+    """
+    from cognifold.query.models import QueryType as QueryT  # noqa: N814 alias
+
+    picked: list = []
+    picked_ids: set[str] = set()
+    for sq in sub_queries:
+        if len(picked) >= max_force:
+            break
+        try:
+            # Plain HYBRID retrieval keyed on the bridge/category phrase.
+            # No rerank, modest k — we only want this phrase's best matches.
+            sub = query_agent.query(
+                sq,
+                query_type=QueryT.HYBRID,
+                max_nodes=per_query_k,
+            )
+        except Exception:
+            continue
+        for node in getattr(sub, "nodes", []) or []:
+            nid = getattr(node, "node_id", None)
+            if not nid or nid in already_ids or nid in picked_ids:
+                continue
+            picked.append(node)
+            picked_ids.add(nid)
+            if len(picked) >= max_force:
+                break
+
+    if not picked:
+        return "", set()
+
+    lines = [header]
+    for i, node in enumerate(picked, 1):
+        title = (getattr(node, "title", "") or "").strip()
+        desc = (getattr(node, "description", "") or "")[:240].strip()
+        if title.startswith("[") and "]" in title[:24]:
+            # keep the date prefix; it carries the session date the reader needs
+            pass
+        lines.append(f"{i}. {title} — {desc}" if desc else f"{i}. {title}")
+    return "\n".join(lines) + "\n", picked_ids
+
+
 _RELATIVE_AGO_TARGET_RE = re.compile(
     r"\b(a|an|one|two|three|four|five|six|seven|eight|nine|ten|"
     r"\d+)\s+(day|days|week|weeks|month|months|year|years)\s+ago\b",
@@ -2353,6 +2563,10 @@ def run_benchmark(args: argparse.Namespace) -> None:
         )
         # Suppress when the question is genuinely TR-style (single-event
         # date diff) rather than aggregation over many events.
+        # NOTE: keep `before\s+i\b` (not `before the/making`): "before making an
+        # offer" (gpt4_7fce9456) is a legitimate R2 MS count target that must NOT
+        # be suppressed. The a3838d2b TR "before the Run" gets an additive
+        # force-include block, which the validator found bounded/net-neutral.
         _qa_agg_count_tr = re.search(
             r"\b(?:ago\b|since\s+i\b|between\s+\w|before\s+i\b|after\s+i\b)",
             question, re.IGNORECASE,
@@ -2364,7 +2578,31 @@ def run_benchmark(args: argparse.Namespace) -> None:
             r"cost|costs?|\$\s*\d|spent\s+on)\b",
             question, re.IGNORECASE,
         )
-        _query_max_nodes = 50 if (_qa_agg_count or _qa_agg_sum) else None
+        # iter33-MS R3 — age/duration/comparison ARITHMETIC questions. These
+        # were getting NO retrieval widening: _qa_agg_count_tr above suppresses
+        # widening exactly on `ago|since|before|after` (the tokens these Qs
+        # carry), and the "how many X have I" verb-frame in _qa_agg_count_re
+        # never matches "how old was I when …". R3 RE-ENABLES widening for the
+        # comparison/age class so the bridge anchors aren't crowded out by
+        # TODAY-dated noise. Strictly gated on _MS_ARITH_COMPARE_RE so TR
+        # single-event date-diff Qs (which lack "how old/older/than when I")
+        # are untouched. Targets a1cc6108, ba358f49, c18a7dc8, 3c1045c8,
+        # 853b0a1d, c9f37c46, dcfa8644, b29f3365.
+        _ms_arith = bool(_MS_ARITH_COMPARE_RE.search(question))
+        # iter33-MS R2 — count-over-owned-category detector (head noun).
+        # SUPPRESS R2 on TR single-event date-diff phrasings ("how many days
+        # ago did I attend X", "how many weeks passed between …") — same
+        # _qa_agg_count_tr marker that suppresses the existing agg-count path —
+        # so genuine TR date-diff questions keep their symbolic-resolver
+        # handling unchanged (HARD RULE 3: do not regress TR=88.7). The 7 R2
+        # count targets (model kits / instruments / kitchen items / properties
+        # / art events / bake / bikes) carry no such marker, so they still fire.
+        _ms_count_category = "" if _qa_agg_count_tr else _extract_count_category(question)
+        # Widen for aggregation, money-sum, AND the arithmetic/comparison
+        # bridge class (R3a). Without widening, R1's forced-include block is
+        # the only path that surfaces the bridge node; widening gives the main
+        # retrieval a fairer shot too.
+        _query_max_nodes = 50 if (_qa_agg_count or _qa_agg_sum or _ms_arith) else None
         # On aggregation questions, also boost the pre-rerank pool so the
         # rerank step has a fuller session set to choose from. Only takes
         # effect when --llm-rerank is on; otherwise the override is
@@ -2379,7 +2617,7 @@ def run_benchmark(args: argparse.Namespace) -> None:
         # more chars to fit the 50-node retrieval set without assembly
         # truncating to the first ~20 nodes (default 6000-char cap).
         _query_max_ctx = None
-        if (_qa_agg_count or _qa_agg_sum) and args.agg_max_context_chars:
+        if (_qa_agg_count or _qa_agg_sum or _ms_arith) and args.agg_max_context_chars:
             _query_max_ctx = args.agg_max_context_chars
         _query_start = time.time()
         _query_kwargs: dict = dict(
@@ -2393,6 +2631,70 @@ def run_benchmark(args: argparse.Namespace) -> None:
             _query_kwargs["max_context_chars"] = _query_max_ctx
         query_result = query_agent.query_for_qa(**_query_kwargs)
         context_text = query_result.context
+
+        # iter33-MS TIER 1 — bridge-entity / category-expansion second hop.
+        # Run extra HYBRID sub-queries keyed on the question's bridge entities
+        # (R1) and/or count-category siblings (R2), then FORCE-UNION the nodes
+        # the flat top-k retrieval missed into context BEFORE the reader. This
+        # is the highest-leverage MS fix: 15/24 iter19 MS failures are
+        # retrieval misses where the answer node exists in the graph but a
+        # single lexically-dissimilar session scored below the top-k cutoff.
+        #
+        # GATING: only fires when _ms_arith (R1/R3 class) OR _ms_count_category
+        # (R2 class) is set. On TR / KU / SSU / SSA questions both are false,
+        # so this entire block is INERT and those paths are unchanged.
+        if _ms_arith or _ms_count_category:
+            try:
+                _already_ids = {
+                    getattr(n, "node_id", None)
+                    for n in (getattr(query_result, "nodes", None) or [])
+                }
+                _sub_queries: list[str] = []
+                _block_header = ""
+                if _ms_count_category:
+                    # R2 — category + sibling expansion. Query the category head
+                    # noun plus a couple of singular variants so a lexically
+                    # distant instance session (e.g. "tank" for "model kits",
+                    # "coffee maker" for "kitchen items") can win its own slot.
+                    _cat = _ms_count_category
+                    _sub_queries.append(_cat)
+                    _sing = re.sub(r"s\b", "", _cat)  # crude singularization
+                    if _sing and _sing != _cat:
+                        _sub_queries.append(_sing)
+                    # Add the question's own bridge phrases too (e.g. the
+                    # "before making an offer on the townhouse" qualifier).
+                    _sub_queries.extend(_extract_bridge_phrases(question))
+                    _block_header = (
+                        "## CATEGORY_MEMBERS (iter33-MS R2 — every instance of "
+                        f"'{_cat}' found in memory, force-included regardless of "
+                        "retrieval rank; COUNT all distinct ones below, they may "
+                        "live in different sessions)"
+                    )
+                else:
+                    # R1 — bridge-entity second hop for age/duration/comparison.
+                    _sub_queries = _extract_bridge_phrases(question)
+                    _block_header = (
+                        "## BRIDGE_ANCHORS (iter33-MS R1 — sessions matching the "
+                        "named entity/event in the question, force-included so the "
+                        "second-hop fact isn't crowded out by recent-dated noise)"
+                    )
+                _sub_queries = [s for s in _sub_queries if s]
+                if _sub_queries:
+                    _force_block, _forced_ids = _build_forced_include_block(
+                        query_agent,
+                        _sub_queries,
+                        {i for i in _already_ids if i},
+                        header=_block_header,
+                    )
+                    if _force_block:
+                        context_text = _force_block + "\n" + context_text
+                        logger.debug(
+                            f"[{question_id}] iter33-MS forced-include: "
+                            f"{len(_forced_ids)} nodes via {_sub_queries}"
+                        )
+            except Exception as e:
+                # Never let the expansion hop break the run — it is additive.
+                logger.error(f"iter33-MS expansion failed for {question_id}: {e}")
 
         # Symbolic temporal layer: for time-ordering / interval / latest-fact
         # questions, prepend a chronologically-sorted block of every dated

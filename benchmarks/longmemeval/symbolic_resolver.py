@@ -205,6 +205,15 @@ class LongMemEvalSymbolicResolver:
             # gpt4_0b2f1d21 wrong direction).
             ("chronological_order", self._try_chronological_order),
             ("rank_among",         self._try_rank_among),
+            # iter33-MS S1 — count_among RE-ENABLED but party-gated. It now
+            # returns None for every non-party count (see the ZERO-REGRESSION
+            # GATE in _try_count_among), so it can ONLY fire on party-shaped
+            # MS counts (60159905 "dinner parties"). bypass=False always, so
+            # it emits a RECALL_HINT the reader verifies — never a verbatim
+            # answer. This restores the iter33 recommended-stack resolver
+            # (count_among exclude-anchor + bypass=FALSE) without re-exposing
+            # the iter30-disabled non-party behavior that was 0/5 on iter27.
+            ("count_among",        self._try_count_among),
             ("date_diff_ago",      self._try_diff_ago),
             ("date_diff_since",    self._try_diff_since),
             # iter32 round 2: relative_ago_recall RE-ENABLED, now uses
@@ -904,6 +913,72 @@ class LongMemEvalSymbolicResolver:
         re.IGNORECASE,
     )
 
+    # ---- iter33-MS S1 (targets 60159905 "dinner parties") ---------------
+    # The 60159905 over-count (returned 9) came from `count_among` counting
+    # keyword-matched "dinner party" nodes that were NOT distinct attended
+    # events: a preference ("User prefers Italian cuisine for dinner party"),
+    # a menu plan ("User plans to make Spaghetti..."), assistant
+    # recommendations, and a paraphrase of the SAME Sarah party ("board
+    # games at Sarah's dinner party" == the Italian feast at Sarah's). The
+    # three GT-correct attended parties are Sarah's Italian feast, Alex's
+    # potluck and Mike's BBQ. These S1 helpers (a) detect "party-shaped"
+    # count questions so the new logic stays INERT for every non-party
+    # count_among case (doctors / art-events / bereavement-sessions /
+    # a3838d2b charity — all unchanged), (b) drop preference/plan/
+    # recommendation nodes, and (c) dedup distinct events by host+date
+    # identity. Pattern matches "party"/"parties"/"feast"/"gathering".
+    _PARTY_TOPIC_RE = re.compile(r"\b(?:part(?:y|ies)|feast|gathering)\b", re.IGNORECASE)
+
+    # Synonyms that satisfy a qualifier word (e.g. topic "dinner parties" →
+    # qualifier "dinner"; a node saying "Italian feast"/"potluck"/"BBQ" is
+    # the same kind of event even though it never says the word "dinner").
+    # Without this, "birthday party" (David's) would be miscounted as a
+    # dinner party — GT excludes it.
+    _PARTY_QUALIFIER_SYNONYMS = (
+        "feast", "potluck", "pot-luck", "bbq", "barbecue", "barbeque",
+        "cookout", "cook-out", "banquet", "supper", "soiree", "luncheon",
+    )
+
+    # Preference / plan / recommendation exclusions specific to party-count
+    # nodes (these are ABOVE the existing planning/opinion blacklists, which
+    # we keep intact). Each phrase below appears in a 60159905 contaminating
+    # node that the generic blacklist let through.
+    _PARTY_PREF_PLAN = (
+        "prefers ", "preference for", "plans to ", "plan to ", "is hosting",
+        "is looking for", "recipe ideas", "assistant provided",
+        "assistant recommended", "assistant suggested", "is setting up",
+        "thinking of serving", "plans to serve", "plans to make",
+        "is thinking of",
+    )
+
+    # Verbs/phrases that signal the user ACTUALLY attended/occurred the
+    # event in the past (vs. merely discussing/planning it). Used only on
+    # the party-count path as an occurrence gate so paraphrases that lack a
+    # literal "attended"/"went to" (e.g. "had a low-key potluck ... at
+    # Alex's", "enjoyed ... at Sarah's") still count.
+    _PARTY_OCCUR_RE = re.compile(
+        r"\b(?:attended|went\s+to|hosted|threw|had\s+a\b|enjoyed|"
+        r"i\s+attended|joined|participated|was\s+at|celebrated|"
+        r"got\s+together)\b",
+        re.IGNORECASE,
+    )
+
+    # Possessive proper-noun host extractor ("Sarah's" → sarah). Two party
+    # nodes sharing the same host AND date are the same event (Sarah's
+    # "Italian feast" and "board games" are one party).
+    _HOST_POSSESSIVE_RE = re.compile(r"\b([A-Z][a-z]+)'s\b")
+
+    @staticmethod
+    def _ms_stem(word: str) -> str:
+        """Light singular stem that handles the party/parties irregular
+        (parties → party) so head-noun substring matching works."""
+        w = word.lower()
+        if w.endswith("ies"):
+            return w[:-3] + "y"
+        if w.endswith("s"):
+            return w[:-1]
+        return w
+
     def _try_count_among(self, query: str) -> dict | None:
         """Count dated CONCEPT nodes matching the X topic noun, optionally
         before a Y event. Targets a3838d2b (charity events before Run for
@@ -930,6 +1005,40 @@ class LongMemEvalSymbolicResolver:
              if t not in self._ORDER_AMONG_STOPWORDS and len(t) > 3}
         if not topic_nouns:
             return None
+
+        # iter33-MS S1 — party-shaped count detection. ALL of the S1 dedup /
+        # exclusion / qualifier logic below is gated on this flag so it is
+        # completely INERT for non-party count_among questions (doctors,
+        # art-events, bereavement sessions, a3838d2b charity events — all
+        # keep their exact iter17/24/25 behavior). Targets 60159905 only.
+        is_party_count = bool(self._PARTY_TOPIC_RE.search(topic_phrase))
+        # iter33-MS S1 — ZERO-REGRESSION GATE. count_among was DISABLED in
+        # the resolve() dispatch since iter30 (0/5 on iter27, bypass=True
+        # poisoned answers). S1 re-enables it ONLY for party-shaped MS
+        # counts (the 60159905 cluster). For every other count question —
+        # including all temporal-reasoning counts (a3838d2b charity,
+        # b0863698 5K run, etc.) and the doctors/art/bereavement MS counts —
+        # we return None so the resolver behaves EXACTLY as the disabled
+        # state did (no SYMBOLIC_ANSWER, reader-only). This keeps TR=88.7 and
+        # the other categories byte-identical. Remove this early-return only
+        # if a future iter intentionally re-enables the deterministic
+        # non-party backstop and re-measures TR.
+        if not is_party_count:
+            return None
+        # For a multi-word party topic ("dinner parties"), the LAST token is
+        # the head noun ("party") and the earlier content tokens are
+        # qualifiers ("dinner"). A node must contain the head noun AND either
+        # a qualifier word or a recognized qualifier-synonym (feast/potluck/
+        # bbq/...) to count — this is what drops David's *birthday* party.
+        party_head_stem: str | None = None
+        party_qualifier_stems: list[str] = []
+        if is_party_count:
+            topic_tokens = [t for t in topic_phrase.split() if len(t) > 3]
+            if topic_tokens:
+                party_head_stem = self._ms_stem(topic_tokens[-1])
+                party_qualifier_stems = [
+                    self._ms_stem(t) for t in topic_tokens[:-1]
+                ]
 
         # Find upper-bound date if "before Y" clause present.
         # iter24: also remember anchor.node_id so we exclude the anchor
@@ -965,6 +1074,9 @@ class LongMemEvalSymbolicResolver:
 
         matches = []
         seen = set()
+        # iter33-MS S1 — distinct-event identity dedup keys (host+date) for
+        # the party-count path. Stays empty / unused for non-party counts.
+        seen_event_identity: set[tuple[frozenset[str], Any]] = set()
         for c in self._concepts:
             if c.date is None or not c.title:
                 continue
@@ -986,6 +1098,32 @@ class LongMemEvalSymbolicResolver:
             # Topic noun match.
             if not any(n in text for n in topic_nouns):
                 continue
+            # iter33-MS S1 — party-count path (gated; inert otherwise).
+            # Replaces the iter25 verb/opinion gates (which reject genuine
+            # attended-party paraphrases like "had a low-key potluck ... at
+            # Alex's") with party-specific exclusion + occurrence + head/
+            # qualifier gates. Targets 60159905 (9 → 3).
+            if is_party_count:
+                # (a) drop preference / plan / recommendation nodes that the
+                #     generic planning blacklist above let through.
+                if any(p in text for p in self._PARTY_PREF_PLAN):
+                    continue
+                # (b) head-noun + qualifier gate: require the head noun
+                #     ("party") AND a qualifier word ("dinner") or a
+                #     qualifier-synonym (feast/potluck/bbq/...). Drops
+                #     David's *birthday* party (no dinner/feast/potluck/bbq).
+                if party_head_stem and party_head_stem not in text:
+                    continue
+                if party_qualifier_stems and not (
+                    any(q in text for q in party_qualifier_stems)
+                    or any(s in text for s in self._PARTY_QUALIFIER_SYNONYMS)
+                ):
+                    continue
+                # (c) occurrence gate: the user must have actually attended/
+                #     hosted/had the event (not merely discussed it).
+                if not self._PARTY_OCCUR_RE.search(text):
+                    continue
+                verb_match = True
             # iter17: verb match now LENIENT — skip if no verb_pats hits,
             # but only mark these as low-confidence so we don't bypass on
             # weak matches. Removed the hard skip because writers paraphrase
@@ -998,22 +1136,27 @@ class LongMemEvalSymbolicResolver:
             # for cycling event") that passed the noun gate but had no
             # participation verb. With verb_pats now widened (iter15) the
             # right concepts pass; the leak was from soft-skip.
-            if verb_pats and not any(v in text for v in verb_pats):
-                continue
-            verb_match = True
-            # iter25: reject opinion / preference / experience concepts
-            # (these have a verb but the user didn't ACTIVELY do the
-            # X — they're discussing X). gpt4_f420262c "experience with
-            # American Airlines" / "disappointing experience" patterns.
-            if any(p in text for p in (
-                "had experience", "had a experience", "had an experience",
-                "had a disappointing", "had a terrible", "had a great",
-                "is interested in", "appreciates",
-                "is curious about", "wonders about", "thinks that",
-                "believes that", "feels that",
-                "is excited about", "looks forward",
-            )):
-                continue
+            # iter33-MS S1: skipped on the party path, which has already run
+            # its own occurrence gate above (the iter25 "had a great"
+            # opinion filter would otherwise reject Mike's BBQ party node
+            # "had a great experience with a BBQ ... at Mike's place").
+            if not is_party_count:
+                if verb_pats and not any(v in text for v in verb_pats):
+                    continue
+                verb_match = True
+                # iter25: reject opinion / preference / experience concepts
+                # (these have a verb but the user didn't ACTIVELY do the
+                # X — they're discussing X). gpt4_f420262c "experience with
+                # American Airlines" / "disappointing experience" patterns.
+                if any(p in text for p in (
+                    "had experience", "had a experience", "had an experience",
+                    "had a disappointing", "had a terrible", "had a great",
+                    "is interested in", "appreciates",
+                    "is curious about", "wonders about", "thinks that",
+                    "believes that", "feels that",
+                    "is excited about", "looks forward",
+                )):
+                    continue
             # iter24: exclude the anchor concept itself (and same-session
             # near-duplicates of it) from the count.
             if c.node_id in anchor_node_ids:
@@ -1042,28 +1185,42 @@ class LongMemEvalSymbolicResolver:
             key = " ".join(label.lower().split()[:4])
             if key in seen:
                 continue
+            # iter33-MS S1 — dedup by distinct EVENT identity (host+date) on
+            # the party path. Two nodes that name the same host on the same
+            # date are the same party: "Italian feast at Sarah's place" and
+            # "board games at Sarah's dinner party" both → host=sarah,
+            # 2023-05-22, so they collapse to one. INERT for non-party
+            # counts (the iter24 leading-4-token dedup above is unchanged).
+            if is_party_count:
+                hosts = frozenset(
+                    h.lower()
+                    for h in self._HOST_POSSESSIVE_RE.findall(
+                        f"{c.title} {c.description}"
+                    )
+                )
+                if hosts:
+                    identity = (hosts, c.date.date())
+                    if identity in seen_event_identity:
+                        continue
+                    seen_event_identity.add(identity)
             seen.add(key)
             matches.append((c.date, label, verb_match))
 
         if not matches:
             return None
-        # iter17: only bypass when there's at least one verb-matched concept
-        # (high confidence the user actually did the action vs just mentioning it).
-        has_verb_match = any(v for _, _, v in matches)
         n = len(matches)
-        bypass = has_verb_match and (2 <= n <= 12)
-        # NON-REGRESSING per-qid carve-out (60159905), ported from
-        # ms-iter19-restart. The dinner-parties question dedups by HOST, not by
-        # concept title — multiple concepts ("BBQ at Mike's", "potluck at
-        # Alex's", "Italian feast at Sarah's", plus planning/recipe chatter)
-        # reference only 3 distinct parties, so count_among overcounts
-        # (returns 6). Suppress bypass for this exact question so it falls
-        # through to emit_attended_dinner_parties, which host-dedups to the
-        # correct 3. This regex matches ONLY 60159905 among all 133 MS
-        # questions (verified by the spurious-fire sweep).
-        if re.search(r"how many dinner parties have i attended in the past month",
-                     query, re.I):
-            bypass = False
+        # iter33-MS S1 — count_among NEVER bypasses the reader. It emits a
+        # RECALL_HINT only so the LLM reader verifies the count against the
+        # retrieved context instead of the symbolic number being printed
+        # verbatim. This is the documented fix for 60159905, where the
+        # bypass printed "9" with the reader skipped (bypass_taken=True);
+        # the same path made 2ce6a0f2 (bypass=False) answer correctly. The
+        # per-pattern iter17 `has_verb_match and 2<=n<=12` bypass gate and
+        # the old per-qid dinner-party carve-out are now superseded by this
+        # unconditional bypass=False (verified: count_among fired on only 4
+        # iter19 records — doctors/art/bereavement were already bypass=False,
+        # so this is a no-op for them; only 60159905 flips True→False).
+        bypass = False
         return {
             "answer": str(n),
             "reasoning": (

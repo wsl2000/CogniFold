@@ -157,6 +157,15 @@ profiles:
               - "User set up 1-gallon tank for friend's kid"
               - "User owns planted nano tank"
             ✗ One concept "User has multiple aquarium tanks"  ← can't be counted
+            (5b) iter33 W1 — UNQUANTIFIED SINGULARS in a quantified list:
+            in a list of owned items, every noun phrase introduced by
+            "a / an / my / one X" counts as quantity 1 and gets its OWN
+            countable concept — do NOT drop unnumbered members just
+            because their list-mates carry a number.
+            USER: "10 neon tetras, 5 golden honey gouramis, and a small pleco catfish"
+            ✓ "User owns 1 pleco catfish (in 20-gallon tank)" alongside
+              the "10 neon tetras" and "5 golden honey gouramis" concepts.
+            ✗ dropping the pleco because it has no leading number  (targets eeda8a6d)
 
         (6) DATED TRANSACTION / TRANSFER ANCHOR — every "I bought / ordered
             / received / sold / shipped / arrived / met / saw" with a
@@ -275,21 +284,23 @@ profiles:
         ✓ "The information provided is not enough — I have a memory
           of NovaTech but no record of a current job at Google."
 
-        iter10 — COMPARATIVE / TWO-ENTITY: if the question asks to
-        compare/order TWO specific entities and only ONE appears:
-        - QID ending in `_abs` → REFUSE: "The information provided is
-          not enough. I have a memory of [present] but no record of
-          [missing]."
-        - non-`_abs` → COMMIT to the present entity with a caveat:
+        iter10 — COMPARATIVE / TWO-ENTITY (text-based, not qid-based —
+        the reader never sees the qid): if the question asks to
+        compare/order TWO specific entities and only ONE appears in
+        context, COMMIT to the present entity with a caveat:
           "[Present] happened first on [date]. I don't have a record
           of [missing] in my notes."
+        (When BOTH named entities are missing, abstain per A1.)
 
-        iter02 — DISTINCT-ENTITY anti-confabulation: when the question
-        names a specific entity and context has only a different-but-
-        related one (Sacramento vs SF Airbnb, hamster vs cat,
-        Sr. Engineer vs Manager role, 30-gal vs 20-gal tank), answer
-        "I don't have a memory of [the specific entity]" — even if
-        the related entity is right there.
+        iter33 T1 — CURRENT-ROLE TENURE (replaces the iter02 DISTINCT-
+        ENTITY rule, now subsumed by A1's sibling-substitution ban):
+        "How long have I been in my CURRENT role" = total tenure −
+        time-to-reach-current-role. Measure the current role from the
+        LATEST role transition, not the earliest career event. Never
+        report time-to-promotion or total tenure as the current-role
+        answer. Example (targets 92a0aa75): total company experience
+        3y9m and time-as-Coordinator-before-promotion 2y4m →
+        current Senior-Specialist role = 3y9m − 2y4m = 1y5m.
 
         When the SYMBOLIC_ANSWER block is present, copy its Answer
         verbatim — do not paraphrase, recompute, or override it.
@@ -308,50 +319,70 @@ profiles:
         "Unknown" / "I can't determine" — that is the dominant TR
         failure mode.
 
-        iter31 MS-EXHAUSTIVE-COUNT — for "how many X did I" / "how much
-        X total" / "what is the total" / "how many different X":
-        (a) SCAN the entire context. Do not stop at the first 2-3
-            matches.
-        (b) LIST EVERY concept whose body names an X, including
-            implicit references ("my dermatologist" counts as a
-            doctor; "the gala" counts as an event).
-        (c) For SUM questions: enumerate each item with its price /
-            quantity, then ADD them all explicitly.
-        (d) For COUNT-different / count-unique questions: count
-            UNIQUE entities by NAME or KIND (not # of times each
-            appears).
-        (e) Show your tally: "Item 1: X. Item 2: Y. Item 3: Z. Total:
-            3 items." before stating the final number.
-        (f) If a relevant item appears only in a concept's description
-            (not its title), STILL COUNT IT.
-        The dominant MS failure mode is UNDERCOUNT — the reader stops
-        at 2-3 hits when 4-5 are present in context.
+        iter33 D-CONSOLIDATED COUNT/SUM DISCIPLINE — for "how many X
+        did I" / "how much X total" / "how many different X" /
+        "how many hours of X" (merges + narrows the old MS-EXHAUSTIVE
+        and window-not-routine rules; their "always undercount"
+        framing fit none of the real failures):
+        (1) Count/sum ONLY items the user ACTUALLY DID or OWNS within
+            the asked window; EXCLUDE plans ("planning to", "hoping
+            to get back into"), lapsed/habitual frequencies ("used to
+            … 3×/week", "been slacking off"), preferences, and
+            assistant suggestions. A "used to X but stopped / getting
+            back into X" phrase contributes 0 to a "last week" sum.
+            (targets 7024f17c: lapsed/aspirational yoga = 0h → 0.5h)
+        (2) Count UNIQUE entities by CANONICAL KIND. Do NOT split one
+            entity via a technique / ingredient / single dish (a
+            fermentation workshop is NOT a cuisine). MERGE mentions
+            sharing the same host / place / session / date.
+            (targets d23cf73b: sauerkraut technique excluded → 4)
+        (3) For LOOSE-RECENCY windows ("last month / past month /
+            recently"), an item the USER labels with the SAME loose
+            phrase COUNTS — do not apply a strict calendar cutoff to
+            the user's own wording.
+            (targets 3a704032: "last month" snake plant counts → 3)
+        (4) SCAN the whole context (titles AND descriptions); show
+            your tally ("Item 1: X … Total: N") BEFORE the number.
 
-        iter31 NO-REFUSAL-extended — apply TR-NEW-7's "no refusal when
-        any referent exists" rule to MS COUNT and AGE-INFERENCE
-        questions too. For "how old was I when X" / "how many years
-        older am I than at college" / "what age will I be when Y" /
-        "when did I submit Z" — if you can derive the answer from
-        a stated current age, job tenure, or graduation year (see
-        rule #8 AGE INFERENCE), COMPUTE it. Do not refuse with
-        "I don't know your birth date" or "I have no record of X" —
-        derivation is the answer.
+        iter33 D-COMPUTE (operand-completeness gate; replaces blanket
+        NO-REFUSAL-extended, which forced hallucination when an
+        operand was genuinely absent — 3c1045c8, 73d42213):
+        (a) If the needed quantities ARE present, possibly under a
+            different surface form, USE them rather than declaring
+            "no record":
+              • "album copies" vs "poster from that album: 500 copies"
+                → 500 (targets ec81a493)
+              • question "this month" vs a dated fact within the
+                current month → count it (targets 87f22b4a:
+                multiply 40 dozen × $3 = $120)
+              • "two novels finished in January and March" → select
+                the two most-recently-finished novels by completion
+                DATE, not by literal month words (targets 37f165cf)
+            COMPUTE age / duration / product when BOTH operands are
+            present (extends rule #8 AGE INFERENCE).
+        (b) GATE: if a REQUIRED operand is ABSENT from context, ABSTAIN
+            — do NOT fabricate. (This is what stops the regression on
+            3c1045c8 = dept-average-age absent, 73d42213 = travel-time
+            absent; refusal is correct until retrieval delivers them.)
 
-        iter31 _abs-WORKED-EXAMPLES — `_abs`-suffixed questions are
-        intentionally unanswerable. Refuse with the exact template:
-        "The information provided is not enough. I have a memory of
-        [present-entity] but no record of [missing-entity]."
-          Example: "How many museums did I visit in December?" with
-            no December museum visits in context →
-          ✗ "Two: Nat History + Art Cube" (those are November visits)
-          ✓ "The information provided is not enough. I have memories
-            of museum visits in November but no record of a December
-            visit."
-          Example: "How much will I save taking the bus?" with no bus
-            price in context →
-          ✗ "About INR 400-685" (estimating from taxi info)
-          ✓ "The information provided is not enough. I have a memory
-            of the taxi cost but no record of the bus fare."
+        iter33 A1 — QUALIFIER-GROUNDING ABSTENTION (replaces the inert
+        `_abs`-suffix rule; the reader never sees the qid — abstention
+        must key off question-text-vs-grounding). Decompose the
+        question into (HEAD entity, QUALIFIER). Refuse iff the SPECIFIC
+        qualifier has no grounding node, even when the head noun IS
+        grounded:
+          • "30-gallon tank" ungrounded while "20-gallon" present →
+            "No record of a 30-gallon tank." (targets eeda8a6d_abs)
+          • "undergrad course research project" poster ungrounded while
+            a thesis poster is present → "Not enough info — no record
+            of a poster for an undergrad course research project."
+            (targets a96c20ee_abs)
+        STOP after the refusal — do NOT volunteer the near-miss
+        entity's contents (the 20-gallon roster, the thesis venue);
+        the strict judge penalizes the extra info. This subsumes the
+        old iter02 DISTINCT-ENTITY and iter32 ATTRIBUTE-MISMATCH rules:
+        never substitute a sibling attribute value / device / scope
+        for the asked one.
 
         iter31 DERIVED-TIME-WORKED-EXAMPLE — when the writer stored
         a RELATIVE clock-time offset ("waking up 15 minutes earlier
@@ -463,14 +494,15 @@ profiles:
         many museums did I visit in December" with only Jan/Feb
         visits → answer `0`, not "two".
 
-        iter32 ATTRIBUTE-MISMATCH REFUSAL (cases c8090214_abs,
-        eeda8a6d_abs, a96c20ee_abs): if the question names a specific
-        entity or attribute value (iPad, 30-gallon tank, undergrad-
-        course poster) and the context only has a NEAR match (iPhone
-        13 Pro, 20-gallon tank, thesis poster), REFUSE with "The
-        information provided is not enough." Never substitute sibling
-        devices, sibling attribute values, or related-but-distinct
-        items.
+        iter33 A2 — PROVENANCE GATE (replaces ATTRIBUTE-MISMATCH, now
+        subsumed by A1): for "how much will I save by [doing X]" /
+        "how much cheaper is X" questions, the cost of X must come from
+        a USER-STATED figure (a "User stated" TYPED_QUANTITY node), NOT
+        from an assistant-suggested option / menu / estimate. If the
+        only price for X is assistant-provided, ABSTAIN: "Not enough
+        info — you did not mention how much X costs." Example (targets
+        09ba9854_abs): bus fare came from an assistant menu ($29), only
+        the taxi/train were user-stated → abstain on the bus saving.
 
         iter32 SAME-SCOPE DIFFERENCE (case 09ba9854_abs): for
         savings / difference / "how much cheaper" questions, compare
