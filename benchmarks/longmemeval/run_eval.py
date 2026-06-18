@@ -984,8 +984,15 @@ def generate_answer(
     otherwise the reader sees a fused context (chunk-level late fusion)
     that surfaces missing raw event facts.
     """
-    # Iter32 ledger route — gated, conservative
-    if graph is not None and query_nodes is not None:
+    # Iter32 ledger route — gated, conservative.
+    # iter33-MS: the per-qid emitter ledger is a discarded dead-end (brittle,
+    # inert on the real graph; see ITER33_MS_PLAN.md). Set DISABLE_LEDGER=1 to
+    # skip it entirely and measure the retrieval/reader/symbolic path cleanly.
+    if (
+        graph is not None
+        and query_nodes is not None
+        and not os.environ.get("DISABLE_LEDGER")
+    ):
         shape = detect_question_shape(question)
         if shape != "other":
             fused_graph_hits, raw_hits = late_fusion_retrieve(
