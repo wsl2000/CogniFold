@@ -878,6 +878,27 @@ def _ms_extra_count_sub_queries(question: str, cat: str) -> list[str]:
                  r"lps)\b", clow):
         extra.append("vinyl LP record bought purchased downloaded at concert")
 
+    # Group A — hyponym roster. The counted instance is usually named by its
+    # specific KIND (an engagement "ring" for a jewelry count, a "1-bedroom
+    # condo" for a properties count, a "peace lily" for a plants count, a
+    # "lemon" for a citrus count) and never carries the category word, so the
+    # bare-category sub-query under-ranks the acquisition node. For a count
+    # over a KNOWN category head, force-include a hyponym roster conjoined with
+    # the head. `cat` is only set on count-shaped questions, and the head must
+    # match a known category, so this stays inert on every other count
+    # (instruments / art-events / fitness / albums all miss the keys below).
+    _HYPONYMS = {
+        "jewel": "ring rings earrings necklace bracelet pendant brooch watch",
+        "propert": "condo bungalow townhouse house apartment flat duplex unit",
+        "citrus": "lemon lime orange grapefruit tangerine mandarin",
+        "fruit": "lemon lime orange grapefruit apple banana berry pear",
+        "plant": "succulent lily fern cactus herb pothos monstera orchid",
+    }
+    for _key, _hyps in _HYPONYMS.items():
+        if _key in clow:
+            extra.append(_hyps + " " + cat)
+            break
+
     return extra
 
 
