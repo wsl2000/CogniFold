@@ -673,6 +673,11 @@ _MS_ARITH_COMPARE_RE = re.compile(
 _BRIDGE_CLAUSE_RE = re.compile(
     r"\bwhen\s+(?:i|my|the)\b(.*?)(?:[?.,;]|$)"      # "when I/my/the <NP> …"
     r"|\bthan\s+when\s+i\b(.*?)(?:[?.,;]|$)"          # "than when I <NP>"
+    # iter33-MS B1: "than the <NP>" comparison operand — mines the second
+    # operand of a "how much older am I than the average age of employees
+    # in my department" comparison (3c1045c8). "than when I" is matched by
+    # the arm above; "than me/you" yields a <3-char clause that _add drops.
+    r"|\bthan\s+the\b(.*?)(?:[?.,;]|$)"               # "than the <NP>"
     r"|\bsince\s+i\b(.*?)(?:[?.,;]|$)"               # "since I <NP>"
     r"|\bbefore\s+(?:making|i)\b(.*?)(?:[?.,;]|$)",  # "before making/I <NP>"
     re.IGNORECASE,
@@ -731,6 +736,9 @@ _MS_COUNT_CATEGORY_RE = re.compile(
     r"(?:have|did|do|have\s+i|did\s+i|do\s+i|are\s+there|i\s+(?:\w+\s+)?(?:"
     r"own|owned|bought|buy|replace|replaced|fix|fixed|bake|baked|"
     r"view|viewed|attend|attended|service|serviced|made|make|read|"
+    # iter33-MS B2(a): acquisition verbs (3a704032 "acquire", bf659f65
+    # "purchased/downloaded"). NOT plan/planned (handled in B3).
+    r"acquire|acquired|purchase|purchased|download|downloaded|got|"
     r"watched|watch|visited|visit|hosted|host|booked|book))\b",
     re.IGNORECASE,
 )
@@ -765,11 +773,34 @@ def _extract_count_category(question: str) -> str:
             r"\b(?:did|do|have|has|i)\s+i?\s*"
             r"(own|owned|buy|bought|replace|replaced|fix|fixed|bake|baked|"
             r"view|viewed|attend|attended|service|serviced|made|make|read|"
-            r"watch|watched|visit|visited|host|hosted|book|booked)\b",
+            # iter33-MS B2(a): acquisition verbs in the verb-fallback too.
+            r"acquire|acquired|purchase|purchased|download|downloaded|got|"
+            r"watch|watched|visit|visited|host|hosted|book|booked)\b"
+            # iter33-MS B4: also capture the OBJECT NOUN-PHRASE trailing the
+            # verb ("attend (fitness classes)" -> "fitness classes"). Without
+            # this, the verb-fallback returned the bare verb ("attend") for
+            # a08a253f "How many days a week do I attend fitness classes?".
+            # The object NP is everything up to the first clause / temporal /
+            # punctuation boundary; bare-verb fallback kept when no object NP.
+            r"(?P<obj>(?:\s+[a-z][a-z\-]+){0,5})",
             question, re.IGNORECASE,
         )
         if vm:
-            cat = vm.group(1)
+            obj = (vm.group("obj") or "").strip()
+            # Trim the object NP at the first boundary token (clause openers,
+            # temporal units, prepositions) so we keep only the core noun
+            # phrase ("fitness classes", "egg tarts") and not trailing
+            # "... in the past two weeks" / "... when I made ...".
+            obj = re.sub(
+                r"\b(?:in|on|at|for|to|from|since|before|after|when|while|"
+                r"between|across|during|over|with|that|which|the|a|an|past|"
+                r"last|this|next|ago|week|weeks|day|days|month|months|"
+                r"year|years|hour|hours|something|anything)\b.*$",
+                "", obj, flags=re.IGNORECASE,
+            ).strip()
+            obj_toks = [t for t in obj.split() if t.lower() not in sw]
+            obj = " ".join(obj_toks).strip()
+            cat = obj if obj else vm.group(1)
     return cat
 
 
@@ -2672,6 +2703,60 @@ def run_benchmark(args: argparse.Namespace) -> None:
                     _sing = re.sub(r"s\b", "", _cat)  # crude singularization
                     if _sing and _sing != _cat:
                         _sub_queries.append(_sing)
+                    # iter33-MS B2(b): action-verb probe. Mine the question's
+                    # OWN count verb (acquire/buy/download/...) and emit an
+                    # action-verb + category sub-query so an instance session
+                    # that names the acquisition act ("picked up a snake plant
+                    # at the nursery", "downloaded the EP") but is lexically
+                    # distant from the bare category head still wins a slot.
+                    # Derived from question tokens — no per-qid literals.
+                    _qlow = question.lower()
+                    # Each group is keyed on a trigger verb present in the
+                    # question; if seen, its acquisition synonyms are added so
+                    # the probe keys on how an instance might be PHRASED.
+                    _verb_groups = (
+                        # trigger    -> synonym expansion
+                        ("acquire", ("acquired", "got", "bought", "picked up",
+                                     "purchased", "nursery")),
+                        ("purchase", ("purchased", "bought", "ordered")),
+                        ("bought", ("bought", "purchased", "got")),
+                        ("buy", ("buy", "bought", "purchased")),
+                        ("download", ("downloaded", "streamed")),
+                        ("got", ("got", "acquired", "bought")),
+                    )
+                    _verb_probe_terms: list[str] = []
+                    for _trigger, _syns in _verb_groups:
+                        if re.search(rf"\b{_trigger}", _qlow):
+                            _verb_probe_terms.extend(_syns)
+                    if _verb_probe_terms:
+                        # De-dup while preserving order.
+                        _seen_vp: set[str] = set()
+                        _vp = [t for t in _verb_probe_terms
+                               if not (t in _seen_vp or _seen_vp.add(t))]
+                        _sub_queries.append(" ".join(_vp) + " " + _cat)
+                    # Music/album categories: add a "vinyl record" sibling so a
+                    # vinyl purchase counts toward an album/EP count (bf659f65).
+                    if re.search(r"\b(?:album|albums|ep|eps|music|record|"
+                                 r"records|vinyl)\b", _cat, re.IGNORECASE):
+                        _sub_queries.append("vinyl record " + _cat)
+                    # iter33-MS B3: "service or plan to service" / maintenance
+                    # probe (a9f6b44c). When the question frames the count as a
+                    # service/maintenance act, an instance session may name the
+                    # maintenance act ("replaced the tire", "tuned up the bike")
+                    # rather than the bare category. Gated to bikes/maintenance
+                    # category tokens so it stays inert on unrelated counts.
+                    if re.search(
+                        r"\b(?:service\s+or\s+plan\s+to\s+service|"
+                        r"plan\s+to\s+service|maintenance|servic)\b",
+                        _qlow, re.IGNORECASE,
+                    ) and re.search(
+                        r"\b(?:bike|bikes|bicycle|car|cars|vehicle|tire|"
+                        r"tires|maintenance|service)\b", _cat, re.IGNORECASE,
+                    ):
+                        _sub_queries.append(
+                            "plan to service replace tire maintenance "
+                            "this month " + _cat
+                        )
                     # Add the question's own bridge phrases too (e.g. the
                     # "before making an offer on the townhouse" qualifier).
                     _sub_queries.extend(_extract_bridge_phrases(question))

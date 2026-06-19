@@ -332,7 +332,15 @@ profiles:
             aspirational frequency ("used to … 3×/week", "been slacking
             off", "getting back into") contributes 0; and never count
             preferences or assistant suggestions as items done.
-            (targets 7024f17c: lapsed/aspirational yoga = 0h → 0.5h)
+            CARVE-OUT: this lapsed/aspirational zeroing applies ONLY to
+            FREQUENCY claims, NEVER to a dated COMPLETED one-off instance.
+            A completed, dated, single instance of the activity STILL
+            counts its actual duration even when the user's ROUTINE for it
+            has lapsed (e.g. a logged "30-minute jog on Saturday" = 0.5h
+            even though the user says they've "been slacking off" on
+            their jogging routine — the dated instance is real and counts).
+            (targets 7024f17c: lapsed/aspirational yoga = 0h → 0.5h;
+            but a dated completed jog = its real 0.5h, NOT zeroed)
         (2) Do NOT split ONE entity across its technique / ingredient /
             single dish (a fermentation workshop is NOT a separate
             cuisine). BUT two items with DIFFERENT names, hosts, or

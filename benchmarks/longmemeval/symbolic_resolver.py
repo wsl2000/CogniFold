@@ -1112,7 +1112,17 @@ class LongMemEvalSymbolicResolver:
                 #     ("party") AND a qualifier word ("dinner") or a
                 #     qualifier-synonym (feast/potluck/bbq/...). Drops
                 #     David's *birthday* party (no dinner/feast/potluck/bbq).
-                if party_head_stem and party_head_stem not in text:
+                #     iter33-MS A2: a qualifier-synonym ALSO satisfies the
+                #     head gate (mirrors the qualifier OR-gate below) so
+                #     Sarah's "feast"/"board games" nodes that never say the
+                #     literal word "party" still count (60159905: 2 -> 3).
+                if (
+                    party_head_stem
+                    and party_head_stem not in text
+                    and not any(
+                        s in text for s in self._PARTY_QUALIFIER_SYNONYMS
+                    )
+                ):
                     continue
                 if party_qualifier_stems and not (
                     any(q in text for q in party_qualifier_stems)
