@@ -140,5 +140,84 @@
       "evidence": "",
       "description": "Very brief, high-fidelity buffer for raw perceptual input. Out of scope for a text-centric memory graph today."
     }
+  ],
+  "circuits": [
+    {
+      "region": "Hippocampus",
+      "status": "covered",
+      "cognifold": "EVENT layer — verbatim episodic capture; fast one-shot writes preserve what-happened-when.",
+      "systems": [
+        "episodic",
+        "temporal"
+      ]
+    },
+    {
+      "region": "Neocortex",
+      "status": "covered",
+      "cognifold": "CONCEPT layer — slow generalization; repeated EVENTs fold into grounded semantic structure.",
+      "systems": [
+        "semantic"
+      ]
+    },
+    {
+      "region": "Prefrontal cortex",
+      "status": "covered",
+      "cognifold": "INTENT layer + hierarchical context window — goals crystallize forward; the working set is assembled per event.",
+      "systems": [
+        "prospective",
+        "working"
+      ]
+    },
+    {
+      "region": "Entorhinal / hippocampal index",
+      "status": "covered",
+      "cognifold": "TIME anchors — deadlines and schedules indexed; recency and urgency reshape salience.",
+      "systems": [
+        "temporal"
+      ]
+    },
+    {
+      "region": "Hippocampo-neocortical loop (CLS)",
+      "status": "partial",
+      "cognifold": "Inter-session consolidation — similar CONCEPTs merge and grounded structure is reinforced offline.",
+      "systems": [
+        "consolidation"
+      ]
+    },
+    {
+      "region": "Distributed synapses",
+      "status": "partial",
+      "cognifold": "Forgetting — recency decay lowers stale salience; orphan pruning removes unsupported nodes.",
+      "systems": [
+        "forgetting"
+      ]
+    },
+    {
+      "region": "Basal ganglia / Cerebellum",
+      "status": "planned",
+      "cognifold": "Procedure nodes (planned) — reusable skills and action sequences, distinct from declarative recall.",
+      "systems": [
+        "procedural",
+        "conditioning"
+      ]
+    },
+    {
+      "region": "Amygdala",
+      "status": "planned",
+      "cognifold": "Affective salience tags (planned) — emotional weighting that modulates consolidation and retrieval priority.",
+      "systems": [
+        "affective",
+        "conditioning"
+      ]
+    },
+    {
+      "region": "Sensory cortices",
+      "status": "planned",
+      "cognifold": "Perceptual buffers (planned) — ultra-short multimodal traces feed the event stream; priming via residual activation.",
+      "systems": [
+        "sensory",
+        "priming"
+      ]
+    }
   ]
 }

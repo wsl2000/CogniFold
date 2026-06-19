@@ -127,7 +127,26 @@
 
 ---
 
-## Differentiation vs SOTA
+## 6. Repository workflow (funnel → branches & PRs)
+
+The funnel maps directly onto git, so the process is auditable and build-in-public by construction:
+
+- **`main`** — clean, canonical. Holds only consolidated mechanisms (Stage 5), this methodology, and CI. No direct commits; everything lands via PR.
+- **`north-star`** — the long-lived practice / integration branch. Carries this doc plus the running `ledger` and `kill log`; the daily build-in-public push happens here.
+- **One short-lived branch per candidate** off `north-star` (e.g. `nsm/<mechanism>`): Stages 0–4 run on it. Stage 0–3 artifacts (gap ticket / mechanism card / design doc) are cheap paper-only commits; Stage 4 commits the pre-registration + validation report.
+- **The verdict is the PR decision into `north-star`**:
+  - **Promote** → merge the PR into `north-star`; add the ledger entry + standing probe.
+  - **Kill** → close the PR; commit a `kill log` entry (what / why / evidence) to `north-star`. Negative results stay public.
+- **Consolidation to `main`** — periodically, the validated mechanisms accumulated on `north-star` are PR'd up to `main` (the Stage-5 "consolidate" at repository scale), keeping `main` the proven core.
+
+| Funnel step | Git action |
+|---|---|
+| Stage 0–3 | artifact commits on a `nsm/<mechanism>` branch off `north-star` |
+| Stage 4 | validation report on the branch; open PR → `north-star` |
+| Promote (Stage 5) | merge PR → `north-star`; periodically PR `north-star` → `main` |
+| Kill | close PR; commit a kill-log entry to `north-star` |
+
+## 7. Differentiation vs SOTA
 
 The North-Star process says a mechanism only earns its place if it pays off where incumbents leave a gap. Here is where CogniFold's surviving mechanisms diverge from the current memory-system landscape:
 

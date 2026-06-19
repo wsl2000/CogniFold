@@ -63,7 +63,7 @@ async function init() {
   renderCoverageRing(data.overall_coverage_pct);
   renderArchDiagram();
   renderLedger();
-  renderSystemsTable(data, onSelectSystem);
+  renderSystemsLayers(data, onSelectSystem);
   showNotecard(null); // default state
 
   const host = document.getElementById("brainHost");
@@ -82,7 +82,7 @@ async function init() {
     const sys = systemsById.get(systemId);
     if (!sys) return;
     showNotecard(sys);
-    document.querySelectorAll(".systbl tbody tr").forEach((r) =>
+    document.querySelectorAll(".layer__item").forEach((r) =>
       r.classList.toggle("is-active", r.dataset.system === systemId)
     );
     if (brain) brain.focusSystem(systemId);
@@ -222,24 +222,76 @@ function showNotecard(sys) {
 // -------------------------------------------------------------- systems table
 // Full reference table: all 12 systems visible at once (name · taxonomy ·
 // region · status · mechanism). Rows sync with the brain + side index on hover.
-function renderSystemsTable(data, onSelect) {
-  const body = document.getElementById("systemsTableBody");
-  if (!body) return;
-  body.innerHTML = "";
-  data.systems.forEach((s) => {
-    const tr = document.createElement("tr");
-    tr.dataset.system = s.id;
-    tr.dataset.status = s.status;
-    tr.innerHTML = `
-      <td class="systbl__name"><span class="systbl__sys"><span class="systbl__dot" aria-hidden="true"></span>${escapeHtml(s.name)}</span></td>
-      <td class="systbl__tax">${escapeHtml(s.taxonomy_group)}</td>
-      <td class="systbl__region">${escapeHtml(s.brain_region)}</td>
-      <td><span class="systbl__status" data-status="${s.status}">${escapeHtml(s.status)}</span></td>
-      <td class="systbl__mech">${escapeHtml(s.cognifold_mechanism)}</td>`;
-    tr.addEventListener("mouseenter", () => onSelect(s.id, false));
-    tr.addEventListener("click", () => onSelect(s.id, true));
-    body.appendChild(tr);
-  });
+// Two layers, both data-driven from memory_coverage.json:
+//   • Behavioral · phenomenological — each memory FUNCTION ↔ its CogniFold mechanism.
+//   • Systems · circuits — each neural REGION ↔ its CogniFold structure (data.circuits).
+function renderSystemsLayers(data, onSelect) {
+  const bl = document.getElementById("behavioralList");
+  if (bl) {
+    bl.innerHTML = "";
+    data.systems.forEach((s) => {
+      const li = document.createElement("li");
+      li.className = "layer__item";
+      li.dataset.system = s.id;
+      li.dataset.status = s.status;
+      li.tabIndex = 0;
+      li.innerHTML = `
+        <div class="layer__row">
+          <span class="layer__dot" aria-hidden="true"></span>
+          <span class="layer__name">${escapeHtml(s.name)}</span>
+          <span class="layer__tax">${escapeHtml(s.taxonomy_group)}</span>
+          <span class="layer__status" data-status="${s.status}">${escapeHtml(s.status)}</span>
+        </div>
+        <p class="layer__mech">${escapeHtml(s.cognifold_mechanism)}</p>`;
+      li.addEventListener("mouseenter", () => onSelect(s.id, false));
+      li.addEventListener("focus", () => onSelect(s.id, false));
+      li.addEventListener("click", () => onSelect(s.id, true));
+      bl.appendChild(li);
+    });
+  }
+
+  const cl = document.getElementById("circuitList");
+  if (cl) {
+    cl.innerHTML = "";
+    const circuits = Array.isArray(data.circuits) ? data.circuits : [];
+    circuits.forEach((c) => {
+      const li = document.createElement("li");
+      li.className = "layer__item";
+      li.dataset.status = c.status;
+      const members = Array.isArray(c.systems) ? c.systems : [];
+      const first = members[0] || null;
+      if (first) li.dataset.system = first;
+      li.tabIndex = 0;
+      const chips = members
+        .map((id) => {
+          const sys = data.systems.find((x) => x.id === id);
+          return sys
+            ? `<button type="button" class="layer__chip" data-system="${sys.id}">${escapeHtml(sys.name)}</button>`
+            : "";
+        })
+        .join("");
+      li.innerHTML = `
+        <div class="layer__row">
+          <span class="layer__dot" aria-hidden="true"></span>
+          <span class="layer__name">${escapeHtml(c.region)}</span>
+          <span class="layer__status" data-status="${c.status}">${escapeHtml(c.status)}</span>
+        </div>
+        <p class="layer__mech">${escapeHtml(c.cognifold)}</p>
+        <div class="layer__chips">${chips}</div>`;
+      if (first) {
+        li.addEventListener("mouseenter", () => onSelect(first, false));
+        li.addEventListener("focus", () => onSelect(first, false));
+      }
+      li.querySelectorAll(".layer__chip").forEach((btn) => {
+        btn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          onSelect(btn.dataset.system, true);
+        });
+        btn.addEventListener("mouseenter", () => onSelect(btn.dataset.system, false));
+      });
+      cl.appendChild(li);
+    });
+  }
 }
 
 // -------------------------------------------------------------- arch diagram

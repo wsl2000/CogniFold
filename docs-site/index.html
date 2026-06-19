@@ -105,8 +105,11 @@
         <p class="kicker">Coverage map</p>
         <h2 class="display">Memory systems</h2>
         <p class="lede">
-          CogniFold maps twelve human memory systems onto its topology. Each brain region links to a
-          system — hover, tab, or tap to inspect its mechanism, evidence, and status.
+          CogniFold maps human memory onto its topology across two layers — the <strong>behavioral
+          functions</strong> memory performs, and the <strong>neural circuits</strong> that implement
+          them. Hover, tab, or tap a brain region to inspect it; the two columns below give the full
+          correspondence. These are mappings to the memory taxonomy we can <em>name</em> — well-described
+          at the behavioral layer, less so at the circuit, and far less at the underlying mechanism.
         </p>
       </div>
 
@@ -128,21 +131,22 @@
         </aside>
       </div>
 
-      <!-- Full reference table: all 12 systems visible at once -->
-      <div class="systbl-wrap reveal">
-        <table class="systbl" id="systemsTable">
-          <caption>All twelve memory systems · mapped to CogniFold mechanisms</caption>
-          <thead>
-            <tr>
-              <th scope="col">Memory system</th>
-              <th scope="col">Taxonomy</th>
-              <th scope="col">Brain region</th>
-              <th scope="col">Status</th>
-              <th scope="col">CogniFold mechanism</th>
-            </tr>
-          </thead>
-          <tbody id="systemsTableBody"><!-- rows injected by app.js --></tbody>
-        </table>
+      <!-- Two layers — behavioral/phenomenological + systems/circuit — each mapped to CogniFold -->
+      <div class="layers reveal" aria-label="Human memory mapped to CogniFold across two layers">
+        <section class="layer" data-layer="behavioral" aria-labelledby="layerBehavioralTitle">
+          <header class="layer__head">
+            <h3 class="layer__title" id="layerBehavioralTitle">Behavioral · phenomenological</h3>
+            <p class="layer__sub">What memory <em>does</em> — the level we describe best. Each function maps to its CogniFold mechanism.</p>
+          </header>
+          <ul class="layer__list" id="behavioralList"><!-- injected by app.js --></ul>
+        </section>
+        <section class="layer" data-layer="circuit" aria-labelledby="layerCircuitTitle">
+          <header class="layer__head">
+            <h3 class="layer__title" id="layerCircuitTitle">Systems · circuits</h3>
+            <p class="layer__sub">Where memory <em>lives</em> — the CLS substrate. Each region maps to its CogniFold structure.</p>
+          </header>
+          <ul class="layer__list" id="circuitList"><!-- injected by app.js --></ul>
+        </section>
       </div>
       <div class="ink-divider ink-divider--flip" aria-hidden="true"></div>
     </section>
