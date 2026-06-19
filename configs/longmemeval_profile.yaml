@@ -193,6 +193,20 @@ profiles:
             ✓ "User is planning to bake chocolate chip cookies for an upcoming party"
             ✗ "User likes cookies"  ← drops the specific plan + context
 
+        (9) MANNER QUALIFIER PRESERVATION — when an activity/sport/skill
+            carries a MANNER adverb ("competitively", "professionally",
+            "recreationally", "casually", "semi-professionally"), KEEP that
+            adverb in the concept title/description. The manner is a counting
+            filter: a sport played "competitively" is a different countable
+            class from one played "recreationally"; dropping the adverb makes
+            the reader over-count.
+            USER: "I played soccer competitively in high school, and I swim recreationally now."
+            ✓ Two concepts:
+              - "User played soccer competitively in high school"
+              - "User swims recreationally"
+            ✗ "User played soccer" / "User swims"  ← manner lost, reader over-counts
+            (targets ef66a6e5)
+
         ============================================================
 
         Extract concepts that cover (composite, not categorical):

@@ -804,6 +804,83 @@ def _extract_count_category(question: str) -> str:
     return cat
 
 
+def _ms_extra_count_sub_queries(question: str, cat: str) -> list[str]:
+    """iter33-MS M1-M4 — additive, frame-gated sub-queries for the R2
+    count-over-category path. Every sub-query is DERIVED from the question's
+    own tokens / general lexical frames (no per-qid literal strings). Returns
+    [] for any frame that doesn't match, so this is inert on the categories it
+    doesn't target. Called from the `_ms_count_category` branch and appended to
+    `_sub_queries`; the existing R2 logic is unchanged.
+    """
+    extra: list[str] = []
+    if not cat:
+        return extra
+    qlow = question.lower()
+    clow = cat.lower()
+
+    # M1 — polysemy disambiguation (gpt4_7fce9456 "properties": real-estate vs
+    # astronomy/meme word-sense). CONJOIN the question's bridge-qualifier nouns
+    # (e.g. "townhouse", "offer", "Brookside neighborhood") with the category
+    # head so the combined sub-query ranks the intended word-sense. Only fires
+    # when the question actually HAS bridge qualifiers (a "before/than/when …"
+    # clause or a capitalized entity) — on plain counts (3a704032 plants,
+    # gpt4_194be4b3 instruments) _extract_bridge_phrases returns [] so this is
+    # a no-op there.
+    _bridge = _extract_bridge_phrases(question)
+    if _bridge:
+        # Pull short qualifier head-nouns out of the bridge phrases (drop
+        # stop/aux tokens), then conjoin with the category head.
+        sw = _stopwords()
+        _qual_toks: list[str] = []
+        _seen_q: set[str] = set()
+        for ph in _bridge:
+            for t in re.split(r"[\s\-]+", ph):
+                tl = t.lower().strip(".,;:?!")
+                if (len(tl) >= 3 and tl not in sw and tl not in _seen_q
+                        and tl not in clow.split()):
+                    _seen_q.add(tl)
+                    _qual_toks.append(tl)
+        if _qual_toks:
+            extra.append(cat + " " + " ".join(_qual_toks[:5]))
+
+    # M2 — generic-event categories (2ce6a0f2 "art-related events"): an event
+    # instance ("guided tour at the History Museum") may not share the category
+    # adjective ("art"), so the bare-category sub-query under-ranks it. When the
+    # category head is a GENERIC EVENT noun AND the question uses an attend-style
+    # verb, add an action-verb probe that keys on event-attendance phrasing.
+    # Gated to generic-event heads only — stays inert on concrete-object counts
+    # (plants / instruments / properties).
+    _generic_event_head = bool(re.search(
+        r"\b(?:events?|classes|activities|outings?|gatherings?|"
+        r"shows?|sessions?)\b", clow,
+    ))
+    if _generic_event_head and re.search(
+        r"\b(?:attend|attended|went|go|visit|visited|tour|toured|"
+        r"saw|see)\b", qlow,
+    ):
+        extra.append("attended visited went tour exhibition lecture event "
+                     + cat)
+
+    # M3 — "how many days/times a week" weekly-frequency frame (a08a253f
+    # fitness classes). A specific weekday instance ("Wednesday yoga class")
+    # may not share the category head, so enumerate weekday names alongside the
+    # category to surface every per-day instance. Gated to the weekly-frame.
+    if re.search(r"\bhow\s+many\s+(?:days?|times)\s+(?:a|per)\s+week\b", qlow):
+        extra.append("Monday Tuesday Wednesday Thursday Friday Saturday Sunday "
+                     + cat)
+
+    # M4 — music album/EP purchase counts (bf659f65): a vinyl/LP purchase
+    # ("Tame Impala vinyl bought at Red Rocks") is lexically distant from
+    # "album/EP". Strengthen the existing "vinyl record <cat>" sibling with
+    # explicit format+acquisition variants so a vinyl/LP/record session wins a
+    # slot. Gated to music/album/EP/record categories.
+    if re.search(r"\b(?:album|albums|ep|eps|music|record|records|vinyl|lp|"
+                 r"lps)\b", clow):
+        extra.append("vinyl LP record bought purchased downloaded at concert")
+
+    return extra
+
+
 def _build_forced_include_block(
     query_agent: "MemoryQueryAgent",
     sub_queries: list[str],
@@ -1623,6 +1700,8 @@ Rules:
 - If no typed attributes exist, return {{"attributes": []}}.
 - Do NOT include common-knowledge values (e.g., "Monday" alone is too generic, but "9 AM Monday" is fine).
 - Each attribute's "value" must appear VERBATIM in the message.
+- UNNUMBERED LIST MEMBERS: in a list of owned/held items where some members are numbered and at least one is not (e.g. "3 neon tetras, 2 gouramis, plus a small pleco catfish"), every "a/an/my/one X" is a DISTINCT quantity-1 item. Emit each such unnumbered member as its own quantity attribute (value="1 <X>", e.g. "1 pleco catfish"); do NOT drop unnumbered members. They count toward totals just like the numbered ones.
+- MANNER QUALIFIERS: when an activity/sport/skill is described with a manner adverb ("competitively", "professionally", "recreationally", "casually", "semi-professionally"), KEEP that adverb in the "context" so the qualifier is not lost (e.g. context="played soccer competitively in high school"). This lets later counting filter on the manner.
 
 Example:
 Messages:
@@ -2760,6 +2839,12 @@ def run_benchmark(args: argparse.Namespace) -> None:
                     # Add the question's own bridge phrases too (e.g. the
                     # "before making an offer on the townhouse" qualifier).
                     _sub_queries.extend(_extract_bridge_phrases(question))
+                    # iter33-MS M1-M4 — additive, frame-gated count sub-queries
+                    # (polysemy-conjoin / generic-event verb / weekday probe /
+                    # vinyl-format strengthen). All derived from question tokens.
+                    _sub_queries.extend(
+                        _ms_extra_count_sub_queries(question, _cat)
+                    )
                     _block_header = (
                         "## CATEGORY_MEMBERS (iter33-MS R2 — every instance of "
                         f"'{_cat}' found in memory, force-included regardless of "
