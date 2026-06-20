@@ -35,16 +35,31 @@ class AgentConfig:
     disable_concepts: bool = False  # If True, suppresses concept formation (Episodic mode)
     intent_density: float = 0.3  # Intent generation aggressiveness (0.0=never, 1.0=maximum)
     # W1: opt-in secondary writer pass that extracts typed attributes
-    # (date/time/duration/quantity/name) verbatim from user-role turns.
-    # Adds one extra LLM call per session (~$0.0001 with gpt-4o-mini).
+    # (date/time/duration/quantity/name/person) verbatim from user-role
+    # turns. Adds one extra LLM call per session.
     extract_typed_attributes: bool = False
     # W2 (iter18): opt-in pass that resolves per-concept event_date from
     # the user's relative-time phrasing. Stored as node.data["event_date"]
     # so resolvers/readers can use the true event date instead of the
     # session-extraction date. Borrowed from Chronos/Mem0.
     resolve_event_dates: bool = False
+    # W3 (iter30): opt-in focused per-session pass that explicitly
+    # extracts ACTIVITY START events (e.g. "I started bird watching",
+    # "I bought my new running shoes") and stamps the resulting concept
+    # with is_start=true + activity. Lets the duration_activity resolver
+    # find a reliable START anchor for "how long had I been X-ing when
+    # Y happened" questions. Replaces the unreliable iter29 TR-NEW-1
+    # writer-prompt rule that gpt-5.4-mini low effort often skipped.
+    extract_start_events: bool = False
     # Forwarded to OpenAI Responses API when set (gpt-5-class models only).
     reasoning_effort: str | None = None
+    # Per-role API key / base URL override. When set, the OpenAI client built
+    # inside `call_llm` uses these instead of the global OPENAI_API_KEY /
+    # OPENAI_BASE_URL — lets writer / reader / rerank / judge route to
+    # different providers in one process (e.g. reader on NTU direct,
+    # writer on a cheaper key).
+    api_key: str | None = None
+    base_url: str | None = None
 
     concept_guidelines: tuple[str, ...] = (
         # Basic pattern detection

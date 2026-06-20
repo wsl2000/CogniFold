@@ -29,14 +29,15 @@ ok "push credentials OK"
 ok "API key present"
 
 # 5. Parallel script uses correct models
-grep -q "openai:gpt-5-mini\|openai/gpt-5-mini"  scripts/parallel_longmemeval.sh || fail "parallel script doesn't use gpt-5-mini reader"
-grep -q "openai:gpt-4o-mini\|openai/gpt-4o-mini" scripts/parallel_longmemeval.sh || fail "parallel script doesn't use gpt-4o-mini writer"
-grep -q "openai:gpt-4o\b\|openai/gpt-4o\b"    scripts/parallel_longmemeval.sh || fail "parallel script doesn't use gpt-4o JUDGE — DANGER"
+grep -q 'READER_MODEL=.*openai/gpt-5"\|READER_MODEL=.*openai:gpt-5"'  scripts/parallel_longmemeval.sh || fail "parallel script doesn't use gpt-5 reader"
+grep -q 'WRITER_MODEL=.*openai/gpt-5"\|WRITER_MODEL=.*openai:gpt-5"' scripts/parallel_longmemeval.sh || fail "parallel script doesn't use gpt-5 writer"
+grep -q 'JUDGE_MODEL=.*openai/gpt-4o"\|JUDGE_MODEL=.*openai:gpt-4o"' scripts/parallel_longmemeval.sh || fail "parallel script doesn't use gpt-4o JUDGE — DANGER"
+grep -q 'EMBED_MODEL=.*text-embedding-3-large' scripts/parallel_longmemeval.sh || fail "parallel script doesn't use text-embedding-3-large"
 ok "parallel script model stack correct"
 
 # 6. history_max_effort.md exists (bootstrap if not)
 if [ ! -f history_max_effort.md ]; then
-    echo "# Max-Effort Campaign — gpt-4o-mini writer / gpt-5-mini reader / gpt-4o judge" \
+    echo "# Max-Effort Campaign — gpt-5 writer / gpt-5 reader / gpt-4o judge / text-embedding-3-large" \
         > history_max_effort.md
     git add history_max_effort.md
     git -c user.email="wsuli615@gmail.com" -c user.name="wsl2000" \

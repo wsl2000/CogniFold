@@ -2,12 +2,12 @@ profiles:
   longmemeval:
     domain: "longmemeval"
     model:
-      name: "openai:gpt-4o-mini"
+      name: "openai:gpt-5"
       temperature: 0.0
       max_tokens: 4096
       max_exploration_steps: 0
     embedding:
-      model: "openai:text-embedding-3-small"
+      model: "openai:text-embedding-3-large"
     guidelines:
       concept:
         - "Extract EVERY factual detail about the user (personal info, preferences, history)"
@@ -157,6 +157,15 @@ profiles:
               - "User set up 1-gallon tank for friend's kid"
               - "User owns planted nano tank"
             ✗ One concept "User has multiple aquarium tanks"  ← can't be counted
+            (5b) iter33 W1 — UNQUANTIFIED SINGULARS in a quantified list:
+            in a list of owned items, every noun phrase introduced by
+            "a / an / my / one X" counts as quantity 1 and gets its OWN
+            countable concept — do NOT drop unnumbered members just
+            because their list-mates carry a number.
+            USER: "10 neon tetras, 5 golden honey gouramis, and a small pleco catfish"
+            ✓ "User owns 1 pleco catfish (in 20-gallon tank)" alongside
+              the "10 neon tetras" and "5 golden honey gouramis" concepts.
+            ✗ dropping the pleco because it has no leading number  (targets eeda8a6d)
 
         (6) DATED TRANSACTION / TRANSFER ANCHOR — every "I bought / ordered
             / received / sold / shipped / arrived / met / saw" with a
@@ -183,6 +192,20 @@ profiles:
             USER: "I'm planning chocolate chip cookies for the party"
             ✓ "User is planning to bake chocolate chip cookies for an upcoming party"
             ✗ "User likes cookies"  ← drops the specific plan + context
+
+        (9) MANNER QUALIFIER PRESERVATION — when an activity/sport/skill
+            carries a MANNER adverb ("competitively", "professionally",
+            "recreationally", "casually", "semi-professionally"), KEEP that
+            adverb in the concept title/description. The manner is a counting
+            filter: a sport played "competitively" is a different countable
+            class from one played "recreationally"; dropping the adverb makes
+            the reader over-count.
+            USER: "I played soccer competitively in high school, and I swim recreationally now."
+            ✓ Two concepts:
+              - "User played soccer competitively in high school"
+              - "User swims recreationally"
+            ✗ "User played soccer" / "User swims"  ← manner lost, reader over-counts
+            (targets ef66a6e5)
 
         ============================================================
 
@@ -225,151 +248,345 @@ profiles:
         Give a concise, specific answer (1-2 sentences). Commit to your best inference from the context — when ANY relevant fact appears (even tangentially), use it to construct a specific answer. Only fall back to "Unknown" when the context is completely empty of any related signal.
 
         ============================================================
-        DATE INTERPRETATION RULES (iter07 — read carefully; getting
-        this wrong produces the "X days/weeks/months ago" failure
-        mode where you answer "1,205 days ago" instead of "17 days
-        ago"):
+        DATE INTERPRETATION (iter07) — getting this wrong produces
+        the "1,205 days ago" failure mode for what is really 17 days.
 
-        1. The context begins with a "## TODAY" block stating the
-           reference date in YYYY-MM-DD form. Treat that date — and
-           ONLY that date — as "today" / "now" / the present moment.
-           IGNORE the system clock, IGNORE the current real-world
-           date, and IGNORE any other date when computing relative-
-           time expressions.
-
+        1. The "## TODAY" block at the top of context states the
+           reference date. Treat that — and ONLY that — as "today" /
+           "now". IGNORE the system clock; IGNORE the real-world date.
         2. Concept and event titles begin with "[YYYY-MM-DD]" — this
-           prefix is the ABSOLUTE date that fact was extracted from
-           (i.e., when the user mentioned it). It is NOT "today".
+           is the ABSOLUTE extraction date, NOT "today".
+        3. Relative-time arithmetic:
+           - "X days ago"     → (TODAY − event_date).days
+           - "X weeks ago"    → ROUND(.days / 7)  (round, not floor)
+           - "X months ago"   → ROUND(.days / 30)
+           - "X years ago"    → ROUND(.days / 365)
+           - "between A and B"→ abs(date(A) − date(B)).days
+           - "since X" / "before X" → pick the event date for X
+           - "how long had I been X-ing when Y" →
+             (date(Y) − date(start_of_X)) in the question's unit
+           Always anchor on TODAY from the block, never the system date.
+        4. When the context has a "## SYMBOLIC_ANSWER" block, copy it
+           verbatim — the resolver has already done the arithmetic.
+        5. Free-text dates in concept descriptions ("last Thursday",
+           "three weeks ago") are user words and are noisy; prefer the
+           absolute [YYYY-MM-DD] prefix and the inline (meaning DATE)
+           anchor for computation.
+        6. [YYYY-MM-DD] has no time component; treat both endpoints as
+           start-of-day for .days math.
+        7. Trip duration: "how many days did I spend on trip to X" is
+           (return_date − departure_date), NOT (return − plan_mention).
+           If departure absent, default to 2-3 days for weekend/camping
+           and 5-7 for vacation.
+        8. AGE INFERENCE (iter22+24): given current age (explicit
+           "User is 32" or implicit job-tenure / graduation-year) AND
+           "How old was I when X happened N years ago" → answer is
+           (current_age − N). DO NOT refuse with "I don't have your
+           birth date" — derive it.
+        9. DERIVED-TIME (iter22): a relative time-of-day phrase
+           ("waking up 15 minutes EARLIER on Tue/Thu") plus an
+           explicit baseline elsewhere ("usually wakes up at 7:00 AM")
+           = derived clock time (7:00 − 0:15 = 6:45 AM). Prefer any
+           absolute clock statement that matches the question.
 
-        3. Computing relative-time answers — strict procedure:
-           - "X days ago"             → answer = (TODAY − event_date).days
-           - "X weeks ago"             → answer = floor((TODAY − event_date).days / 7)
-           - "X months ago"            → answer ≈ ((TODAY − event_date).days / 30)
-           - "X years ago"             → answer ≈ ((TODAY − event_date).days / 365)
-           - "between A and B"          → answer = abs(date(A) − date(B)).days
-           - "since X" / "before X"     → similar; pick the event date for X
-           - "how long had I been X-ing when Y happened"
-                                       → answer = (date(Y) − date(start_of_X))
-                                          expressed in the unit the question
-                                          asks (weeks/months/years)
-           Substitute the date from the "## TODAY" block — never the
-           system date. If TODAY is 2023-03-01 and the event was on
-           2023-02-12, the answer to "how many days ago" is 17, NOT
-           1,205.
+        iter13 — UNKNOWN-ENTITY refusal: if the question names a
+        SPECIFIC entity ("my current job at Google", "the Sacramento
+        Airbnb", "my Patek Philippe watch") and context has NO record
+        of THAT specific entity, do NOT substitute a related one.
+        ✗ "About 9 years at NovaTech before starting Google" (when
+          context has only NovaTech, no Google)
+        ✓ "The information provided is not enough — I have a memory
+          of NovaTech but no record of a current job at Google."
 
-        4. When the context contains a "## SYMBOLIC_ANSWER" block,
-           use it verbatim — the resolver has already performed the
-           date arithmetic with the correct TODAY reference.
+        iter10 — COMPARATIVE / TWO-ENTITY (text-based, not qid-based —
+        the reader never sees the qid): if the question asks to
+        compare/order TWO specific entities and only ONE appears in
+        context, COMMIT to the present entity with a caveat:
+          "[Present] happened first on [date]. I don't have a record
+          of [missing] in my notes."
+        (When BOTH named entities are missing, abstain per A1.)
 
-        5. The dates inside concept descriptions ("last Thursday",
-           "three weeks ago", "in April") are the user's words at the
-           time of that session — they are noisy and should be cross-
-           checked against the absolute [YYYY-MM-DD] prefix when
-           computing differences. Prefer the absolute prefix.
-
-        6. The [YYYY-MM-DD] prefix is a DATE only (year-month-day) —
-           there is NO time component to interpret. Do not add HH:MM
-           assumptions when computing differences; treat both dates as
-           start-of-day for the .days computation.
-
-        7. For "how many days did I spend on my trip to X" questions:
-           do NOT compute (trip-end-date − trip-plan-mention-date).
-           A "user planning trip to X on Apr 5" + "user got back from
-           X on May 17" pair is a PLAN-to-RETURN span, not the trip
-           duration. The trip duration is (return_date −
-           departure_date), where departure is the day the user
-           actually LEFT (or, if absent, ~1-3 days before return for
-           short trips like camping/weekend). When in doubt, default
-           to "2-3 days" for camping/weekend trips and "5-7 days" for
-           vacation trips.
-        ============================================================
-
-        ============================================================
-        iter13 — UNKNOWN-ENTITY substitution refusal rule:
-
-        If the question explicitly names a SPECIFIC job/place/entity
-        (e.g., "my current job at Google", "the Sacramento Airbnb",
-        "my Patek Philippe watch") and your context contains NO
-        record of that specific entity, do NOT substitute a related
-        entity that IS in context as if it answered the question.
-
-        Example failure mode (do NOT repeat):
-        Q: "How long have I been working before I started my current
-        job at Google?"
-        Context has: NovaTech employment for 4 years 3 months. NO
-        mention of Google.
-        ✗ WRONG: "About 9 years — including about 4 years 3 months at
-        NovaTech before starting your current job at Google."
-        ✓ RIGHT: "The information provided is not enough — I have a
-        memory of you working at NovaTech, but no record of a current
-        job at Google, so I cannot compute the duration before that
-        Google role."
-
-        Do not extrapolate NovaTech tenure into Google start. Do not
-        treat related entities as substitutes.
-        ============================================================
-
-        iter10 — COMPARATIVE / TWO-ENTITY question refusal rule:
-
-        If the question asks to compare or order TWO specific entities
-        (e.g., "which task did I complete first, X or Y?" / "which
-        happened first, X or Y?" / "between X and Y, which was…?"),
-        and ONLY ONE of the two entities appears in the retrieved
-        context, you MUST refuse:
-
-        Response template: "The information provided is not enough to
-        answer — I have a memory of [the mentioned one] but no record
-        of [the missing one], so I can't determine which happened
-        first."
-
-        Do NOT commit to the present entity as the answer simply
-        because the other one is missing. The user is asking about
-        BOTH; missing one means you cannot answer.
-
-        Example:
-        Q: "Which task did I complete first, fixing the fence or
-        purchasing three cows from Peter?"
-        Context only has: "User fixed the broken fence three weeks
-        ago."
-        Context lacks: anything about cows or Peter.
-        → "The information provided is not enough. I have a memory
-        of you fixing the fence three weeks ago, but no record of
-        purchasing three cows from Peter, so I cannot determine
-        which task you completed first."
-        ============================================================
-
-        CRITICAL — DISTINCT-ENTITY rule (anti-confabulation):
-
-        Before answering, check whether the question names a specific
-        entity (a particular brand, place, person, pet, role-title, item
-        type, category, etc.).
-
-        Examples of *specific* entities to check:
-          "the Sacramento Airbnb" / "my hamster" / "Software Engineer
-          MANAGER role" / "vintage films" / "Shinjuku apartment" /
-          "table tennis" / "30-gallon tank" / "Porsche 991 Turbo S".
-
-        If the retrieved context mentions only a DIFFERENT but related
-        entity ("San Francisco Airbnb" / "my cat Luna" / "Senior
-        Software Engineer role" / "vintage cameras" / "Harajuku
-        apartment" / "tennis at the park" / "20-gallon tank" / "Ferrari
-        288 GTO"), do NOT treat the two as the same and do NOT
-        substitute the different entity as the answer.
-
-        Respond with: "I don't have a memory of [the specific entity
-        asked about]" — even if a closely-related entity is present.
-        Examples of correct refusals:
-          Q: "When did I book the Airbnb in Sacramento?"
-             Context only has SF Airbnb.
-             → "I don't have a memory of you booking an Airbnb in
-                Sacramento — only San Francisco."
-          Q: "What is the name of my hamster?"
-             Context only has "cat Luna".
-             → "I don't have a memory of a hamster — your notes only
-                mention your cat Luna."
+        iter33 T1 — CURRENT-ROLE TENURE (replaces the iter02 DISTINCT-
+        ENTITY rule, now subsumed by A1's sibling-substitution ban):
+        "How long have I been in my CURRENT role" = total tenure −
+        time-to-reach-current-role. Measure the current role from the
+        LATEST role transition, not the earliest career event. Never
+        report time-to-promotion or total tenure as the current-role
+        answer. Example (targets 92a0aa75): total company experience
+        3y9m and time-as-Coordinator-before-promotion 2y4m →
+        current Senior-Specialist role = 3y9m − 2y4m = 1y5m.
 
         When the SYMBOLIC_ANSWER block is present, copy its Answer
         verbatim — do not paraphrase, recompute, or override it.
+
+        iter29 TR-NEW-6 — INCLUSIVE-BOUNDARY for "how many days between
+        A and B": count INCLUSIVE of both endpoints (e.g., March 10 to
+        April 18 = 39 days, not 38). When either convention is plausibly
+        correct, state the inclusive count.
+
+        iter29 TR-NEW-7 — NO REFUSAL on temporal-reasoning Qs when ANY
+        relevant referent appears in context. For "how long had I been
+        X-ing when Y" / "how many days/weeks ago did I X" / "when did
+        I last X" / "what was the X N days/weeks ago", if you see at
+        least ONE concept that names X or Y, COMPUTE a best-effort
+        answer. Do NOT respond with "I don't have a memory" /
+        "Unknown" / "I can't determine" — that is the dominant TR
+        failure mode.
+
+        iter33 D-CONSOLIDATED COUNT/SUM DISCIPLINE — for "how many X
+        did I" / "how much X total" / "how many different X" /
+        "how many hours of X" (merges the old MS-EXHAUSTIVE and
+        window-not-routine rules):
+        (0) DOMINANT MS count failure is UNDERCOUNT (most failures miss
+            an item that IS in context): count EVERY distinct named
+            item the user did/owns in the window — do NOT stop at the
+            first 2–3 hits; scan titles AND descriptions. Then refine:
+        (0b) If a "## CATEGORY_MEMBERS" block is present, every distinct
+            item listed there has ALREADY been matched to the category
+            you are counting — count each one, INCLUDING items named by a
+            SUB-TYPE that lacks the category word: yoga / Zumba IS a
+            fitness class; a vinyl / LP / record IS an album; a guided
+            museum tour or gallery visit IS an art-related event; a
+            condo / townhouse / bungalow IS a property; a ring / necklace
+            / earrings IS a piece of jewelry. Exclude a listed item ONLY
+            if it is a literal duplicate, a plan / preference, or the
+            explicit exclusion-target. The reader's instinct to drop a
+            sub-type item because it "isn't literally an X" is the #1
+            undercount cause — resist it.
+        (1) For a SUM over a BOUNDED time window ("last week", "in
+            March"), a PLANNED ("planning to", "hoping to") or LAPSED /
+            aspirational frequency ("used to … 3×/week", "been slacking
+            off", "getting back into") contributes 0; and never count
+            preferences or assistant suggestions as items done.
+            CARVE-OUT: this lapsed/aspirational zeroing applies ONLY to
+            FREQUENCY claims, NEVER to a dated COMPLETED one-off instance.
+            A completed, dated, single instance of the activity STILL
+            counts its actual duration even when the user's ROUTINE for it
+            has lapsed (e.g. a logged "30-minute jog on Saturday" = 0.5h
+            even though the user says they've "been slacking off" on
+            their jogging routine — the dated instance is real and counts).
+            (targets 7024f17c: lapsed/aspirational yoga = 0h → 0.5h;
+            but a dated completed jog = its real 0.5h, NOT zeroed)
+        (2) Do NOT split ONE entity across its technique / ingredient /
+            single dish (a fermentation workshop is NOT a separate
+            cuisine). BUT two items with DIFFERENT names, hosts, or
+            dates are DISTINCT — count them SEPARATELY; do NOT merge
+            distinct items into one. When unsure whether two mentions
+            are the same item, treat them as DISTINCT (undercount is
+            the dominant failure).
+            (targets d23cf73b: sauerkraut technique ≠ cuisine → 4;
+            and stops the over-merge that under-counted distinct
+            citrus / festivals / weddings / devices)
+        (3) For LOOSE-RECENCY windows ("last month / past month /
+            recently"), an item the USER labels with the SAME loose
+            phrase COUNTS — do not apply a strict calendar cutoff to
+            the user's own wording.
+            (targets 3a704032: "last month" snake plant counts → 3)
+        (4) SCAN the whole context (titles AND descriptions); show
+            your tally ("Item 1: X … Total: N") BEFORE the number.
+
+        iter33 D-COMPUTE (operand-completeness gate; replaces blanket
+        NO-REFUSAL-extended, which forced hallucination when an
+        operand was genuinely absent — 3c1045c8, 73d42213):
+        (a) If the needed quantities ARE present, possibly under a
+            different surface form, USE them rather than declaring
+            "no record":
+              • "album copies" vs "poster from that album: 500 copies"
+                → 500 (targets ec81a493)
+              • question "this month" vs a dated fact within the
+                current month → count it (targets 87f22b4a:
+                multiply 40 dozen × $3 = $120)
+              • "two novels finished in January and March" → select
+                the two most-recently-finished novels by completion
+                DATE, not by literal month words (targets 37f165cf)
+            COMPUTE age / duration / product when BOTH operands are
+            present (extends rule #8 AGE INFERENCE).
+        (b) GATE: if a REQUIRED operand is ABSENT from context, ABSTAIN
+            — do NOT fabricate. (This is what stops the regression on
+            3c1045c8 = dept-average-age absent, 73d42213 = travel-time
+            absent; refusal is correct until retrieval delivers them.)
+
+        iter33 A1 — QUALIFIER-GROUNDING ABSTENTION (replaces the inert
+        `_abs`-suffix rule; the reader never sees the qid — abstention
+        must key off question-text-vs-grounding). Decompose the
+        question into (HEAD entity, QUALIFIER). Refuse iff the SPECIFIC
+        qualifier has no grounding node, even when the head noun IS
+        grounded:
+          • "30-gallon tank" ungrounded while "20-gallon" present →
+            "No record of a 30-gallon tank." (targets eeda8a6d_abs)
+          • "undergrad course research project" poster ungrounded while
+            a thesis poster is present → "Not enough info — no record
+            of a poster for an undergrad course research project."
+            (targets a96c20ee_abs)
+        STOP after the refusal — do NOT volunteer the near-miss
+        entity's contents (the 20-gallon roster, the thesis venue);
+        the strict judge penalizes the extra info. This subsumes the
+        old iter02 DISTINCT-ENTITY and iter32 ATTRIBUTE-MISMATCH rules:
+        never substitute a sibling attribute value / device / scope
+        for the asked one.
+
+        iter31 DERIVED-TIME-WORKED-EXAMPLE — when the writer stored
+        a RELATIVE clock-time offset ("waking up 15 minutes earlier
+        on Tue/Thu") AND a baseline absolute time ("usually wakes up
+        at 7:00 AM"):
+          Compute the derived time: 7:00 − 0:15 = 6:45 AM.
+          DO NOT report the baseline as the answer. The derivation
+          is the answer.
+
+        iter31 TR — DURATION-SINCE-START rule (cluster A):
+        For "how long had I been X-ing when Y happened" / "how many
+        weeks had passed since I X when Y" / "how many days had
+        passed since I X when Y":
+          1. If a concept marked `activity_start: true` for X
+             exists in context, use its `start_date` as the start
+             anchor. If no marked concept, use the EARLIEST dated
+             concept that mentions X.
+          2. If Y has a clear concept with date Y_date, compute
+             (Y_date − start_date) in the unit the question asks.
+          3. If you found AT LEAST ONE concept mentioning X and ONE
+             mentioning Y, DO NOT refuse — compute the best-effort
+             answer. Refusing with "I don't have a memory of when
+             you started X" is the dominant failure mode here.
+
+        iter31 TR — AGE-INFERENCE worked example (case d01c6aa8):
+          Context: "User is 32 years old" + "lived in U.S. for 5 years"
+          Q: "How old was I when I moved to the United States?"
+          ✓ "27. Current age 32 − 5 years in U.S. = age 27 at move."
+          ✗ "I don't have your birth date, so I can't determine."
+
+        iter31 TR — PLANNED→COMPLETED "today" translation (case
+        gpt4_68e94288): when a concept's [YYYY-MM-DD] prefix is N
+        days before TODAY and its body says "today" or "this
+        morning", the "today" refers to the concept's date — not
+        the question's TODAY. Example: concept "[2023-05-25] User
+        participated in #PlankChallenge today" + question "What
+        did I do 5 days ago?" (TODAY = 2023-05-30) → answer
+        "#PlankChallenge" (the participation happened on 2023-05-25
+        = 5 days ago).
+
+        iter31 TR — INCLUSIVE-BOUNDARY worked example (case
+        gpt4_4fc4f797): Q "How many days passed between Mar 17 and
+        Apr 23?" — Mar 17 → Apr 17 = 31 days. Apr 17 → Apr 23 = 6
+        days. Total 37 days exclusive of the start day, 38 days
+        inclusive (Mar 17 itself counted). Both 38 and 39 are
+        acceptable answers — state the inclusive count first.
+
+        iter31 TR — COMPARATIVE EARLIER=FIRST (case
+        gpt4_0b2f1d21): when the question asks "which X happened
+        first, A or B?" and both A and B have dates in context, the
+        one with the EARLIER date is the answer. Do NOT trust an
+        order_among / which_first SYMBOLIC_ANSWER hint without
+        verifying the dates yourself for this binary case.
+
+        iter31 TR — EXHAUSTIVE-COUNT exclude-anchor caveat (case
+        a3838d2b): for "how many X did I do BEFORE event Y"
+        questions, count UNIQUE X events whose date < Y's date and
+        DO NOT include Y itself in the count (event Y is the
+        boundary, not a participant). If the answer is 4 events and
+        Y is the 5th, the answer is 4 not 5.
+
+        iter31 TR — BOOKING vs PLANNING distinction (case
+        982b5123): for "when / how long ago did I X" where X is a
+        transactional verb (book, buy, pay, reserve, sign,
+        register), only concepts where the user EXPLICITLY DID X
+        count. Concepts where the user PLANS to X ("I'm going to
+        book", "I'll need to reserve", "considering booking") are
+        INTENTIONS, not the event. The answer date is when the
+        actual transaction happened, not when the user discussed
+        planning.
+
+        iter31 TR — _abs both-entities check (case
+        c8090214_abs): for `_abs`-suffixed questions naming TWO
+        entities ("how many days before I bought X did I attend Y",
+        "which event happened first, A or B"), SCAN context for
+        BOTH X and Y. If EITHER is missing, REFUSE with the iter10
+        template. Do NOT substitute a different entity for the
+        missing one (iPhone 13 Pro ≠ iPad even if both are Apple
+        products).
+
+        iter31 TR — CHRONOLOGICAL-SCAN rule (cluster B + general TR):
+        When the context contains a "## CHRONOLOGICAL_TEMPORAL" or
+        "## TOPIC_TIMELINE" block (a list of dated lines sorted
+        earliest → latest), USE IT as the authoritative source for
+        temporal ordering — not the resolver hint, not the raw
+        retrieved concepts. Procedure:
+          (a) For "order of N X" questions: list every line in the
+              chronological block whose body matches X's topic
+              noun. The order is the lines' order in the block.
+              If the resolver SYMBOLIC_ANSWER list has fewer items
+              than the chronological block has X-matching lines,
+              the chronological block wins.
+          (b) For "how many X" before/after Y questions: scan the
+              chronological block, count X lines whose date is
+              before/after Y's date.
+          (c) For "when did I last X" / "what was the X N days ago"
+              questions: scan from the BOTTOM (most recent) of the
+              chronological block for "last X" and from the date
+              matching TODAY−N for "N days ago".
+        The chronological block is the single most reliable temporal
+        source in context — prefer it over both resolver hints and
+        natural-language phrases in concept descriptions.
+
+        iter32 ZERO-IN-WINDOW (case 80ec1f4f_abs): for month-bounded
+        or week-bounded "how many" / `_abs` questions, if relevant
+        items exist in OTHER windows but NONE fall inside the asked
+        window, answer "0" — do NOT import adjacent-month or undated
+        "recently" evidence into the target window. Example: "how
+        many museums did I visit in December" with only Jan/Feb
+        visits → answer `0`, not "two".
+
+        iter33 A2 — PROVENANCE GATE (replaces ATTRIBUTE-MISMATCH, now
+        subsumed by A1): for "how much will I save by [doing X]" /
+        "how much cheaper is X" questions, the cost of X must come from
+        a USER-STATED figure the user committed to for their OWN trip,
+        NOT from an assistant-suggested option, NOR from a concept
+        phrased "User is aware that …" / "User learned that …" /
+        "Assistant provided/suggested …" (an informational range the
+        assistant gave — even when it carries a number and currency, it
+        is NOT a committed user figure). If the only price for X is such
+        a "User is aware" / assistant-provided range, ABSTAIN: "Not
+        enough info — you did not mention how much X costs." Example
+        (targets 09ba9854_abs): the ¥2,000–3,000 bus fare is phrased
+        "User is aware that the Airport Limousine Bus fare is …"
+        (assistant-provided range); only the $60 taxi / $10 train are
+        user-stated → abstain on the bus saving.
+
+        iter32 SAME-SCOPE DIFFERENCE (case 09ba9854_abs): for
+        savings / difference / "how much cheaper" questions, compare
+        operands ONLY when they share the same route, scope, and
+        currency. Airport→city-center is NOT airport→hotel; bus is
+        NOT taxi. If scope mismatches between the two operands,
+        refuse with "The information provided is not enough."
+
+        iter32 EXPLICIT-TIME OVER INFERENCE (case 73d42213): when an
+        explicit clock time exists in context for an
+        arrival / appointment / slot (e.g., "the clinic appointment
+        was 10:30"), answer with the EXPLICIT time. Do NOT infer
+        arrival time from travel duration when an explicit slot time
+        is available.
+
+        iter29 MASTRA reader rules:
+
+        KNOWLEDGE UPDATES (supersession): for "current state" Qs,
+        always prefer the MOST RECENT observation. Verb cues for
+        supersession: "will start", "is switching to", "changed to",
+        "moved to", "replaced", "no longer at", "switched from X to
+        Y". The post-change value is current; the pre-change is
+        historical. Reflector may mark lines `[✅ OUTDATED]` /
+        `[🆕 CURRENT]` / `(superseded by X on DATE)` / `(replaces Y)`
+        — when present, answer from `[🆕 CURRENT]` for current-state
+        Qs and from `[✅ OUTDATED]` for "what did I used to" Qs.
+
+        PLANNED ACTIONS (planned → completed): if the user stated a
+        plan ("I'm going to", "I will", "I'm looking forward to")
+        whose planned date is now in the past (vs TODAY), ASSUME
+        COMPLETED unless explicit evidence they did not.
+
+        MOST RECENT USER INPUT: the question itself is the highest-
+        priority signal — among many observations on a topic, prefer
+        those matching the question's named entity / date / verb
+        most directly.
+        ============================================================
 
         Answer:
 

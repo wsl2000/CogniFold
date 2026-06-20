@@ -1,323 +1,371 @@
-<div align="center">
+# Cognifold
 
-<h1>CogniFold: Always-On Proactive Memory<br/>via Cognitive Folding</h1>
+A dynamic concept graph system that processes real-time event streams and maintains an evolving knowledge representation.
 
-<a href="https://huggingface.co/datasets/OpenNorve/CogEval-Bench" target="_blank"><img alt="CogEval-Bench Dataset" src="https://img.shields.io/badge/Dataset-CogEval--Bench-FFD21E?logo=huggingface&logoColor=black" height="22px"></a>
-<a href="https://arxiv.org/abs/2605.13438" target="_blank"><img alt="Paper" src="https://img.shields.io/badge/Technical_Report-arXiv-EC1C24?logo=arxiv&logoColor=white" height="22px"></a>
-<a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/License-Apache--2.0-blue.svg" height="22px"></a>
-<a href="https://www.python.org/"><img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white" height="22px"></a>
+**101 source files | 27k LOC | 717 tests | 16 modules**
 
-</div>
+## Overview
 
-<p><em>A <strong>brain-inspired always-on agent memory</strong> that folds continuously arriving events into self-emerging cognitive structure — designed for the next generation of proactive assistants.</em></p>
+Cognifold ingests a stream of events (activities, observations, interactions) and builds a concept graph that:
+- Captures patterns and higher-level concepts from raw events
+- Generates actionable intents grounded in observed behavior
+- Uses PageRank-inspired scoring to maintain a hierarchical context window
+- Provides 5 retrieval strategies from keyword to agentic multi-round search
+- Exposes a REST API for session-based graph management and querying
 
-<div align="center">
+## Architecture
 
-<img src="figures/overview.png" width="72%" alt="CogniFold tri-layer cognitive folding loop: Hippocampal → Neocortical → Prefrontal"/>
+```
+                                  COGNIFOLD SYSTEM
 
-</div>
+  WRITE PATH (Event Processing)              READ PATH (Query & Retrieval)
+  ==============================             ==============================
 
----
-
-## 📖 Table of Contents
-
-- [🎯 Highlights](#-highlights)
-- [🧠 Concepts in 60 seconds](#-concepts-in-60-seconds)
-- [🎬 Demo](#-demo)
-- [🛠️ Installation](#️-installation)
-- [🚀 Quick Start](#-quick-start)
-- [⚙️ Key Configurations](#️-key-configurations)
-- [🔁 Benchmark Evaluation](#-benchmark-evaluation)
-- [📂 Project Structure](#-project-structure)
-- [🔗 Citation](#-citation)
-- [📜 License](#-license)
-
----
-
-## 🎯 Highlights
-
-1. **🔮 Proactive Memory.** Proactivity is a property of the memory substrate, not the agent's policy — goals emerge from the topology that accumulates the conditions for them.
-2. **🧠 Architecture.** A tri-layered substrate extending Complementary Learning Systems with a prefrontal Intent layer — events fold into concepts, concepts crystallize into intents, surfaced through a hierarchical context window.
-3. **🌱 Conceptual Bootstrapping.** Accumulation, compression, decay, completion — four structural debts of a streaming event log, resolved as transparent graph rewrites: test-time learning without gradient updates or surface text rewriting.
-4. **📊 Evaluation.** CogEval-Bench isolates proactive emergence from retrieval accuracy; seven downstream benchmarks confirm the substrate stays robust on conventional memory tasks.
-
-## 🧠 Concepts in 60 seconds
-
-CogniFold ingests an asynchronous event stream and folds it into a typed concept graph. Four node types — the first three mirror Complementary Learning Systems (CLS) theory:
-
-| Node | ID prefix | Layer | Role |
-|---|---|---|---|
-| `event` | `e-` | Hippocampal | Episodic trace — each input committed verbatim |
-| `concept` | `c-` | Neocortical | Semantic pattern abstracted from recurring events |
-| `intent` | `i-` | Prefrontal | Crystallizes when a concept cluster crosses density — *this is what makes memory proactive* |
-| `time` | `t-` | — | Temporal anchor (deadlines, scheduled times) |
-
-Eight typed/weighted edges (`GROUNDS`, `CAUSES`, `TRIGGERS`, `REINFORCES`, `PART_OF`, `DERIVED_FROM`, `DEADLINE_FOR`, `RELATED_TO`) wire them. Two ways to read the graph:
-
-- **Proactive Context Window** *(no query asked)* — read the live `immediate / working / background` bands; intents surface on their own.
-- **Memory Query Agent** *(explicit query)* — retrieve via `bm25` / `semantic` / `hybrid` modes, optionally wrapped in an agentic multi-round loop.
-
-Details and tunables: [⚙️ Key Configurations](#️-key-configurations).
-
-## 🎬 Demo
-
-**1. Proactive memory in motion.** The graph folds events, crystallizes concepts, and surfaces intents.
-
-<div align="center">
-
-<video src="https://github.com/user-attachments/assets/e2ed5131-d145-4f6b-9ac8-a28be50d6e70" controls width="86%"></video>
-
-</div>
-
-**2. Substrate across narratives.** *I, Robot* (top) and *Currency Wars* (bottom), two stream snapshots each.
-
-<div align="center">
-
-<img src="figures/mem.png" width="86%" alt="Concept graphs from two narratives at two stream snapshots each"/>
-
-</div>
-
-## 🛠️ Installation
-
-### Prerequisites
-
-| Requirement | Notes |
-|---|---|
-| Python ≥ 3.11 | 3.14 tested in CI |
-| `uv` (recommended) or `pip` | `uv` gives ~10× faster installs |
-| LLM API key (optional) | Google `GOOGLE_API_KEY` or OpenAI `OPENAI_API_KEY` — only needed for agent / semantic retrieval / agentic mode |
-
-### Step-by-step
-
-```bash
-# 1. Clone the repository
-git clone https://github.com/MergeFold/CogniFold.git
-cd CogniFold
-
-# 2. Install (pick one)
-uv sync                                    # fastest, uses uv.lock
-pip install -e ".[agent,service]"          # core + agent + HTTP service
-pip install -e ".[dev,agent,service,viz]"  # everything (dev tools, viz, FAISS)
-
-# 3. Configure API keys
-cp .env.example .env
-# edit .env and set GOOGLE_API_KEY or OPENAI_API_KEY
+  ┌──────────┐   ┌──────────┐               ┌──────────────────┐
+  │Generator │   │ Importer │               │ Natural Language  │
+  │  (LLM)   │   │  (Data)  │               │     Query         │
+  └────┬─────┘   └────┬─────┘               └────────┬─────────┘
+       └──────┬───────┘                               │
+              ▼                                       ▼
+     ┌──────────────┐                      ┌─────────────────────┐
+     │ Event Stream │                      │  MemoryQueryAgent    │
+     └──────┬───────┘                      │                     │
+            ▼                              │  Entry Point Selection
+  ┌──────────────────┐                     │  ┌─────┬────┬──────┐│
+  │ Context Selector │                     │  │BM25 │Sem │Hybrid││
+  │  • PageRank      │◄──┐                │  └─────┴────┴──┬───┘│
+  │  • Recency       │   │                │  ┌─────────────┘    │
+  │  • Urgency       │   │                │  │ AGENTIC          │
+  └────────┬─────────┘   │                │  │ R1→sufficiency   │
+           ▼             │                │  │ R2→expansion+RRF │
+  ┌──────────────────┐   │                │  └──────────────────┘│
+  │  LangGraph Agent │   │                │         │            │
+  │  (Gemini/OpenAI) │   │                │         ▼            │
+  │                  │   │                │  Traverse → Score     │
+  │  Event +         │   │                │         → Assemble   │
+  │  Hierarchical    │   │                └──────────┬──────────┘
+  │  Context Window  │   │                           ▼
+  │       ↓          │   │                ┌──────────────────┐
+  │  UpdatePlan      │   │                │   QueryResult    │
+  └────────┬─────────┘   │                │  • context text  │
+           ▼             │                │  • ranked nodes  │
+  ┌──────────────────┐   │                │  • metadata      │
+  │    Executor      │───┘                └──────────────────┘
+  │  • Validate      │
+  │  • Apply atomic  │         ┌───────────────────────────┐
+  │  • Rollback      │────────►│     CONCEPT GRAPH         │
+  └──────────────────┘         │  Nodes: event, concept,   │
+                               │         intent, time      │
+   HTTP SERVICE                │  Edges: 8 typed, weighted │
+   ============                │  Storage: NetworkX + JSON  │
+  ┌──────────────────┐         └───────────────────────────┘
+  │  FastAPI Server   │
+  │  • Sessions       │   ┌─────────────────────────┐
+  │  • Event ingest   │   │   Replay System          │
+  │  • Query API      │   │   JSONL → interactive    │
+  │  • Graph state    │   │   HTML visualization     │
+  │  • Auth           │   └─────────────────────────┘
+  └──────────────────┘
 ```
 
-## 🚀 Quick Start
+---
 
-### CLI demo (no LLM required — uses BM25 retrieval)
+## Quick Start
 
 ```bash
-# 1. Generate a sample timeline (a saved demo is also under data/generated/)
-cognifold generate --domain personal-timeline --persona software_engineer --events 50
+# Clone the repository
+git clone git@github.com:MergeFold/CogniFold.git
+cd CogniFold
 
-# 2. Build the concept graph
-cognifold run data/generated/alex_chen_timeline.json --save-graph output/graph.json
+# Install dependencies
+uv sync  # or: pip install -e .
 
-# 3. Query the graph
-cognifold query --graph output/graph.json --retrieval bm25 "morning routine"
+# Set API key (required for LLM features)
+export GOOGLE_API_KEY='your-api-key'
 
-# 4. Replay the graph evolution as an interactive HTML
+# Run tests to verify setup
+pytest tests/ -v
+```
+
+### Generate Events
+
+```bash
+cognifold generate --domain personal-timeline --persona software_engineer --events 50 --days 2
+```
+
+### Run Simulation
+
+```bash
+cognifold run data/generated/alex_chen_timeline.json --agent --save-graph output/graph.json -o output/
+```
+
+### Replay & Visualize
+
+```bash
 cognifold replay logs/replay_alex_chen_timeline_*.jsonl -o output/replay.html --open
 ```
 
-### Python — proactive context window (no query)
-
-```python
-from cognifold import NodeType
-from cognifold.graph.persistence import load_graph
-from cognifold.scoring.hierarchical import HierarchicalContextSelector
-
-# Load a previously saved graph
-graph = load_graph("output/graph.json")
-print(f"nodes={graph.node_count}  edges={graph.edge_count}")
-
-# Read the live, always-on context window — no query asked!
-context = HierarchicalContextSelector().select_context(graph)
-
-print(f"\nimmediate ({context.immediate.node_count} nodes — top-of-mind):")
-for n in context.immediate.nodes[:5]:
-    print(f"  [{n.type.value}] {n.data.get('title', n.id)}")
-
-print(f"\nworking ({context.working.node_count} nodes — active patterns)")
-print(f"background ({context.background.node_count} nodes — historical)")
-
-# Emergent intents surface here without anyone asking
-intents = graph.get_nodes_by_type(NodeType.INTENT)
-print(f"\n{len(intents)} intents emerged from the graph state:")
-for i in intents[:5]:
-    print(f"  [{i.id}] {i.data.get('title', '?')}  status={i.data.get('status', '?')}")
-
-# Example output (50-event personal timeline):
-# nodes=78  edges=124
-#
-# immediate (8 nodes — top-of-mind):
-#   [event]   Met with team about Q3 plan
-#   [intent]  Schedule follow-up with marketing
-#   [concept] product launch coordination
-#   [event]   Coffee with Sarah at Blue Bottle
-#   [event]   Reviewed candidate resume
-#
-# working (23 nodes — active patterns)
-# background (47 nodes — historical)
-#
-# 3 intents emerged from the graph state:
-#   [i-7]  Schedule follow-up with marketing  status=pending
-#   [i-12] Buy birthday gift for Sarah        status=pending
-#   [i-15] Q3 OKR review prep                 status=in_progress
-```
-
-### Python — explicit query (reactive)
-
-```python
-from cognifold.query.agent import MemoryQueryAgent
-from cognifold.query.config import QueryConfig
-
-agent = MemoryQueryAgent(graph, config=QueryConfig(retrieval_mode="hybrid"))
-result = agent.query("What did I commit to about exercise?")
-print(result.context_text)
-```
-
-### HTTP service
+### Query the Graph
 
 ```bash
-./scripts/start_server.sh                       # default :8000
-cognifold client --url http://localhost:8000    # interactive REPL
+# BM25 (fast, no API key needed)
+cognifold query --graph output/graph.json --retrieval bm25 "morning routine"
 
-# Or hit the API directly
-curl -X POST http://localhost:8000/api/v1/sessions
-curl http://localhost:8000/docs                 # OpenAPI / Swagger UI
+# Hybrid (default, best general quality)
+cognifold query --graph output/graph.json --retrieval hybrid "exercise habits"
+
+# Agentic multi-round (complex queries, requires LLM API key)
+cognifold query --graph output/graph.json --retrieval agentic "connections between diet and exercise"
+
+# Interactive mode
+cognifold query --graph output/graph.json --retrieval bm25 --interactive
 ```
 
-## ⚙️ Key Configurations
-
-### Retrieval modes (Memory Query Agent)
-
-Set via `QueryConfig(retrieval_mode=...)`. The four modes select the **entry point** into the graph for an explicit query:
-
-| Mode | When to use | Needs LLM key? |
-|---|---|---|
-| `legacy` | original keyword matching, minimal dependency | No |
-| `bm25` | TF-IDF inverted index; fast and deterministic | No |
-| `semantic` | embedding-based vector search | Yes (Google / OpenAI) |
-| `hybrid` *(default)* | BM25 + semantic via RRF fusion; best general accuracy | Yes — auto-degrades to BM25 if no embedder |
-
-For hard multi-hop queries, wrap with `AgenticRetriever`: it runs `hybrid` first, asks an LLM whether the result is sufficient, and if not, expands the query in parallel and re-ranks via RRF.
-
-### Read-window bands (Proactive Context Window)
-
-`HierarchicalContextSelector().select_context(graph)` returns three bands, each a different *attention regime*:
-
-| Band | Default size | Score weights |
-|---|---|---|
-| `immediate` | 10% of window | recency 0.7 + urgency 0.3 |
-| `working` | 30% of window | PageRank 0.5 + recency 0.3 + type 0.2 *(favors concepts)* |
-| `background` | 50% of window | PageRank 0.8 + diversity 0.2 |
-
-The window is read *anytime* — no query is required. Intents that crossed the crystallization threshold appear in `immediate` automatically; concepts that are being reinforced live in `working`; durable structure sinks to `background`.
-
-### Most-used CLI flags (benchmark runners)
-
-| Flag | Purpose |
-|---|---|
-| `--event-stream` | enable inter-session consolidation (`merge_similar_concepts` + `prune_orphan_concepts`); **required for paper-grade LoCoMo** |
-| `--query-mode {base, rag, episodic, mergefold}` | ablation switch: `mergefold` = full CogniFold; others are baselines |
-| `--disable-concepts` | events-only baseline (skips concept formation) |
-| `--model openai:gpt-4o-mini` | reader model |
-| `--judge-model gpt-4o-mini` | LLM-as-judge for QA scoring (auto-derived from `--model` if omitted) |
-| `--limit N` | cap number of examples (smoke-testing) |
-| `--no-llm-eval` | skip LLM judging step (use exact-match / F1 only) |
-
-Environment overrides accepted by `scripts/reproduce.sh`: `MODEL=...`, plus the LLM keys `OPENAI_API_KEY` / `GOOGLE_API_KEY` (from `.env`).
-
-## 🔁 Benchmark Evaluation
-
-One wrapper for everything — sane defaults, dataset auto-downloaded on first run, paper-faithful flags applied per benchmark.
+### Start the HTTP Service
 
 ```bash
-# canonical run: LoCoMo full 10-conversation Mem0 protocol (≈ 1 h on gpt-4o-mini)
-bash scripts/reproduce.sh
+# Quick start
+./scripts/start_server.sh
 
-# any single benchmark (paper order — CogEval-Bench first, LoCoMo second)
-bash scripts/reproduce.sh cogeval        # CogEval-Bench (structural diagnostic; the proactive thesis)
-bash scripts/reproduce.sh locomo         # LoCoMo (default; Mem0 protocol)
-bash scripts/reproduce.sh musique        # multi-hop QA
-bash scripts/reproduce.sh narrativeqa    # narrative comprehension
-bash scripts/reproduce.sh tomi           # theory of mind
-bash scripts/reproduce.sh babilong       # long-context fact extraction
-bash scripts/reproduce.sh mutual         # dialogue coherence
-bash scripts/reproduce.sh streamingqa    # streaming temporal QA
+# Or manually
+cognifold serve --host 127.0.0.1 --port 8000
 
-# all 8 paper benchmarks back-to-back (CogEval + 7 downstream; uses MODEL env to override)
-bash scripts/reproduce.sh all
+# Interactive client
+cognifold client --url http://localhost:8000
 ```
 
-Each run writes `benchmarks/<name>/output/benchmark_results.json`. Override the reader model via env: `MODEL=openai:gpt-4o bash scripts/reproduce.sh locomo`. The `--event-stream` flag is **automatically applied to LoCoMo** (it gates the inter-session consolidation pass central to the always-on memory thesis); all other benchmarks discharge consolidation through the shared `base_runner` post-ingestion hook.
+---
 
-## 📂 Project Structure
+## Core Concepts
+
+### Node Types
+
+| Type | Description | ID Prefix |
+|------|-------------|-----------|
+| `event` | Direct representation of input events | `e-` |
+| `concept` | Higher-level patterns from multiple events | `c-` |
+| `intent` | Goals/desires that emerge from patterns | `i-` |
+| `time` | Temporal anchors (deadlines, schedules) | `t-` |
+
+### Edge Types
+
+| Type | Weight | Usage |
+|------|--------|-------|
+| `GROUNDS` | 0.9 | Event grounds Concept/Intent |
+| `CAUSES` | 0.9 | Event causes Event |
+| `TRIGGERS` | 0.8 | Concept triggers Intent |
+| `REINFORCES` | 0.7 | Event reinforces Concept |
+| `PART_OF` | 0.7 | Sub-concept of parent |
+| `DERIVED_FROM` | 0.6 | Concept derived from another |
+| `DEADLINE_FOR` | 0.6 | Time is deadline for Intent |
+| `RELATED_TO` | 0.5 | Generic relationship |
+
+### Context Window Scoring
+
+Nodes are scored using a composite formula:
+```
+Score = alpha * StructuralRank + beta * RecencyScore + gamma * AccessScore
+```
+
+| Component | Weight | Calculation |
+|-----------|--------|-------------|
+| StructuralRank | 0.4 | PageRank on graph topology |
+| RecencyScore | 0.4 | `exp(-lambda * hours_since_update)` |
+| AccessScore | 0.2 | Normalized usage frequency |
+
+The context window is organized into three hierarchical levels:
+
+| Level | Budget | Focus |
+|-------|--------|-------|
+| Immediate | 10% | Recent events, urgent intents |
+| Working | 30% | Active concepts, patterns |
+| Background | 50% | Historical context, weak signals |
+
+### Retrieval Modes
+
+| Mode | Description | Dependencies |
+|------|-------------|-------------|
+| `legacy` | Simple keyword matching | None |
+| `bm25` | BM25 inverted index | None |
+| `semantic` | Embedding cosine similarity (optional FAISS ANN) | Embedder |
+| `hybrid` | BM25 + semantic with RRF fusion **(default)** | Embedder (degrades to BM25) |
+| `agentic` | Multi-round: hybrid + LLM sufficiency check + query expansion | Embedder + LLM |
+
+The **agentic** retriever runs two rounds:
+1. Hybrid search + LLM judges whether results are sufficient
+2. If insufficient: LLM generates complementary queries, runs parallel hybrid searches, fuses all results with multi-list RRF
+
+---
+
+## HTTP Service
+
+Cognifold runs as a stateful REST API. Each client creates a **session** that owns an isolated concept graph, ranker, and optional LLM agent.
+
+### Endpoints
+
+All routes prefixed with `/api/v1`. OpenAPI docs at `/docs`.
+
+| Category | Method | Path | Description |
+|----------|--------|------|-------------|
+| Health | GET | `/health` | Health check |
+| Health | GET | `/ready` | Readiness + active sessions |
+| Sessions | POST | `/sessions` | Create session |
+| Sessions | GET | `/sessions/{id}` | Get session info |
+| Sessions | DELETE | `/sessions/{id}` | Delete session |
+| Sessions | POST | `/sessions/{id}/load` | Load graph file |
+| Events | POST | `/sessions/{id}/events` | Ingest event (sync/async) |
+| Events | POST | `/sessions/{id}/events/batch` | Batch ingest |
+| Events | GET | `/sessions/{id}/tasks/{task_id}` | Poll async task |
+| Query | POST | `/sessions/{id}/query` | Natural language query |
+| Graph | GET | `/sessions/{id}/graph` | Graph state |
+| Graph | GET | `/sessions/{id}/graph/stats` | Statistics |
+| Graph | GET | `/sessions/{id}/graph/concepts` | Top concepts |
+| Graph | GET | `/sessions/{id}/graph/intents` | Recent intents |
+| Graph | GET | `/sessions/{id}/graph/events` | Recent events |
+| Graph | GET | `/sessions/{id}/graph/nodes/{node_id}` | Node detail |
+| Graph | GET | `/sessions/{id}/graph/nodes/{node_id}/expand` | BFS expand |
+
+See [docs/SERVICE_API.md](docs/SERVICE_API.md) for full request/response schemas.
+
+### Interactive CLI Client
+
+```bash
+cognifold client --url http://localhost:8000 --api-key secret \
+  --google-api-key "$GOOGLE_API_KEY" --model "gemini-2.5-flash"
+```
+
+| Command | Description |
+|---------|-------------|
+| `:session create` | Create a new session |
+| `:session info` | Session details |
+| `:ingest TYPE TITLE [--desc D]` | Ingest an event |
+| `:stats` | Graph statistics |
+| `:concepts` / `:intents` / `:events` | List nodes by type |
+| `:node <ID>` | Inspect a node |
+| `:expand <ID> [N]` | BFS expand N layers from node |
+| `:graph [N]` | Show graph state |
+| `:load <FILE>` | Load graph JSON |
+| `any text` | Natural language query |
+
+---
+
+## Supported Domains
+
+| Domain | Description | Command |
+|--------|-------------|---------|
+| `personal-timeline` | Daily activities | `--persona software_engineer` |
+| `computer-activity` | Computer usage | `--profile software_developer` |
+| `service-logs` | Microservice events | `--topology ecommerce` |
+| `wiki` | Markdown/PDF documents | `cognifold build-timeline` |
+
+---
+
+## Project Structure
 
 ```
 cognifold/
-├── src/cognifold/             # core library (20 submodules)
-│   ├── __init__.py
-│   ├── __main__.py
-│   ├── config.py
-│   ├── logging.py
-│   ├── agent/                 # LangGraph agent, prompts, sections, domain configs
-│   ├── cli/                   # CLI commands
-│   ├── embeddings/            # Gemini / OpenAI providers, optional FAISS ANN
-│   ├── executor/              # Plan execution with validation and rollback
-│   ├── generator/             # Event generation (4 domains)
-│   ├── graph/                 # NetworkX wrapper, persistence, validation, metrics
-│   ├── importers/             # Data importers (wiki)
-│   ├── intent/                # Intent-to-action system: queue, executor, calibrator
-│   ├── models/                # Pydantic schemas (Event, Node, Edge, UpdatePlan)
-│   ├── pipeline/              # Pipeline orchestration (classic + layered)
-│   ├── query/                 # Query agent, strategies, assembly, LLM utilities
-│   ├── replay/                # Graph evolution logging + interactive HTML
-│   ├── retrieval/             # BM25, hybrid, agentic multi-round, cross-encoder
-│   ├── scoring/               # PageRank, hierarchical context, node ranking
-│   ├── service/               # HTTP service (FastAPI) — sessions, routes, auth, stores
-│   ├── simulator/             # Timeline processing, visualization
-│   ├── symbolic/              # Symbolic belief tracker, cognition / intent routers
-│   ├── temporal/              # Temporal entity extraction, date parsing
-│   ├── trace/                 # Tracing / instrumentation
-│   └── utils/                 # Shared utilities (LLM metrics, budget, embeddings)
-├── benchmarks/                # 8 benchmark runners + shared base-runner library
-│   ├── shared/                # base_runner, baseline_runner, graph_evolution_tracker
-│   ├── babilong/  cogeval/    locomo/        musique/
-│   └── mutual/    narrativeqa/  streamingqa/  tomi/
-├── configs/                   # per-benchmark prompt profiles (YAML)
-├── examples/                  # sample timelines + replay HTML for 4 domains
-├── scripts/                   # auxiliary scripts (LoCoMo audit-protocol rejudge, …)
-├── docs/                      # ARCHITECTURE.md · BENCHMARK.md · PROMPTS.md
-├── .github/                   # CI / CD workflows
-├── cognifold                  # CLI entry-point shell launcher
-├── config.example.yaml        # example application config
-├── .env.example               # example environment file
-├── generate_demo.py           # one-shot demo-graph generator
-├── test_benchmarks.py         # smoke tests for the benchmark runners
-├── pyproject.toml
-├── uv.lock
-├── Makefile
-├── README.md
-├── LICENSE
-└── .gitignore
+├── src/cognifold/          # 101 files, 27k LOC
+│   ├── models/             # Pydantic schemas (Event, Node, Edge, UpdatePlan)
+│   ├── graph/              # NetworkX wrapper, persistence, validation, metrics
+│   ├── scoring/            # PageRank, hierarchical context, node ranking
+│   ├── agent/              # LangGraph agent, prompts, domain config, sections
+│   ├── executor/           # Plan execution with validation and rollback
+│   ├── query/              # Query agent, strategies, assembly, LLM utilities
+│   ├── retrieval/          # BM25, hybrid, agentic multi-round retrieval
+│   ├── embeddings/         # Embedding providers (Gemini/OpenAI), FAISS ANN
+│   ├── temporal/           # Temporal entity extraction, date parsing
+│   ├── intent/             # Intent-to-action system, queue, executor
+│   ├── service/            # HTTP service (FastAPI), sessions, routes, auth
+│   ├── generator/          # Event generation (personal, computer, service)
+│   ├── importers/          # Data importers (wiki)
+│   ├── replay/             # Graph evolution logging and visualization
+│   ├── simulator/          # Timeline processing, visualization
+│   └── cli/                # CLI commands (generate, run, query, serve, client)
+├── tests/                  # 33 files, 717 tests
+│   ├── unit/               # Fast isolated tests
+│   ├── integration/        # Pipeline + API integration tests
+│   └── fixtures/           # Shared test data factories
+├── configs/                # Domain-specific prompt profiles (YAML)
+├── data/                   # Sample data and generated timelines
+├── benchmarks/             # Benchmark evaluation suite
+├── scripts/                # Utility scripts
+├── docs/                   # Documentation
+└── Makefile                # Development commands
 ```
 
-## 🔗 Citation
+---
 
-```bibtex
-@article{wang2026cognifold,
-  title   = {CogniFold: Always-On Proactive Memory via Cognitive Folding},
-  author  = {Wang, Suli and Duan, Yiqun and Deng, Yu and Zhao, Rundong and Shi, Dai and Zhou, Xinliang},
-  journal = {arXiv preprint arXiv:2605.13438},
-  year    = {2026},
-  url     = {https://arxiv.org/abs/2605.13438}
-}
+## Tech Stack
+
+| Category | Tools |
+|----------|-------|
+| Language | Python 3.9+ (target 3.11+) |
+| Agent | LangGraph + Google Gemini / OpenAI |
+| Graph | NetworkX (MultiDiGraph) |
+| Service | FastAPI + uvicorn |
+| Search | BM25 (built-in) + FAISS (optional) |
+| Validation | Pydantic v2 |
+| Embeddings | numpy + optional FAISS ANN |
+| Visualization | pyvis (interactive HTML) |
+| Quality | ruff + pyright (strict) + pytest |
+
+---
+
+## Development
+
+```bash
+# Install with dev dependencies
+make dev  # or: pip install -e ".[dev,agent,service]"
+
+# Run all quality checks
+make check
+
+# Run tests
+make test
+
+# Format + fix lint
+make fix
 ```
 
-## 📜 License
+### Quality Gates
 
-Apache-2.0 — see [LICENSE](LICENSE).
+All must pass before committing:
+
+```bash
+ruff format --check src/ tests/   # Formatting
+ruff check src/ tests/            # Linting
+pyright src/                      # Type checking (strict)
+pytest tests/ -v                  # 717 tests
+```
+
+### Contributing
+
+1. Create a feature branch from `cognifold-dev`
+2. Make changes with tests
+3. Ensure all quality gates pass
+4. Submit PR to `cognifold-dev`
+
+See [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) for detailed guidelines.
+
+---
+
+## Development Status
+
+| Phase | Description | Status |
+|-------|-------------|--------|
+| 1-6 | Foundation through Multi-Domain | Complete |
+| 7 | Memory Query Interface | Complete |
+| 8 | Intent Execution System | Complete |
+| 9 | Typed Edges + Hierarchical Context | Complete |
+| 10.2-10.4 | Temporal, Embeddings, Hybrid Retrieval | Complete |
+| 11 | Service Layer + HTTP API | Complete |
+| 11.1 | FAISS ANN, Agentic Retrieval, Unified Embeddings | Complete |
+| 13 | Modular System Prompt Composition | Complete |
+| 10.5 | LLM-powered Query Understanding | Planned |
+| 12 | Benchmark Evaluation (LoCoMo, MSC, BABILong) | Planned |
+
+See [docs/PHASES.md](docs/PHASES.md) for detailed specifications and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for implementation details.
+
+## License
+
+MIT

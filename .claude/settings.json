@@ -1,0 +1,20 @@
+{
+  "project": {
+    "name": "cognifold",
+    "description": "The cognition infrastructure for proactive AI. It receives event streams and merges and folds these events into context graphs. From this process, new cognition/concept and intention automatically emerge. It's proactive memory for real AGI."
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/pre-commit-docguard.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

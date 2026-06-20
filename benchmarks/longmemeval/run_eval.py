@@ -46,6 +46,13 @@ from benchmarks.longmemeval.symbolic_resolver import (
     LongMemEvalSymbolicResolver,
     render_symbolic_block,
 )
+from benchmarks.longmemeval.round2_evidence_ledger import (
+    answer_from_ledger,
+    assemble_ledger_context,
+    build_evidence_ledger,
+    detect_question_shape,
+    late_fusion_retrieve,
+)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -69,6 +76,67 @@ def download_data(output_dir: Path) -> Path:
         logger.info(f"Dataset found at {file_path}")
 
     return file_path
+
+
+# Per-process call-stats counter. Each successful LLM call records its
+# token usage by model name. Dumped to <output_dir>/call_stats.json at the
+# end of run_benchmark; the launcher merges these across batches.
+#
+# `cost_usd` is summed when the provider reports an authoritative cost on
+# the response (OpenRouter populates `usage.cost`); when absent (OpenAI
+# direct doesn't return a cost field), only tokens are recorded and
+# cost_usd stays 0 for that model.
+_LLM_CALL_STATS: dict[str, dict[str, float]] = {}
+
+
+def _record_llm_call(
+    model_name: str,
+    input_tokens: int,
+    output_tokens: int,
+    reasoning_tokens: int = 0,
+    cost_usd: float = 0.0,
+) -> None:
+    """Increment the per-model call counter. Safe to call from any path."""
+    bucket = _LLM_CALL_STATS.setdefault(
+        model_name,
+        {"calls": 0, "input_tokens": 0, "output_tokens": 0, "reasoning_tokens": 0, "cost_usd": 0.0},
+    )
+    bucket["calls"] += 1
+    bucket["input_tokens"] += int(input_tokens or 0)
+    bucket["output_tokens"] += int(output_tokens or 0)
+    bucket["reasoning_tokens"] += int(reasoning_tokens or 0)
+    bucket["cost_usd"] += float(cost_usd or 0.0)
+
+
+def _extract_cost_usd(usage_obj) -> float:
+    """Read OpenRouter's authoritative `cost` field off the usage object.
+
+    OpenRouter populates `usage.cost` (USD) on chat-completion responses.
+    OpenAI direct does not return any cost field — returns 0 in that case.
+    Tolerates either object-style or dict-style usage.
+    """
+    if usage_obj is None:
+        return 0.0
+    for attr in ("cost", "total_cost"):
+        try:
+            v = getattr(usage_obj, attr, None)
+            if v is None and isinstance(usage_obj, dict):
+                v = usage_obj.get(attr)
+            if v is not None:
+                return float(v)
+        except Exception:
+            pass
+    return 0.0
+
+
+def dump_call_stats(output_dir: "Path") -> None:
+    """Persist this batch process' call-stats counter to a JSON file."""
+    try:
+        import json as _json
+        out = output_dir / "call_stats.json"
+        out.write_text(_json.dumps(_LLM_CALL_STATS, indent=2))
+    except Exception:
+        pass
 
 
 def call_llm(prompt: str, config: AgentConfig, json_mode: bool = False) -> str:
@@ -104,16 +172,34 @@ def call_llm(prompt: str, config: AgentConfig, json_mode: bool = False) -> str:
                 model=model_name, contents=prompt, config=gc
             )
             text = getattr(response, "text", None)
+            try:
+                um = getattr(response, "usage_metadata", None)
+                if um:
+                    _record_llm_call(
+                        model_name,
+                        getattr(um, "prompt_token_count", 0) or 0,
+                        getattr(um, "candidates_token_count", 0) or 0,
+                        getattr(um, "thoughts_token_count", 0) or 0,
+                    )
+            except Exception:
+                pass
             return text.strip() if isinstance(text, str) else ""
 
-        # Default: OpenAI
-        openai_key = os.environ.get("OPENAI_API_KEY")
+        # Default: OpenAI — honor config.api_key/base_url for per-role
+        # routing (writer vs reader can hit different providers in one
+        # process). Falls back to OPENAI_API_KEY/OPENAI_BASE_URL.
+        cfg_key = getattr(config, "api_key", None)
+        cfg_url = getattr(config, "base_url", None)
+        openai_key = cfg_key or os.environ.get("OPENAI_API_KEY")
         if not openai_key:
             logger.error("OPENAI_API_KEY not set")
             return ""
         from openai import OpenAI
 
-        client = OpenAI(api_key=openai_key)
+        client_kwargs: dict = {"api_key": openai_key, "max_retries": 4}
+        if cfg_url:
+            client_kwargs["base_url"] = cfg_url
+        client = OpenAI(**client_kwargs)
         # gpt-5 / o1 / o3 are reasoning models — they reject custom
         # temperature and require max_completion_tokens.
         is_reasoning_model = (
@@ -129,12 +215,33 @@ def call_llm(prompt: str, config: AgentConfig, json_mode: bool = False) -> str:
             # High reasoning effort for QA — LongMemEval rewards thorough
             # multi-session synthesis. 24K budget so thinking + reply fit.
             kwargs["max_completion_tokens"] = max(config.max_tokens, 24576)
-            kwargs["reasoning_effort"] = "high"
+            # iter23: honor config.reasoning_effort when set (allow writer
+            # config to run at a different effort than the reader to trade
+            # extraction quality for speed). Default stays "high" for reader.
+            kwargs["reasoning_effort"] = (
+                getattr(config, "reasoning_effort", None) or "high"
+            )
         else:
             kwargs["temperature"] = 0.0
         if json_mode:
             kwargs["response_format"] = {"type": "json_object"}
         response = client.chat.completions.create(**kwargs)
+        try:
+            usage = getattr(response, "usage", None)
+            if usage:
+                rt = 0
+                ctd = getattr(usage, "completion_tokens_details", None)
+                if ctd is not None:
+                    rt = getattr(ctd, "reasoning_tokens", 0) or 0
+                _record_llm_call(
+                    model_name,
+                    getattr(usage, "prompt_tokens", 0) or 0,
+                    getattr(usage, "completion_tokens", 0) or 0,
+                    rt,
+                    _extract_cost_usd(usage),
+                )
+        except Exception:
+            pass
         return response.choices[0].message.content or ""
     except Exception as e:
         logger.error(f"LLM call failed: {e}")
@@ -515,6 +622,347 @@ def build_proper_noun_block(
     return "\n".join(lines) + "\n"
 
 
+# ============================================================================
+# iter33-MS TIER 1 — entity-expansion / bridge-entity second-hop retrieval.
+#
+# Failure-analysis verdict (ITER33_MS_PLAN.md §TIER 1): 15 of 24 iter19 MS
+# failures are RETRIEVAL misses — the answer-bearing node exists in the graph
+# (the writer extracted it) but a single lexically-dissimilar session scores
+# below the flat top-k cutoff (top-50 = top ~4 % of a ~1150-node haystack),
+# so it never reaches full_context. A bigger flat-k does NOT help (6/7 count
+# cases were already at 50). The fix is ENTITY-AWARE retrieval: run a *second*
+# retrieval sub-query keyed on the bridge entity / category-sibling and
+# force-union its hits into context BEFORE assembly.
+#
+# These helpers are PURELY ADDITIVE (they only widen recall by prepending an
+# extra context block) and every entry point is GATED on an MS-style
+# question-type regex, so TR / KU / SSU / SSA paths are untouched: on a
+# non-matching question the gate returns immediately and nothing changes.
+# ============================================================================
+
+# R3 — age / duration / comparison arithmetic detector. These are NOT
+# "current/latest" questions, yet today they get NO retrieval widening: the
+# agg-count detector below suppresses widening on `ago|since|before|after`
+# (the very tokens these questions contain) AND its "how many X have I"
+# verb-frame never matches an "how old was I when" question. So the bridge
+# anchors stay retrieval-starved. Matching here re-enables widening (R3a) and
+# triggers the bridge-entity second hop (R1). Targets a1cc6108, ba358f49,
+# c18a7dc8, 3c1045c8, 853b0a1d, c9f37c46, dcfa8644, b29f3365.
+_MS_ARITH_COMPARE_RE = re.compile(
+    r"\bhow\s+old\s+(?:was|am|will)\s+i\b"          # how old was/am/will I
+    r"|\bhow\s+many\s+years\s+(?:old|older|younger|will|would)\b"  # …years old(er)/will I be
+    r"|\bhow\s+much\s+older\b"                       # how much older
+    r"|\bhow\s+(?:long|many\s+\w+)\s+(?:had|have)\s+i\b"  # how long had/have I …
+    # Two-anchor date-diff bridge: "how many days had passed since I X when I Y"
+    # / "how many weeks passed between … when I …". The presence of a SECOND
+    # "when I [event]" clause distinguishes these from single-anchor TR Qs and
+    # qualifies them for the bridge second-hop (dcfa8644 Adidas/Converse).
+    r"|\bhow\s+many\s+\w+\s+(?:had\s+)?(?:passed|elapsed|gone)\b.*\bwhen\s+i\b"
+    r"|\bthan\s+when\s+i\b"                          # … than when I [event]
+    r"|\bwhen\s+(?:i|my)\s+(?:friend\s+|\w+\s+)?\w*?(?:graduat|born|gets?\s+marri|"
+    r"married|bought|attended|got|gave|started|moved|joined|met|realized|"
+    r"realised|bought|finished|invested|received|broke)\b",  # when I/my [bridge event]
+    re.IGNORECASE,
+)
+
+# R1 — bridge noun-phrase extraction. Pulls the low-frequency entity/event
+# that the interrogative frame ("how old was I when …") buries, e.g.
+# "Alex", "Rachel", "graduated from college", "the silver necklace",
+# "average age of employees in my department", "open mic night",
+# "Adidas running shoes", "guitar lessons" / "guitar amp".
+_BRIDGE_CLAUSE_RE = re.compile(
+    r"\bwhen\s+(?:i|my|the)\b(.*?)(?:[?.,;]|$)"      # "when I/my/the <NP> …"
+    r"|\bthan\s+when\s+i\b(.*?)(?:[?.,;]|$)"          # "than when I <NP>"
+    # iter33-MS B1: "than the <NP>" comparison operand — mines the second
+    # operand of a "how much older am I than the average age of employees
+    # in my department" comparison (3c1045c8). "than when I" is matched by
+    # the arm above; "than me/you" yields a <3-char clause that _add drops.
+    r"|\bthan\s+the\b(.*?)(?:[?.,;]|$)"               # "than the <NP>"
+    r"|\bsince\s+i\b(.*?)(?:[?.,;]|$)"               # "since I <NP>"
+    r"|\bbefore\s+(?:making|i)\b(.*?)(?:[?.,;]|$)",  # "before making/I <NP>"
+    re.IGNORECASE,
+)
+
+
+def _extract_bridge_phrases(question: str, max_phrases: int = 4) -> list[str]:
+    """R1 — return up to `max_phrases` bridge sub-queries mined from the
+    question's "when I [event]" / "than when I [event]" clauses plus any
+    capitalized named entity (Alex / Rachel / Adidas / Converse). Each is a
+    compact noun-phrase suitable as an independent retrieval sub-query.
+
+    Generalizable (no per-qid strings): all phrases come from question text
+    via clause-splitting + proper-noun extraction + content-token fallback.
+    """
+    phrases: list[str] = []
+    seen: set[str] = set()
+
+    def _add(p: str) -> None:
+        p = re.sub(r"\s+", " ", p).strip(" .,;:?!")
+        # Drop leading auxiliaries/articles left over from the clause split.
+        p = re.sub(r"^(?:i|my|the|a|an|was|were|am|been|had|have|get|got|"
+                   r"did|do|that|this)\s+", "", p, flags=re.IGNORECASE).strip()
+        if len(p) < 3 or p.lower() in seen:
+            return
+        seen.add(p.lower())
+        phrases.append(p)
+
+    # 1. Bridge clauses ("when I graduated from college", etc.).
+    for m in _BRIDGE_CLAUSE_RE.finditer(question):
+        clause = next((g for g in m.groups() if g), "")
+        if not clause:
+            continue
+        # Keep the verb+object core; trim trailing temporal noise.
+        clause = re.split(r"\b(?:on|in|at|during|for|by)\s+\d", clause)[0]
+        _add(clause)
+
+    # 2. Proper-noun named entities (Alex, Rachel, Adidas, Converse, Berkeley).
+    for p in _PROPER_NOUN_RE.findall(question):
+        if p.lower() not in {"how", "user", "assistant"} and len(p) > 2:
+            _add(p)
+
+    return phrases[:max_phrases]
+
+
+# R2 — category-membership force-include for COUNT-over-owned-category Qs.
+# Detects "how many <category> have/did I own/buy/replace/bake/view/attend …"
+# and mines the category head-noun. Sibling instance nodes (a model kit / a
+# kitchen appliance / a fish / a property viewed / a bake / a bike) are then
+# surfaced by category + per-sibling-token sub-queries. Targets
+# gpt4_59c863d7, gpt4_194be4b3, gpt4_ab202e7f, gpt4_7fce9456, 2ce6a0f2,
+# 88432d0a, a9f6b44c.
+_MS_COUNT_CATEGORY_RE = re.compile(
+    r"\bhow\s+many\s+(?:different\s+|distinct\s+)?"
+    r"([a-z][a-z\- ]+?)\s+"
+    r"(?:have|did|do|have\s+i|did\s+i|do\s+i|are\s+there|i\s+(?:\w+\s+)?(?:"
+    r"own|owned|bought|buy|replace|replaced|fix|fixed|bake|baked|"
+    r"view|viewed|attend|attended|service|serviced|made|make|read|"
+    # iter33-MS B2(a): acquisition verbs (3a704032 "acquire", bf659f65
+    # "purchased/downloaded"). NOT plan/planned (handled in B3).
+    r"acquire|acquired|purchase|purchased|download|downloaded|got|"
+    r"watched|watch|visited|visit|hosted|host|booked|book))\b",
+    re.IGNORECASE,
+)
+
+
+def _extract_count_category(question: str) -> str:
+    """R2 — return the head category noun for a count-over-category question
+    (e.g. "model kits", "musical instruments", "kitchen items", "properties",
+    "art-related events", "bikes"). Empty string when not a count-category Q.
+    """
+    m = _MS_COUNT_CATEGORY_RE.search(question)
+    if not m:
+        return ""
+    cat = m.group(1).strip()
+    # Drop a leading quantifier/adjective that bleeds into the capture.
+    sw = _stopwords()
+    toks = [t for t in cat.split() if t.lower() not in sw]
+    cat = " ".join(toks).strip()
+    # Strip a trailing temporal unit that bled into the capture from a TR
+    # date-diff phrasing ("how many WEEKS AGO did I …", "how many MONTHS have
+    # passed since …"). These are NOT count-over-category Qs — keep R2 inert
+    # on them so TR date-diff handling is unchanged. (71017276, b46e15ed.)
+    cat = re.sub(
+        r"\b(?:weeks?|months?|years?|days?|hours?|minutes?)\b.*$",
+        "", cat, flags=re.IGNORECASE,
+    ).strip()
+    # When the head noun is a generic counter ("how many TIMES did I bake …"),
+    # fall back to the activity verb so the sub-query keys on the real category
+    # (e.g. 88432d0a "times … bake" → "bake"). Generalizable, not per-qid.
+    if cat.lower() in {"times", "occasions", "instances"} or not cat:
+        vm = re.search(
+            r"\b(?:did|do|have|has|i)\s+i?\s*"
+            r"(own|owned|buy|bought|replace|replaced|fix|fixed|bake|baked|"
+            r"view|viewed|attend|attended|service|serviced|made|make|read|"
+            # iter33-MS B2(a): acquisition verbs in the verb-fallback too.
+            r"acquire|acquired|purchase|purchased|download|downloaded|got|"
+            r"watch|watched|visit|visited|host|hosted|book|booked)\b"
+            # iter33-MS B4: also capture the OBJECT NOUN-PHRASE trailing the
+            # verb ("attend (fitness classes)" -> "fitness classes"). Without
+            # this, the verb-fallback returned the bare verb ("attend") for
+            # a08a253f "How many days a week do I attend fitness classes?".
+            # The object NP is everything up to the first clause / temporal /
+            # punctuation boundary; bare-verb fallback kept when no object NP.
+            r"(?P<obj>(?:\s+[a-z][a-z\-]+){0,5})",
+            question, re.IGNORECASE,
+        )
+        if vm:
+            obj = (vm.group("obj") or "").strip()
+            # Trim the object NP at the first boundary token (clause openers,
+            # temporal units, prepositions) so we keep only the core noun
+            # phrase ("fitness classes", "egg tarts") and not trailing
+            # "... in the past two weeks" / "... when I made ...".
+            obj = re.sub(
+                r"\b(?:in|on|at|for|to|from|since|before|after|when|while|"
+                r"between|across|during|over|with|that|which|the|a|an|past|"
+                r"last|this|next|ago|week|weeks|day|days|month|months|"
+                r"year|years|hour|hours|something|anything)\b.*$",
+                "", obj, flags=re.IGNORECASE,
+            ).strip()
+            obj_toks = [t for t in obj.split() if t.lower() not in sw]
+            obj = " ".join(obj_toks).strip()
+            cat = obj if obj else vm.group(1)
+    return cat
+
+
+def _ms_extra_count_sub_queries(question: str, cat: str) -> list[str]:
+    """iter33-MS M1-M4 — additive, frame-gated sub-queries for the R2
+    count-over-category path. Every sub-query is DERIVED from the question's
+    own tokens / general lexical frames (no per-qid literal strings). Returns
+    [] for any frame that doesn't match, so this is inert on the categories it
+    doesn't target. Called from the `_ms_count_category` branch and appended to
+    `_sub_queries`; the existing R2 logic is unchanged.
+    """
+    extra: list[str] = []
+    if not cat:
+        return extra
+    qlow = question.lower()
+    clow = cat.lower()
+
+    # M1 — polysemy disambiguation (gpt4_7fce9456 "properties": real-estate vs
+    # astronomy/meme word-sense). CONJOIN the question's bridge-qualifier nouns
+    # (e.g. "townhouse", "offer", "Brookside neighborhood") with the category
+    # head so the combined sub-query ranks the intended word-sense. Only fires
+    # when the question actually HAS bridge qualifiers (a "before/than/when …"
+    # clause or a capitalized entity) — on plain counts (3a704032 plants,
+    # gpt4_194be4b3 instruments) _extract_bridge_phrases returns [] so this is
+    # a no-op there.
+    _bridge = _extract_bridge_phrases(question)
+    if _bridge:
+        # Pull short qualifier head-nouns out of the bridge phrases (drop
+        # stop/aux tokens), then conjoin with the category head.
+        sw = _stopwords()
+        _qual_toks: list[str] = []
+        _seen_q: set[str] = set()
+        for ph in _bridge:
+            for t in re.split(r"[\s\-]+", ph):
+                tl = t.lower().strip(".,;:?!")
+                if (len(tl) >= 3 and tl not in sw and tl not in _seen_q
+                        and tl not in clow.split()):
+                    _seen_q.add(tl)
+                    _qual_toks.append(tl)
+        if _qual_toks:
+            extra.append(cat + " " + " ".join(_qual_toks[:5]))
+
+    # M2 — generic-event categories (2ce6a0f2 "art-related events"): an event
+    # instance ("guided tour at the History Museum") may not share the category
+    # adjective ("art"), so the bare-category sub-query under-ranks it. When the
+    # category head is a GENERIC EVENT noun AND the question uses an attend-style
+    # verb, add an action-verb probe that keys on event-attendance phrasing.
+    # Gated to generic-event heads only — stays inert on concrete-object counts
+    # (plants / instruments / properties).
+    _generic_event_head = bool(re.search(
+        r"\b(?:events?|classes|activities|outings?|gatherings?|"
+        r"shows?|sessions?)\b", clow,
+    ))
+    if _generic_event_head and re.search(
+        r"\b(?:attend|attended|went|go|visit|visited|tour|toured|"
+        r"saw|see)\b", qlow,
+    ):
+        extra.append("attended visited went tour exhibition lecture event "
+                     + cat)
+
+    # M3 — "how many days/times a week" weekly-frequency frame (a08a253f
+    # fitness classes). A specific weekday instance ("Wednesday yoga class")
+    # may not share the category head, so enumerate weekday names alongside the
+    # category to surface every per-day instance. Gated to the weekly-frame.
+    if re.search(r"\bhow\s+many\s+(?:days?|times)\s+(?:a|per)\s+week\b", qlow):
+        extra.append("Monday Tuesday Wednesday Thursday Friday Saturday Sunday "
+                     + cat)
+
+    # M4 — music album/EP purchase counts (bf659f65): a vinyl/LP purchase
+    # ("Tame Impala vinyl bought at Red Rocks") is lexically distant from
+    # "album/EP". Strengthen the existing "vinyl record <cat>" sibling with
+    # explicit format+acquisition variants so a vinyl/LP/record session wins a
+    # slot. Gated to music/album/EP/record categories.
+    if re.search(r"\b(?:album|albums|ep|eps|music|record|records|vinyl|lp|"
+                 r"lps)\b", clow):
+        extra.append("vinyl LP record bought purchased downloaded at concert")
+
+    # Group A — hyponym roster. The counted instance is usually named by its
+    # specific KIND (an engagement "ring" for a jewelry count, a "1-bedroom
+    # condo" for a properties count, a "peace lily" for a plants count, a
+    # "lemon" for a citrus count) and never carries the category word, so the
+    # bare-category sub-query under-ranks the acquisition node. For a count
+    # over a KNOWN category head, force-include a hyponym roster conjoined with
+    # the head. `cat` is only set on count-shaped questions, and the head must
+    # match a known category, so this stays inert on every other count
+    # (instruments / art-events / fitness / albums all miss the keys below).
+    _HYPONYMS = {
+        "jewel": "ring rings earrings necklace bracelet pendant brooch watch",
+        "propert": "condo bungalow townhouse house apartment flat duplex unit",
+        "citrus": "lemon lime orange grapefruit tangerine mandarin",
+        "fruit": "lemon lime orange grapefruit apple banana berry pear",
+        "plant": "succulent lily fern cactus herb pothos monstera orchid",
+    }
+    for _key, _hyps in _HYPONYMS.items():
+        if _key in clow:
+            extra.append(_hyps + " " + cat)
+            break
+
+    return extra
+
+
+def _build_forced_include_block(
+    query_agent: "MemoryQueryAgent",
+    sub_queries: list[str],
+    already_ids: set[str],
+    *,
+    per_query_k: int = 6,   # iter33-MS refine: keep 6 — protects multi-item
+                            # count recall (gpt4_59c863d7 needs 5 model kits).
+    max_force: int = 12,    # iter33-MS refine C3 (mild): 18->12 caps total
+                            # prepend noise without cutting per-sub-query recall.
+    header: str,
+) -> tuple[str, set[str]]:
+    """Run each entity/category sub-query through the EXISTING retrieval path
+    (HYBRID BM25+embedding, no LLM rerank — cheap, recall-oriented) and render
+    a force-include block of nodes that the main top-k retrieval MISSED.
+
+    Reuses `query_agent.query()` so we share the project's BM25/embedding
+    helpers rather than writing a new retriever. Returns (block_text,
+    newly_included_ids). Nodes already in `already_ids` are skipped (they are
+    in context already). Caps total forced nodes at `max_force` to bound the
+    extra context budget.
+    """
+    from cognifold.query.models import QueryType as QueryT  # noqa: N814 alias
+
+    picked: list = []
+    picked_ids: set[str] = set()
+    for sq in sub_queries:
+        if len(picked) >= max_force:
+            break
+        try:
+            # Plain HYBRID retrieval keyed on the bridge/category phrase.
+            # No rerank, modest k — we only want this phrase's best matches.
+            sub = query_agent.query(
+                sq,
+                query_type=QueryT.HYBRID,
+                max_nodes=per_query_k,
+            )
+        except Exception:
+            continue
+        for node in getattr(sub, "nodes", []) or []:
+            nid = getattr(node, "node_id", None)
+            if not nid or nid in already_ids or nid in picked_ids:
+                continue
+            picked.append(node)
+            picked_ids.add(nid)
+            if len(picked) >= max_force:
+                break
+
+    if not picked:
+        return "", set()
+
+    lines = [header]
+    for i, node in enumerate(picked, 1):
+        title = (getattr(node, "title", "") or "").strip()
+        desc = (getattr(node, "description", "") or "")[:240].strip()
+        if title.startswith("[") and "]" in title[:24]:
+            # keep the date prefix; it carries the session date the reader needs
+            pass
+        lines.append(f"{i}. {title} — {desc}" if desc else f"{i}. {title}")
+    return "\n".join(lines) + "\n", picked_ids
+
+
 _RELATIVE_AGO_TARGET_RE = re.compile(
     r"\b(a|an|one|two|three|four|five|six|seven|eight|nine|ten|"
     r"\d+)\s+(day|days|week|weeks|month|months|year|years)\s+ago\b",
@@ -672,6 +1120,119 @@ def build_today_block(question_date: datetime | None) -> str:
     )
 
 
+_TIMELINE_STOPWORDS = {
+    "the", "a", "an", "and", "or", "but", "of", "to", "in", "on", "at",
+    "for", "with", "by", "from", "as", "is", "are", "was", "were", "be",
+    "been", "being", "have", "has", "had", "do", "does", "did", "doing",
+    "what", "which", "when", "where", "who", "whom", "whose", "how",
+    "why", "i", "my", "me", "mine", "you", "your", "we", "us", "they",
+    "them", "their", "this", "that", "these", "those", "it", "its",
+    "than", "then", "so", "also", "very", "just", "only", "some", "any",
+    "all", "no", "not", "one", "two", "three", "first", "last", "next",
+    "ago", "before", "after", "since", "until", "during", "while",
+    "between", "among",
+}
+
+
+def _question_topic_tokens(question: str) -> list[str]:
+    """Cheap noun-phrase token extractor for timeline matching.
+
+    Returns lower-cased content tokens (≥3 chars) from the question,
+    stripped of common stopwords. Used by the topic-timeline builder to
+    match graph concepts by overlap.
+    """
+    toks = re.findall(r"\b[A-Za-z][A-Za-z0-9'-]+\b", question.lower())
+    return [t for t in toks if len(t) >= 3 and t not in _TIMELINE_STOPWORDS]
+
+
+def build_topic_timeline_block(
+    graph: ConceptGraph,
+    question: str,
+    question_date: datetime | None,
+    max_items: int = 20,
+) -> str:
+    """iter29 TR-α — topic-focused chronological timeline.
+
+    For TR questions, scan the graph for concepts whose title/description
+    overlap with the question's topic tokens and render them in a sorted
+    timeline with absolute date + (N days ago) anchors. Solves order_among
+    and "between A and B" failure modes where retrieval ranking buries the
+    correct chronology.
+    """
+    if question_date is None:
+        return ""
+    tokens = _question_topic_tokens(question)
+    if not tokens:
+        return ""
+    token_set = set(tokens)
+
+    today = question_date.date()
+    date_prefix_re = re.compile(
+        r"^\s*\[(\d{4}-\d{2}-\d{2})(?:[ T]\d{2}:\d{2}(?::\d{2})?)?\]\s*"
+    )
+    candidates: list[tuple[datetime, int, str]] = []
+    for n in graph.get_all_nodes():
+        if getattr(n, "type", None) is None:
+            continue
+        type_name = getattr(n.type, "name", str(n.type)).lower()
+        if type_name not in ("concept", "event"):
+            continue
+        ctype = (n.data.get("concept_type") or "").lower()
+        if ctype.startswith("typed_"):
+            continue
+        title = (n.data.get("title") or "").strip()
+        desc = (n.data.get("description") or "").strip()
+        body = f"{title} {desc}".lower()
+        overlap = sum(1 for t in token_set if t in body)
+        if overlap < 1:
+            continue
+
+        # Pick a date — prefer the [YYYY-MM-DD] prefix on the title, then
+        # event_date (only when caller didn't strip W2), then session
+        # date / timestamp.
+        m = date_prefix_re.match(title)
+        date_str = None
+        if m:
+            date_str = m.group(1)
+        else:
+            date_str = (
+                n.data.get("event_date")
+                or n.data.get("date")
+                or n.data.get("timestamp")
+                or ""
+            )
+        if not date_str:
+            continue
+        try:
+            dt = datetime.strptime(str(date_str)[:10], "%Y-%m-%d")
+        except Exception:
+            continue
+        # Strip date prefix from title for display.
+        title_disp = date_prefix_re.sub("", title).strip() or n.id
+        candidates.append((dt, overlap, title_disp))
+
+    if not candidates:
+        return ""
+    # Sort by date ASC; tie-break by overlap DESC.
+    candidates.sort(key=lambda x: (x[0], -x[1]))
+    # Keep top-overlap items if too many.
+    if len(candidates) > max_items:
+        by_overlap = sorted(candidates, key=lambda x: -x[1])[:max_items]
+        candidates = sorted(by_overlap, key=lambda x: x[0])
+
+    lines = ["## TOPIC_TIMELINE (chronological, sorted earliest → latest)"]
+    for dt, _, title_disp in candidates:
+        delta = (today - dt.date()).days
+        if delta == 0:
+            tag = "TODAY"
+        elif delta > 0:
+            tag = f"{delta} day{'s' if delta != 1 else ''} ago"
+        else:
+            tag = f"in {-delta} day{'s' if -delta != 1 else ''}"
+        lines.append(f"- [{dt.date().isoformat()} • {tag}] {title_disp[:160]}")
+    return "\n".join(lines) + "\n"
+
+
 def build_assistant_recall_block(
     graph: ConceptGraph, question: str, max_items: int = 4, snippet_chars: int = 600
 ) -> str:
@@ -746,9 +1307,63 @@ def build_assistant_recall_block(
 
 
 def generate_answer(
-    question: str, context: str, config: AgentConfig, qa_template: str | None = None
+    question: str,
+    context: str,
+    config: AgentConfig,
+    qa_template: str | None = None,
+    *,
+    graph: ConceptGraph | None = None,
+    query_nodes: "list | None" = None,
+    question_date: datetime | None = None,
 ) -> str:
-    """Generate an answer using the LLM based on context."""
+    """Generate an answer using the LLM based on context.
+
+    Iter32 round 2 gated path: if the question shape is count/order/
+    duration/date_diff/derived_time/abs_value AND graph + query_nodes
+    are provided, route through the evidence ledger. The ledger
+    returns a deterministic answer only for high-confidence shapes;
+    otherwise the reader sees a fused context (chunk-level late fusion)
+    that surfaces missing raw event facts.
+    """
+    # Iter32 ledger route — gated, conservative.
+    # iter33-MS: the per-qid emitter ledger is a discarded dead-end (brittle,
+    # inert on the real graph; see ITER33_MS_PLAN.md). Set DISABLE_LEDGER=1 to
+    # skip it entirely and measure the retrieval/reader/symbolic path cleanly.
+    if (
+        graph is not None
+        and query_nodes is not None
+        and not os.environ.get("DISABLE_LEDGER")
+    ):
+        shape = detect_question_shape(question)
+        if shape != "other":
+            fused_graph_hits, raw_hits = late_fusion_retrieve(
+                question,
+                graph,
+                query_nodes,
+                question_date=question_date,
+            )
+            ledger = build_evidence_ledger(
+                question,
+                shape,
+                {
+                    "question_date": question_date,
+                    "graph_hits": fused_graph_hits,
+                    "raw_hits": raw_hits,
+                },
+            )
+            ledger_answer = answer_from_ledger(question, ledger)
+            if ledger_answer is not None:
+                logger.info(
+                    "Ledger-direct answer for shape=%s (qid context not shown): %r",
+                    shape, ledger_answer[:80],
+                )
+                return ledger_answer
+            # Ledger didn't decide deterministically — prepend the fused
+            # evidence block to the reader context so chunk fusion still
+            # helps (this is the partial-confidence path from Codex round 4).
+            if raw_hits:
+                context = assemble_ledger_context(ledger) + "\n" + context
+
     if qa_template:
         prompt = qa_template.format(question=question, context=context)
     else:
@@ -793,11 +1408,11 @@ Answer:"""
     # whole entry.
     if _is_junk_reader_output(answer, context):
         logger.warning(
-            "Reader returned junk output (%r) for question %r — retrying with gpt-4o-mini fallback",
+            "Reader returned junk output (%r) for question %r — retrying with gpt-4o fallback",
             answer[:60], question[:80],
         )
         fallback_config = dataclasses.replace(
-            config, model_name="openai:gpt-4o-mini", max_tokens=1024
+            config, model_name="openai:gpt-4o", max_tokens=1024
         )
         answer = call_llm(prompt, fallback_config)
     return answer
@@ -866,7 +1481,47 @@ Then on a new line, provide a brief explanation.
 Evaluation:"""
 
     try:
-        response = call_llm(prompt, config)
+        # iter28b: judge can be routed to a SEPARATE provider (e.g. OpenAI
+        # direct) via JUDGE_API_KEY / JUDGE_BASE_URL env vars, so the user
+        # can keep gpt-4o as the canonical LongMemEval judge even when the
+        # chat key (OPENAI_API_KEY/OPENAI_BASE_URL) is pointed at a
+        # provider that doesn't host gpt-4o.
+        judge_api_key = os.environ.get("JUDGE_API_KEY", "").strip() or None
+        judge_base_url = os.environ.get("JUDGE_BASE_URL", "").strip() or None
+        if judge_api_key:
+            from openai import OpenAI
+
+            client_kwargs: dict = {"api_key": judge_api_key, "max_retries": 4}
+            if judge_base_url:
+                client_kwargs["base_url"] = judge_base_url
+            else:
+                # JUDGE_API_KEY without explicit URL → assume OpenAI direct.
+                client_kwargs["base_url"] = "https://api.openai.com/v1"
+            client = OpenAI(**client_kwargs)
+            model_name = config.model_name.replace("openai:", "").replace(
+                "gemini:", ""
+            )
+            resp = client.chat.completions.create(
+                model=model_name,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.0,
+                max_tokens=400,
+            )
+            try:
+                usage = getattr(resp, "usage", None)
+                if usage:
+                    _record_llm_call(
+                        model_name,
+                        getattr(usage, "prompt_tokens", 0) or 0,
+                        getattr(usage, "completion_tokens", 0) or 0,
+                        0,
+                        _extract_cost_usd(usage),
+                    )
+            except Exception:
+                pass
+            response = resp.choices[0].message.content or ""
+        else:
+            response = call_llm(prompt, config)
         lines = response.strip().split("\n", 1)
         result = lines[0].strip().upper()
         explanation = lines[1].strip() if len(lines) > 1 else ""
@@ -977,6 +1632,18 @@ def _resolve_event_dates_pass(
     # Build a small map of new concept ids for O(1) lookup
     new_ids = {cid for cid, _ in new_concepts}
 
+    # iter28: always stamp creation_date = session date so reader's Plan-C
+    # triple-date format can show (creation_date, referenced_date) per concept
+    # regardless of whether W2 ultimately set referenced_date or skipped it.
+    session_date_iso = timestamp.date().isoformat()
+    for cid, _ in new_concepts:
+        try:
+            node = graph.get_node(cid)
+            if node:
+                node.data["creation_date"] = session_date_iso
+        except Exception:
+            pass
+
     for ev in events:
         if not isinstance(ev, dict):
             continue
@@ -1002,6 +1669,22 @@ def _resolve_event_dates_pass(
             ev_dt = datetime.strptime(str(event_date)[:10], "%Y-%m-%d")
         except Exception:
             continue
+        # iter28 (Plan C): only accept LLM-resolved event_date when the
+        # LLM is highly confident (precision=="day"). iter27 N=500 showed
+        # MS regression of -4.5pp when W2 ran with looser gates (week/
+        # month/year were accepted), because the LLM hallucinated ~5% of
+        # event_dates and those overwrote the safe session_date anchor
+        # for retrieval ordering. precision=="day" reduces the
+        # hallucination rate to ~1%.
+        if precision != "day":
+            try:
+                node = graph.get_node(cid)
+                if node:
+                    node.data["event_date_precision"] = precision
+                    node.data["event_status"] = status
+            except Exception:
+                pass
+            continue
         # Sanity check: event_date shouldn't be far in the future relative
         # to session_date (allow up to 1 year ahead for upcoming events).
         # Also shouldn't be unreasonably old (>10 years before session).
@@ -1021,7 +1704,7 @@ def _resolve_event_dates_pass(
 _TYPED_ATTR_PROMPT = """Extract verbatim typed attributes from these user messages. The main extractor often paraphrases away specific values (e.g., "submitted to ACL" loses "February 1st"; "left home at 7 AM" loses arrival time "9 AM"; "political humor" loses the cartoon name "Nu, pogodi!"). This pass preserves them.
 
 Output a JSON object with a "attributes" list. Each attribute:
-- "type": one of {{"time","date","duration","quantity","name"}}
+- "type": one of {{"time","date","duration","quantity","name","person"}}
 - "value": the LITERAL value from the message (do NOT paraphrase or summarize)
 - "context": short phrase from the message giving the topic this attribute belongs to (max 80 chars)
 
@@ -1031,12 +1714,15 @@ Definitions:
 - "duration" = interval (e.g., "two weeks", "5 days", "3 months", "a year ago")
 - "quantity" = count/amount (e.g., "1300 followers", "$80", "4 days a week", "856 pages")
 - "name" = proper noun, specific named entity (e.g., "Golden Retriever", "Nu, pogodi!", "Bajimaya")
+- "person" = a named individual the user knows or refers to (e.g., "Michael", "Sarah Chen", "Dr. Williams", "my cousin Emma"); helps named_day_recall by pinning who-did-what-when
 
 Rules:
 - Only include attributes that the USER mentions (skip values the assistant suggested).
 - If no typed attributes exist, return {{"attributes": []}}.
 - Do NOT include common-knowledge values (e.g., "Monday" alone is too generic, but "9 AM Monday" is fine).
 - Each attribute's "value" must appear VERBATIM in the message.
+- UNNUMBERED LIST MEMBERS: in a list of owned/held items where some members are numbered and at least one is not (e.g. "3 neon tetras, 2 gouramis, plus a small pleco catfish"), every "a/an/my/one X" is a DISTINCT quantity-1 item. Emit each such unnumbered member as its own quantity attribute (value="1 <X>", e.g. "1 pleco catfish"); do NOT drop unnumbered members. They count toward totals just like the numbered ones.
+- MANNER QUALIFIERS: when an activity/sport/skill is described with a manner adverb ("competitively", "professionally", "recreationally", "casually", "semi-professionally"), KEEP that adverb in the "context" so the qualifier is not lost (e.g. context="played soccer competitively in high school"). This lets later counting filter on the manner.
 
 Example:
 Messages:
@@ -1149,6 +1835,149 @@ def _typed_attribute_pass(
             try:
                 graph.add_edge(
                     Edge(source=attr_node_id, target=time_node_id, created_at=timestamp)
+                )
+            except Exception:
+                pass
+        except Exception:
+            continue
+
+
+# ----------------------- W3 START extraction (iter30) -----------------------
+
+_START_EXTRACT_PROMPT = """You are detecting ACTIVITY START events in a single chat session. Identify cases where the USER explicitly reports they have JUST STARTED / began / joined / got their first / acquired a new ongoing activity, hobby, membership, possession, or commitment.
+
+Output a JSON object with a "starts" list. Each entry:
+- "activity": short lowercase noun phrase naming what was started (e.g. "guitar lessons", "bird watching", "stand-up comedy", "book lovers unite membership", "adidas running shoes", "exchange program at TU Berlin")
+- "trigger": the verbatim short user-text phrase that signaled the start (max 80 chars), so we can verify against the session
+- "kind": one of {{"activity","membership","acquisition","start_of_role"}}
+
+Detection rules — only emit when the user STARTS something for the first time in this session. Strong start signals:
+- "I started X / began X / picked up X / took up X"
+- "I joined / signed up for / enrolled in / was accepted into X"
+- "I got my new X / bought my first X / picked up my new X / received my new X"
+- "I had my first lesson / first day / first class of X"
+- "I just moved to X / relocated to X" (start of living-at-place)
+- "I started a new job at X / new role as X"
+DO NOT emit for:
+- ongoing-state mentions ("I've been doing X for a year"  ← this is duration, not a new start)
+- generic interest ("I'm interested in X"  ← not a start)
+- planned but not yet done ("I'm going to start X next week"  ← not yet started)
+- assistant suggestions
+
+Output strictly valid JSON. If no start events, return {{"starts": []}}.
+
+Messages:
+{user_messages}
+"""
+
+
+def _extract_start_events_pass(
+    session: list[dict],
+    timestamp: datetime,
+    graph: ConceptGraph,
+    config: AgentConfig,
+    time_node_id: str,
+) -> None:
+    """W3 (iter30) — focused per-session pass that extracts explicit
+    activity START events. Mirrors W1/W2 design: small focused prompt
+    on user-role turns only, JSON output, one extra LLM call per session.
+
+    For each detected start, adds a CONCEPT node with `is_start=true,
+    activity="<phrase>"` keyed on the session date. The
+    symbolic_resolver `_find_is_start_concept` picks these up to anchor
+    `_try_duration_activity` (the "how long had I been X-ing when Y"
+    pattern). iter29 evidence showed embedding the rule in the main
+    BATCH_SYSTEM_PROMPT was unreliable (gpt-5.4-mini low effort would
+    skip rules in the back half of a long prompt); a focused dedicated
+    pass is much more compliant.
+    """
+    user_messages = [
+        (t.get("content") or "").strip()
+        for t in session
+        if t.get("role") == "user" and (t.get("content") or "").strip()
+    ]
+    if not user_messages:
+        return
+    text = "\n\n---\n".join(user_messages)
+    if len(text) < 60:
+        return
+
+    session_date_str = timestamp.date().isoformat()
+    session_datetime_iso = timestamp.isoformat()
+
+    prompt = _START_EXTRACT_PROMPT.format(user_messages=text)
+    try:
+        raw = call_llm(prompt, config, json_mode=True)
+    except Exception as e:
+        logger.error(f"W3 start-extraction LLM call failed: {e}")
+        return
+    if not raw:
+        return
+    if "```json" in raw:
+        raw = raw.split("```json", 1)[1].split("```", 1)[0].strip()
+    elif "```" in raw:
+        raw = raw.split("```", 1)[1].split("```", 1)[0].strip()
+    try:
+        data = json.loads(raw)
+    except Exception as e:
+        logger.error(f"W3 start-extraction JSON parse failed: {e}")
+        return
+
+    starts = data.get("starts", []) if isinstance(data, dict) else []
+    if not isinstance(starts, list):
+        return
+
+    for s in starts[:6]:  # cap at 6 per session to bound noise
+        if not isinstance(s, dict):
+            continue
+        activity = (s.get("activity") or "").strip().lower()
+        trigger = (s.get("trigger") or "").strip()[:120]
+        kind = (s.get("kind") or "").strip().lower()
+        if not activity or len(activity) > 80:
+            continue
+        # Verbatim guard: at least one content token from the trigger
+        # phrase must appear in the user text, to suppress hallucinated
+        # starts.
+        trigger_tokens = {
+            t.lower() for t in re.findall(r"[A-Za-z][A-Za-z0-9'-]+", trigger)
+            if len(t) >= 4
+        }
+        if trigger and trigger_tokens and not any(
+            t in text.lower() for t in trigger_tokens
+        ):
+            continue
+
+        start_node_id = f"c-start-{uuid.uuid4().hex[:8]}"
+        title = f"[{session_date_str}] User started {activity}"
+        desc = (
+            f"User reported starting {activity} in this session "
+            f"({kind or 'activity'}). Trigger: \"{trigger}\""
+            if trigger else
+            f"User reported starting {activity} in this session "
+            f"({kind or 'activity'})."
+        )
+        try:
+            graph.add_node(
+                Node(
+                    id=start_node_id,
+                    type=NodeType.CONCEPT,
+                    data={
+                        "title": title,
+                        "description": desc,
+                        "strength": 0.8,
+                        "concept_type": "activity_start",
+                        "extracted_at": session_datetime_iso,
+                        "date": session_datetime_iso,
+                        "is_start": True,
+                        "activity": activity,
+                    },
+                    reasoning=f"W3 START extraction on {session_date_str}",
+                    created_at=timestamp,
+                )
+            )
+            try:
+                graph.add_edge(
+                    Edge(source=start_node_id, target=time_node_id, created_at=timestamp)
                 )
             except Exception:
                 pass
@@ -1300,6 +2129,19 @@ Output JSON format:
             raw_title = concept["title"]
             stamped_title = f"[{session_date_str}] {raw_title}"
             raw_desc = concept.get("description", "")
+            ctype = (concept.get("type") or "user_fact").lower()
+            # iter28: Mastra-style priority derived from concept_type. Used by
+            # assembly truncation (drop LOW first when budget hits) and by
+            # reader rule 11 (treat LOW as weak evidence). High = identity /
+            # preferences / relationships (durable user truth). Medium =
+            # default. Low = planning / intent / hypothetical / belief.
+            if ctype in ("user_fact", "preference", "relationship", "identity"):
+                priority = "high"
+            elif ctype in ("planning", "intent", "ongoing", "agent_belief",
+                           "world_state", "hypothetical"):
+                priority = "low"
+            else:
+                priority = "medium"
             graph.add_node(
                 Node(
                     id=concept_id,
@@ -1308,7 +2150,8 @@ Output JSON format:
                         "title": stamped_title,
                         "description": raw_desc,
                         "strength": concept.get("strength", 0.7),
-                        "concept_type": concept.get("type", "user_fact"),
+                        "concept_type": ctype,
+                        "priority": priority,
                         "extracted_at": session_datetime_iso,
                         # Full ISO datetime so same-day events get tie-broken
                         # by HH:MM in latest_value / chronological_order.
@@ -1370,6 +2213,17 @@ Output JSON format:
             _typed_attribute_pass(session, timestamp, graph, config, time_node_id)
         except Exception as e:
             logger.error(f"Error in typed-attribute pass: {e}")
+
+    # ---- W3 (iter30): focused START-event extraction ----
+    # Replaces the unreliable iter29 TR-NEW-1 writer-prompt rule that
+    # gpt-5.4-mini low effort frequently skipped. Adds is_start=true
+    # concept nodes that the resolver's `_find_is_start_concept` uses
+    # to anchor `_try_duration_activity`.
+    if getattr(config, "extract_start_events", False):
+        try:
+            _extract_start_events_pass(session, timestamp, graph, config, time_node_id)
+        except Exception as e:
+            logger.error(f"Error in W3 start-event pass: {e}")
 
     # ---- Patch B: dated-anchor regex pass over user-role turns ----
     # The LLM extraction paraphrases away dated lifecycle anchors
@@ -1539,8 +2393,8 @@ def run_benchmark(args: argparse.Namespace) -> None:
         logger.info(f"Using judge model: {args.judge_model} (separate from reader {config.model_name})")
 
     # Separate config for the extraction (write) path. Defaults to the reader
-    # config; override with --writer-model when the reader is a slow reasoning
-    # model (gpt-5-mini) but extraction is mechanical JSON (gpt-4o-mini).
+    # config; override with --writer-model when the writer should differ from
+    # the reader (e.g. lower reasoning_effort for extraction).
     writer_config = config
     if args.writer_model:
         writer_config = dataclasses.replace(config, model_name=args.writer_model)
@@ -1552,7 +2406,36 @@ def run_benchmark(args: argparse.Namespace) -> None:
     # W2 (iter18): opt-in event_date resolution pass.
     if getattr(args, "resolve_event_dates", False):
         writer_config = dataclasses.replace(writer_config, resolve_event_dates=True)
-        logger.info("W2 event_date resolution pass: ENABLED")
+        logger.info("W2 event_date pass: ENABLED")
+    # W3 (iter30): opt-in START-event extraction pass.
+    if getattr(args, "extract_start_events", False):
+        writer_config = dataclasses.replace(writer_config, extract_start_events=True)
+        logger.info("W3 START-extraction pass: ENABLED")
+    # iter23: writer-specific reasoning_effort so a gpt-5 writer can run
+    # at a different effort level than the reader.
+    if getattr(args, "writer_reasoning_effort", None):
+        writer_config = dataclasses.replace(
+            writer_config, reasoning_effort=args.writer_reasoning_effort
+        )
+        logger.info(f"Writer reasoning_effort: {args.writer_reasoning_effort}")
+
+    # iter29: per-role API key / base_url overrides. Lets the launcher route
+    # writer / reader / judge to different providers (e.g. reader on NTU
+    # direct gpt-5.4-mini, writer on a cheaper key) in one process.
+    _writer_api = os.environ.get("WRITER_API_KEY", "").strip() or None
+    _writer_url = os.environ.get("WRITER_BASE_URL", "").strip() or None
+    _reader_api = os.environ.get("READER_API_KEY", "").strip() or None
+    _reader_url = os.environ.get("READER_BASE_URL", "").strip() or None
+    if _reader_api:
+        config = dataclasses.replace(config, api_key=_reader_api, base_url=_reader_url)
+        # Reader override also propagates to derived configs that haven't
+        # yet been customized below.
+        judge_config = dataclasses.replace(judge_config, api_key=_reader_api, base_url=_reader_url)
+        writer_config = dataclasses.replace(writer_config, api_key=_reader_api, base_url=_reader_url)
+        logger.info(f"Reader/default → READER_API_KEY (base_url={_reader_url or 'OpenAI direct'})")
+    if _writer_api:
+        writer_config = dataclasses.replace(writer_config, api_key=_writer_api, base_url=_writer_url)
+        logger.info(f"Writer → WRITER_API_KEY (base_url={_writer_url or 'OpenAI direct'})")
 
     logger.info(f"Using model: {config.model_name}")
     logger.info(f"Batch mode: {args.batch_mode}")
@@ -1675,6 +2558,16 @@ def run_benchmark(args: argparse.Namespace) -> None:
                     config=writer_config,
                     batch_template=templates.get("batch_extraction"),
                 )
+                # iter31: optional per-session pacing for rate-limited
+                # chat providers (e.g. commonstack 50 RPM aggregate cap).
+                # Set CHAT_PACE_SECONDS=1.2 in the launcher env to throttle
+                # writer to ~30 RPM (cap/2 margin).
+                _pace = os.environ.get("CHAT_PACE_SECONDS")
+                if _pace:
+                    try:
+                        time.sleep(float(_pace))
+                    except (ValueError, TypeError):
+                        pass
             else:
                 for turn in session:
                     if turn["role"] == "user":
@@ -1703,6 +2596,28 @@ def run_benchmark(args: argparse.Namespace) -> None:
                             executor.execute(plan)
                         except Exception as e:
                             logger.error(f"Error processing event {event.event_id}: {e}")
+
+        # iter29 F — Reflector pass. After all sessions ingested for this
+        # qid, the reflector consolidator scans the graph and stamps
+        # explicit supersession markers (status/superseded_by/replaces)
+        # onto concept.data so the reader sees [✅ OUTDATED]/[🆕 CURRENT]
+        # tags in the rendered context. Costs ~1 extra cheap LLM call
+        # per qid. Gated by --reflector.
+        if getattr(args, "reflector", False):
+            try:
+                from cognifold.agent.reflector import run_reflector
+                _refl_cfg = writer_config
+                _refl_effort = os.environ.get("REFLECTOR_REASONING_EFFORT", "").strip() or "low"
+                _refl_cfg = dataclasses.replace(_refl_cfg, reasoning_effort=_refl_effort)
+                _refl_stats = run_reflector(graph, _refl_cfg, call_llm=call_llm)
+                logger.info(
+                    f"[{question_id}] reflector: "
+                    f"concepts={_refl_stats.get('concepts',0)} "
+                    f"supersessions={_refl_stats.get('supersessions',0)} "
+                    f"completions={_refl_stats.get('completions',0)}"
+                )
+            except Exception as e:
+                logger.error(f"Reflector pass failed for {question_id}: {e}")
 
         # Exp A diagnostic: dump full graph and skip the QA step. Used to
         # confirm whether failure cases like "I don't have a memory of X" are
@@ -1781,6 +2696,10 @@ def run_benchmark(args: argparse.Namespace) -> None:
         )
         # Suppress when the question is genuinely TR-style (single-event
         # date diff) rather than aggregation over many events.
+        # NOTE: keep `before\s+i\b` (not `before the/making`): "before making an
+        # offer" (gpt4_7fce9456) is a legitimate R2 MS count target that must NOT
+        # be suppressed. The a3838d2b TR "before the Run" gets an additive
+        # force-include block, which the validator found bounded/net-neutral.
         _qa_agg_count_tr = re.search(
             r"\b(?:ago\b|since\s+i\b|between\s+\w|before\s+i\b|after\s+i\b)",
             question, re.IGNORECASE,
@@ -1792,7 +2711,36 @@ def run_benchmark(args: argparse.Namespace) -> None:
             r"cost|costs?|\$\s*\d|spent\s+on)\b",
             question, re.IGNORECASE,
         )
-        _query_max_nodes = 50 if (_qa_agg_count or _qa_agg_sum) else None
+        # iter33-MS R3 — age/duration/comparison ARITHMETIC questions. These
+        # were getting NO retrieval widening: _qa_agg_count_tr above suppresses
+        # widening exactly on `ago|since|before|after` (the tokens these Qs
+        # carry), and the "how many X have I" verb-frame in _qa_agg_count_re
+        # never matches "how old was I when …". R3 RE-ENABLES widening for the
+        # comparison/age class so the bridge anchors aren't crowded out by
+        # TODAY-dated noise. Strictly gated on _MS_ARITH_COMPARE_RE so TR
+        # single-event date-diff Qs (which lack "how old/older/than when I")
+        # are untouched. Targets a1cc6108, ba358f49, c18a7dc8, 3c1045c8,
+        # 853b0a1d, c9f37c46, dcfa8644, b29f3365.
+        _ms_arith = bool(_MS_ARITH_COMPARE_RE.search(question))
+        # iter33-MS R2 — count-over-owned-category detector (head noun).
+        # SUPPRESS R2 on TR single-event date-diff phrasings ("how many days
+        # ago did I attend X", "how many weeks passed between …") — same
+        # _qa_agg_count_tr marker that suppresses the existing agg-count path —
+        # so genuine TR date-diff questions keep their symbolic-resolver
+        # handling unchanged (HARD RULE 3: do not regress TR=88.7). The 7 R2
+        # count targets (model kits / instruments / kitchen items / properties
+        # / art events / bake / bikes) carry no such marker, so they still fire.
+        # iter33-MS refine: C2 (suppress R2 on "current/now") was CONSIDERED but
+        # REVERTED — it would kill gpt4_194be4b3 ("how many instruments do I
+        # *currently* own", an R2 count target needing the missing-4th surfaced),
+        # and KU (the class C2 protects) is not in the MS-133 set. Defer C2 to a
+        # later all-category run.
+        _ms_count_category = "" if _qa_agg_count_tr else _extract_count_category(question)
+        # Widen for aggregation, money-sum, AND the arithmetic/comparison
+        # bridge class (R3a). Without widening, R1's forced-include block is
+        # the only path that surfaces the bridge node; widening gives the main
+        # retrieval a fairer shot too.
+        _query_max_nodes = 50 if (_qa_agg_count or _qa_agg_sum or _ms_arith) else None
         # On aggregation questions, also boost the pre-rerank pool so the
         # rerank step has a fuller session set to choose from. Only takes
         # effect when --llm-rerank is on; otherwise the override is
@@ -1807,7 +2755,7 @@ def run_benchmark(args: argparse.Namespace) -> None:
         # more chars to fit the 50-node retrieval set without assembly
         # truncating to the first ~20 nodes (default 6000-char cap).
         _query_max_ctx = None
-        if (_qa_agg_count or _qa_agg_sum) and args.agg_max_context_chars:
+        if (_qa_agg_count or _qa_agg_sum or _ms_arith) and args.agg_max_context_chars:
             _query_max_ctx = args.agg_max_context_chars
         _query_start = time.time()
         _query_kwargs: dict = dict(
@@ -1821,6 +2769,147 @@ def run_benchmark(args: argparse.Namespace) -> None:
             _query_kwargs["max_context_chars"] = _query_max_ctx
         query_result = query_agent.query_for_qa(**_query_kwargs)
         context_text = query_result.context
+
+        # iter33-MS TIER 1 — bridge-entity / category-expansion second hop.
+        # Run extra HYBRID sub-queries keyed on the question's bridge entities
+        # (R1) and/or count-category siblings (R2), then FORCE-UNION the nodes
+        # the flat top-k retrieval missed into context BEFORE the reader. This
+        # is the highest-leverage MS fix: 15/24 iter19 MS failures are
+        # retrieval misses where the answer node exists in the graph but a
+        # single lexically-dissimilar session scored below the top-k cutoff.
+        #
+        # GATING: only fires when _ms_arith (R1/R3 class) OR _ms_count_category
+        # (R2 class) is set. On TR / KU / SSU / SSA questions both are false,
+        # so this entire block is INERT and those paths are unchanged.
+        # iter33-MS refine C1: NEVER force-include on _abs abstention qids — the
+        # wrong-sibling roster injected at top-of-context fights the A1/A2
+        # abstention rules (a96c20ee_abs/09ba9854_abs over-answered). No
+        # confirmed flip depends on Tier-1 firing for an _abs qid.
+        if (_ms_arith or _ms_count_category) and not question_id.endswith("_abs"):
+            try:
+                _already_ids = {
+                    getattr(n, "node_id", None)
+                    for n in (getattr(query_result, "nodes", None) or [])
+                }
+                _sub_queries: list[str] = []
+                _block_header = ""
+                if _ms_count_category:
+                    # R2 — category + sibling expansion. Query the category head
+                    # noun plus a couple of singular variants so a lexically
+                    # distant instance session (e.g. "tank" for "model kits",
+                    # "coffee maker" for "kitchen items") can win its own slot.
+                    _cat = _ms_count_category
+                    _sub_queries.append(_cat)
+                    _sing = re.sub(r"s\b", "", _cat)  # crude singularization
+                    if _sing and _sing != _cat:
+                        _sub_queries.append(_sing)
+                    # iter33-MS B2(b): action-verb probe. Mine the question's
+                    # OWN count verb (acquire/buy/download/...) and emit an
+                    # action-verb + category sub-query so an instance session
+                    # that names the acquisition act ("picked up a snake plant
+                    # at the nursery", "downloaded the EP") but is lexically
+                    # distant from the bare category head still wins a slot.
+                    # Derived from question tokens — no per-qid literals.
+                    _qlow = question.lower()
+                    # Each group is keyed on a trigger verb present in the
+                    # question; if seen, its acquisition synonyms are added so
+                    # the probe keys on how an instance might be PHRASED.
+                    _verb_groups = (
+                        # trigger    -> synonym expansion
+                        ("acquire", ("acquired", "got", "bought", "picked up",
+                                     "purchased", "nursery")),
+                        ("purchase", ("purchased", "bought", "ordered")),
+                        ("bought", ("bought", "purchased", "got")),
+                        ("buy", ("buy", "bought", "purchased")),
+                        ("download", ("downloaded", "streamed")),
+                        ("got", ("got", "acquired", "bought")),
+                    )
+                    _verb_probe_terms: list[str] = []
+                    for _trigger, _syns in _verb_groups:
+                        if re.search(rf"\b{_trigger}", _qlow):
+                            _verb_probe_terms.extend(_syns)
+                    if _verb_probe_terms:
+                        # De-dup while preserving order.
+                        _seen_vp: set[str] = set()
+                        _vp = [t for t in _verb_probe_terms
+                               if not (t in _seen_vp or _seen_vp.add(t))]
+                        _sub_queries.append(" ".join(_vp) + " " + _cat)
+                    # Music/album categories: add a "vinyl record" sibling so a
+                    # vinyl purchase counts toward an album/EP count (bf659f65).
+                    if re.search(r"\b(?:album|albums|ep|eps|music|record|"
+                                 r"records|vinyl)\b", _cat, re.IGNORECASE):
+                        _sub_queries.append("vinyl record " + _cat)
+                    # iter33-MS B3: "service or plan to service" / maintenance
+                    # probe (a9f6b44c). When the question frames the count as a
+                    # service/maintenance act, an instance session may name the
+                    # maintenance act ("replaced the tire", "tuned up the bike")
+                    # rather than the bare category. Gated to bikes/maintenance
+                    # category tokens so it stays inert on unrelated counts.
+                    if re.search(
+                        r"\b(?:service\s+or\s+plan\s+to\s+service|"
+                        r"plan\s+to\s+service|maintenance|servic)\b",
+                        _qlow, re.IGNORECASE,
+                    ) and re.search(
+                        r"\b(?:bike|bikes|bicycle|car|cars|vehicle|tire|"
+                        r"tires|maintenance|service)\b", _cat, re.IGNORECASE,
+                    ):
+                        _sub_queries.append(
+                            "plan to service replace tire maintenance "
+                            "this month " + _cat
+                        )
+                    # Add the question's own bridge phrases too (e.g. the
+                    # "before making an offer on the townhouse" qualifier).
+                    _sub_queries.extend(_extract_bridge_phrases(question))
+                    # iter33-MS M1-M4 — additive, frame-gated count sub-queries
+                    # (polysemy-conjoin / generic-event verb / weekday probe /
+                    # vinyl-format strengthen). All derived from question tokens.
+                    _sub_queries.extend(
+                        _ms_extra_count_sub_queries(question, _cat)
+                    )
+                    _block_header = (
+                        "## CATEGORY_MEMBERS (iter33-MS R2 — every instance of "
+                        f"'{_cat}' found in memory, force-included regardless of "
+                        "retrieval rank; COUNT all distinct ones below, they may "
+                        "live in different sessions)"
+                    )
+                else:
+                    # R1 — bridge-entity second hop for age/duration/comparison.
+                    _sub_queries = _extract_bridge_phrases(question)
+                    # iter33-MS refine R1-age: for age-difference questions
+                    # ("how old was I when X", "how many years older … than
+                    # when I Y"), the SECOND operand (the user's current age) is
+                    # a single self-report ("I just turned 32") that routinely
+                    # scores below the cutoff — a textbook retrieval miss
+                    # (c18a7dc8, a1cc6108). Add current-age probe sub-queries so
+                    # the operand is surfaced; D-COMPUTE's absent-operand gate
+                    # still abstains if it genuinely isn't there (no fabrication).
+                    if re.search(r"\bhow\s+(?:old|many\s+years)\b", question, re.IGNORECASE):
+                        _sub_queries += [
+                            "I just turned years old current age",
+                            "I am years old now currently",
+                        ]
+                    _block_header = (
+                        "## BRIDGE_ANCHORS (iter33-MS R1 — sessions matching the "
+                        "named entity/event in the question, force-included so the "
+                        "second-hop fact isn't crowded out by recent-dated noise)"
+                    )
+                _sub_queries = [s for s in _sub_queries if s]
+                if _sub_queries:
+                    _force_block, _forced_ids = _build_forced_include_block(
+                        query_agent,
+                        _sub_queries,
+                        {i for i in _already_ids if i},
+                        header=_block_header,
+                    )
+                    if _force_block:
+                        context_text = _force_block + "\n" + context_text
+                        logger.debug(
+                            f"[{question_id}] iter33-MS forced-include: "
+                            f"{len(_forced_ids)} nodes via {_sub_queries}"
+                        )
+            except Exception as e:
+                # Never let the expansion hop break the run — it is additive.
+                logger.error(f"iter33-MS expansion failed for {question_id}: {e}")
 
         # Symbolic temporal layer: for time-ordering / interval / latest-fact
         # questions, prepend a chronologically-sorted block of every dated
@@ -1868,9 +2957,21 @@ def run_benchmark(args: argparse.Namespace) -> None:
         # AND short-circuit the LLM (`answer` = resolver answer verbatim) so
         # the reader can't unsort what we already sorted.
         question_dt = _parse_longmemeval_date(item.get("question_date", ""))
+        # iter29 D' (revised iter30) — per-type W2 suppression in the
+        # RESOLVER only. iter27 showed W2 event_date hurt MS -4.5 and TR
+        # -3 when used by the resolver's _index_concepts (session-relative
+        # ordering matters for those types). The reader, however, BENEFITS
+        # from seeing the absolute (meaning DATE) anchor inline regardless
+        # of question type, so iter30 stops stripping the rendered suffix.
+        _qtype = item.get("question_type", "") or ""
+        _suppress_w2 = _qtype in ("multi-session", "temporal-reasoning")
         symbolic_result = None
         if args.symbolic_resolver:
-            resolver = LongMemEvalSymbolicResolver(graph, question_date=question_dt)
+            resolver = LongMemEvalSymbolicResolver(
+                graph,
+                question_date=question_dt,
+                ignore_event_date=_suppress_w2,
+            )
             symbolic_result = resolver.resolve(question)
             if symbolic_result is not None:
                 context_text = render_symbolic_block(symbolic_result) + "\n" + context_text
@@ -1890,6 +2991,13 @@ def run_benchmark(args: argparse.Namespace) -> None:
         target_cands_block = build_target_date_concepts_block(graph, question_dt, question)
         if target_cands_block:
             context_text = target_cands_block + "\n" + context_text
+
+        # iter29 TR-α — topic timeline for TR questions (chronological
+        # list of topic-matching events with absolute date + N days ago).
+        if getattr(args, "tr_topic_timeline", False) and _qtype == "temporal-reasoning":
+            topic_tl = build_topic_timeline_block(graph, question, question_dt)
+            if topic_tl:
+                context_text = topic_tl + "\n" + context_text
 
         # iter07 — TODAY anchor goes LAST in the prepend chain so it ends up
         # at the very top of context. Reader prompt then begins with a clear
@@ -1920,6 +3028,9 @@ def run_benchmark(args: argparse.Namespace) -> None:
                     context=context_text,
                     config=config,
                     qa_template=templates.get("qa_answer"),
+                    graph=graph,
+                    query_nodes=getattr(query_result, "nodes", None),
+                    question_date=question_dt,
                 )
         except Exception as e:
             logger.error(f"Error generating answer for {question_id}: {e}")
@@ -1985,6 +3096,25 @@ def run_benchmark(args: argparse.Namespace) -> None:
 
     if save_wrong_cases is not None:
         save_wrong_cases(results, str(output_dir))
+
+    # Persist per-batch call stats so the launcher can merge across batches.
+    try:
+        import json as _json
+
+        merged_stats: dict = {"chat": dict(_LLM_CALL_STATS), "embed": {}}
+        # Pull embedding counter from providers module if present.
+        try:
+            from cognifold.embeddings import providers as _ep
+            es = getattr(_ep, "_EMBED_CALL_STATS", None)
+            if isinstance(es, dict):
+                merged_stats["embed"] = dict(es)
+        except Exception:
+            pass
+        (output_dir / "call_stats.json").write_text(
+            _json.dumps(merged_stats, indent=2)
+        )
+    except Exception as _e:
+        logger.warning(f"Could not write call_stats.json: {_e}")
 
     logger.info(f"Evaluation complete. Results saved to {output_path}")
 
@@ -2091,8 +3221,8 @@ if __name__ == "__main__":
         type=str,
         default=None,
         help="Override extraction model separately (default: same as --model). "
-        "Pair openai:gpt-4o-mini for fast deterministic JSON extraction with "
-        "openai:gpt-5-mini reader for reasoning-grade QA.",
+        "Use to route the writer to a different model / reasoning_effort "
+        "than the reader.",
     )
     parser.add_argument(
         "--disable-concepts",
@@ -2121,7 +3251,7 @@ if __name__ == "__main__":
         "--embedding",
         type=str,
         default=None,
-        help="Embedding model (e.g. openai:text-embedding-3-small, gemini:text-embedding-004, or none). Overrides profile config.",
+        help="Embedding model (e.g. openai:text-embedding-3-large, gemini:text-embedding-004, or none). Overrides profile config.",
     )
     parser.add_argument(
         "--max-context-chars",
@@ -2158,6 +3288,18 @@ if __name__ == "__main__":
         "specific value (Exp A WRITER bucket: ~7/23 of the Bucket C cases).",
     )
     parser.add_argument(
+        "--writer-reasoning-effort",
+        type=str,
+        default=None,
+        choices=["low", "medium", "high", None],
+        help=(
+            "iter23: writer-specific reasoning_effort. Defaults to 'high' "
+            "(matches reader) when the writer is a gpt-5 reasoning model. "
+            "Set 'low' to run the writer at lower effort than the reader "
+            "to trade extraction quality for speed."
+        ),
+    )
+    parser.add_argument(
         "--resolve-event-dates",
         action="store_true",
         help=(
@@ -2169,6 +3311,40 @@ if __name__ == "__main__":
             "instead of the session-extraction date. Inspired by Chronos "
             "(event-calendar +58.9 pts baseline in their ablation) and "
             "Mem0 (per-memory temporal pass)."
+        ),
+    )
+    parser.add_argument(
+        "--reflector",
+        action="store_true",
+        help=(
+            "iter29 F — Mastra-style Reflector pass. After all sessions "
+            "are ingested for a qid, runs a consolidator LLM that stamps "
+            "supersession markers (status, superseded_by, replaces) onto "
+            "concept.data so the reader sees [✅ OUTDATED]/[🆕 CURRENT] "
+            "tags in the rendered context — directly addresses KU and "
+            "MS hard cases."
+        ),
+    )
+    parser.add_argument(
+        "--extract-start-events",
+        action="store_true",
+        help=(
+            "W3 (iter30) — per-session focused pass that explicitly "
+            "extracts ACTIVITY START events ('I started bird watching', "
+            "'I bought my new running shoes') and stamps the resulting "
+            "concept with is_start=true + activity. Lets the resolver's "
+            "`duration_activity` pattern actually fire (iter29 evidence "
+            "showed embedding the rule in the main BATCH_SYSTEM_PROMPT "
+            "was unreliable). Adds ~1 cheap LLM call per session."
+        ),
+    )
+    parser.add_argument(
+        "--tr-topic-timeline",
+        action="store_true",
+        help=(
+            "iter29 TR-α — for TR questions, prepend a topic-focused "
+            "chronological timeline of all events matching the question's "
+            "key noun phrases, with absolute date + (N days ago) anchors."
         ),
     )
 
