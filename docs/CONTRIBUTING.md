@@ -134,37 +134,76 @@ def process_event(event, config=None):
 
 ## Git Workflow
 
+CogniFold uses a **fork-based contribution model**. The canonical repository is
+**`OpenNorve/CogniFold`** — all changes land there through reviewed pull requests.
+**Nobody pushes directly to a protected branch** (`main`); branch protection
+enforces this.
+
+How you contribute depends on your access:
+
+| Role | Where you work | How changes land |
+|------|----------------|------------------|
+| **External collaborator** (no write access) | Your **personal fork** of `OpenNorve/CogniFold` | PR from your fork → canonical |
+| **Core maintainer** (write access) | A topic branch on the canonical repo *or* your own fork | PR → canonical; review + merge |
+
+### Fork Workflow (external collaborators)
+
+You never need write access to the canonical repo — a maintainer reviews and
+merges your PR.
+
+1. **Fork** `OpenNorve/CogniFold` on GitHub (top-right "Fork") → creates `<you>/CogniFold`.
+2. **Clone your fork and register the canonical as `upstream`**:
+   ```bash
+   git clone git@github.com:<you>/CogniFold.git
+   cd CogniFold
+   git remote add upstream git@github.com:OpenNorve/CogniFold.git
+   ```
+3. **Branch off the latest canonical integration branch** (`main` — the repo default):
+   ```bash
+   git fetch upstream
+   git checkout -b my-feature upstream/main
+   ```
+4. **Commit** (see Commit Convention) and **push to YOUR fork** (`origin`):
+   ```bash
+   git push -u origin my-feature
+   ```
+5. **Open a PR** `<you>/CogniFold:my-feature` → `OpenNorve/CogniFold:main`
+   (GitHub's fork page offers "Contribute → Open pull request" automatically).
+6. **Keep the PR current** if review takes time:
+   ```bash
+   git fetch upstream && git rebase upstream/main && git push --force-with-lease
+   ```
+
+### Maintainer Workflow (write access)
+
+1. **Create a topic branch** from the canonical integration branch:
+   ```bash
+   git checkout main
+   git pull origin main
+   git checkout -b feat/my-change
+   ```
+2. **Make incremental commits** (see Commit Convention below).
+3. **Push the branch** and open a PR — never push to a protected branch directly:
+   ```bash
+   git push -u origin feat/my-change
+   ```
+4. Prefer your own fork for long-running experiments to keep the canonical
+   branch list clean.
+
 ### Branch Strategy
 
 ```
-main              # Stable releases only (never push directly)
-cognifold-dev     # Main development branch (PR target)
-phase<N>          # Phase-specific branches (e.g., phase10, phase11)
+main              # Integration + protected branch (PR target; never push directly)
+feat/* fix/* ...  # Short-lived topic branches (deleted after merge)
 ```
 
-### Workflow
-
-1. **Create phase branch** from `cognifold-dev`:
-   ```bash
-   git checkout cognifold-dev
-   git pull origin cognifold-dev
-   git checkout -b phase10
-   ```
-
-2. **Make incremental commits** (see Commit Convention below)
-
-3. **Push regularly**:
-   ```bash
-   git push -u origin phase10
-   ```
-
-4. **Create PR** when phase complete or at logical checkpoints
-
 ### PR Requirements
-- All quality gates pass (ruff, pyright, pytest)
-- Clear description referencing Phase
-- Link to related issues if any
-- Request review for significant changes
+- All quality gates pass — the **"Lint, Type Check, Test"** CI check is **required**
+  (ruff lint + format, pyright, pytest).
+- At least **1 maintainer approval** (enforced by branch protection on `main`).
+- All review conversations resolved.
+- Clear description; link related issues.
+- Branch up to date with `main` before merge.
 
 ---
 
