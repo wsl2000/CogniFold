@@ -50,6 +50,7 @@ from benchmarks.longmemeval import neural_symbolic as neural_symbolic_mod
 from benchmarks.longmemeval.neural_symbolic import (
     render_neural_symbolic_block,
     resolve_neural_symbolic,
+    take_max_answer,
 )
 from benchmarks.longmemeval.round2_evidence_ledger import (
     answer_from_ledger,
@@ -2978,6 +2979,9 @@ def run_benchmark(args: argparse.Namespace) -> None:
         _qtype = item.get("question_type", "") or ""
         _suppress_w2 = _qtype in ("multi-session", "temporal-reasoning")
         symbolic_result = None
+        # Deferred NS count/sum result for the take-max router (set below; the
+        # reader runs WITHOUT the NS hint, then we keep the higher count).
+        ns_take_max = None
         if args.symbolic_resolver:
             resolver = LongMemEvalSymbolicResolver(
                 graph,
@@ -3028,16 +3032,32 @@ def run_benchmark(args: argparse.Namespace) -> None:
                     ns_result.get("answer", "")[:60], ns_result.get("bypass"),
                 )
                 symbolic_result = ns_result
-                # bypass=True (auto, high-confidence) → verbatim SYMBOLIC_ANSWER;
-                # bypass=False (default) → the COUNT_CROSSCHECK block whose framing
-                # treats the enumeration as a lower-bound checklist to merge with,
-                # NOT a verdict (fixes the under-count collateral seen in the smoke).
-                _ns_block = (
-                    render_symbolic_block(ns_result)
-                    if ns_result.get("bypass")
-                    else render_neural_symbolic_block(ns_result)
+                _is_count_sum = (
+                    ns_result.get("family") == neural_symbolic_mod.FAMILY_ENUMERATE_SUM
                 )
-                context_text = _ns_block + "\n" + context_text
+                if (
+                    getattr(args, "neural_symbolic_take_max", True)
+                    and _is_count_sum
+                    and not ns_result.get("bypass")
+                ):
+                    # TAKE-MAX routing for count/sum: do NOT inject the NS hint.
+                    # The reader runs on the pure (no-hint) context, then we
+                    # deterministically keep the HIGHER of (baseline count, NS
+                    # count). The NS×baseline cross-tab + $0 ns_take_max_sim.py
+                    # show every NS win is NS ratcheting the count UP and every
+                    # observed collateral is NS ratcheting DOWN, so max() keeps
+                    # the wins and structurally kills the down-collateral
+                    # (+7 fixes / 0 breaks on cached data).
+                    ns_take_max = ns_result
+                else:
+                    # Other families (percent/compare/date/age) or bypass=True:
+                    # inject the cross-check hint / verbatim answer as before.
+                    _ns_block = (
+                        render_symbolic_block(ns_result)
+                        if ns_result.get("bypass")
+                        else render_neural_symbolic_block(ns_result)
+                    )
+                    context_text = _ns_block + "\n" + context_text
 
         # iter15 — RECALL_TARGET_DATE for "X N weeks ago" Qs. Pin the
         # absolute target date so reader prefers the right [YYYY-MM-DD]
@@ -3099,6 +3119,21 @@ def run_benchmark(args: argparse.Namespace) -> None:
             logger.error(f"Error generating answer for {question_id}: {e}")
             answer = "Error generating answer."
 
+        # TAKE-MAX post-process: for a deferred NS count/sum result, keep the
+        # HIGHER of the baseline reader's count and the NS deterministic count.
+        # This is the complementary 'run both, take the higher' router — it
+        # adopts NS only when NS found MORE (the win direction) and never lets
+        # NS lower the reader's count (kills the down-collateral).
+        take_max_taken = False
+        if ns_take_max is not None and not should_bypass:
+            new_answer, take_max_taken = take_max_answer(answer, ns_take_max)
+            if take_max_taken:
+                logger.info(
+                    "Take-max adopted NS count for %s: %r (over baseline %r)",
+                    question_id, ns_take_max.get("answer"), answer[:50],
+                )
+                answer = new_answer
+
         # 4. Evaluate (optional)
         eval_result = None
         if args.llm_eval and ground_truth:
@@ -3122,6 +3157,7 @@ def run_benchmark(args: argparse.Namespace) -> None:
             "graph_nodes": graph.node_count,
             "symbolic_pattern": (symbolic_result or {}).get("pattern"),
             "bypass_taken": bool(should_bypass),
+            "take_max_taken": bool(take_max_taken),
         }
 
         if eval_result:
@@ -3249,6 +3285,16 @@ if __name__ == "__main__":
         "answer verbatim, skipping the reader) for HIGH-confidence enumerate/sum "
         "results. Still requires --symbolic-bypass. Default OFF (hint-only, "
         "reader verifies).",
+    )
+    parser.add_argument(
+        "--neural-symbolic-take-max",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="For count/sum questions, run the normal reader WITHOUT the NS hint "
+        "and keep the HIGHER of (baseline count, NS count) — the complementary "
+        "'run both, take the higher' router. ON by default when --neural-symbolic "
+        "is set; --no-neural-symbolic-take-max reverts to injecting the NS hint "
+        "into the reader context instead. See ns_take_max_sim.py.",
     )
     parser.add_argument(
         "--judge-model",
