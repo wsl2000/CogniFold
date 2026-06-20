@@ -722,8 +722,16 @@ def _extract_bridge_phrases(question: str, max_phrases: int = 4) -> list[str]:
         _add(clause)
 
     # 2. Proper-noun named entities (Alex, Rachel, Adidas, Converse, Berkeley).
+    # Exclude sentence-initial interrogatives/auxiliaries the capitalization
+    # regex would otherwise mine as a bogus bridge sub-query ("What", "Which",
+    # "Did" -> noise that wastes a retrieval slot).
+    _BRIDGE_STOP = {
+        "how", "what", "which", "did", "do", "does", "when", "where", "who",
+        "whom", "whose", "why", "was", "were", "is", "are", "have", "has",
+        "the", "a", "an", "my", "in", "on", "at", "user", "assistant",
+    }
     for p in _PROPER_NOUN_RE.findall(question):
-        if p.lower() not in {"how", "user", "assistant"} and len(p) > 2:
+        if p.lower() not in _BRIDGE_STOP and len(p) > 2:
             _add(p)
 
     return phrases[:max_phrases]
@@ -1738,7 +1746,7 @@ Rules:
 - MANNER QUALIFIERS: when an activity/sport/skill is described with a manner adverb ("competitively", "professionally", "recreationally", "casually", "semi-professionally"), KEEP that adverb in the "context" so the qualifier is not lost (e.g. context="played soccer competitively in high school"). This lets later counting filter on the manner.
 - ACQUISITIONS / VIEWINGS: when the user GETS, BUYS, ACQUIRES, ADOPTS, RECEIVES, INHERITS, or VIEWS a specific item, emit that item as a "name" attribute even if it is mentioned only once, with the acquisition recorded in "context" (verb + source + when) — e.g. value="peace lily", context="got from the nursery two weeks ago"; value="1-bedroom condo", context="viewed on February 10th". The main extractor often smooths these into generic care/interest notes and DROPS the item; keep each acquired/viewed item so it stays countable.
 - ENTITY-ANCHORED VALUES: a duration or quantity's "context" MUST name the specific place / entity / trip it belongs to, never a generic label — e.g. context="trip to Hawaii" (NOT "family trip planning") for a "10-day" duration, so the value can be matched back to its subject.
-- PLANNED vs DONE: emit only REALIZED facts. SKIP values attached to things merely PLANNED / hypothetical / aspirational and not actually done ("I think I'll go with", "I'm planning to", "I might", "hoping to") — e.g. do NOT emit a "4 hours" duration for a trip the user only considered taking.
+- PLANNED / FUTURE STATUS: NEVER DROP a stated value just because it is future or planned (a real future date, a quoted price, a coupon %, an age are all facts — always emit them). BUT if a value is attached to something only being DECIDED / considered / not-yet-chosen ("I think I'll go with", "deciding between", "might", "considering") and not actually done, still emit it AND mark that in the "context" (e.g. context="PLANNED drive to Tybee — deciding, not taken") so a later count can include or exclude it per the question.
 
 Example:
 Messages:
