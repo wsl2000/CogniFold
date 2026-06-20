@@ -1725,7 +1725,7 @@ Definitions:
 - "time" = clock time (e.g., "9 AM", "6:30 pm", "10:00")
 - "date" = calendar date (e.g., "February 1st", "March 3rd", "May 25", "January 24th")
 - "duration" = interval (e.g., "two weeks", "5 days", "3 months", "a year ago")
-- "quantity" = count/amount (e.g., "1300 followers", "$80", "4 days a week", "856 pages")
+- "quantity" = count/amount (e.g., "1300 followers", "$80", "4 days a week", "856 pages", "8 edX courses", "25 rare coins", "12 Coursera courses") — capture the number even when embedded in a clause ("my previous 8 edX courses", "I have 25 rare coins")
 - "name" = proper noun, specific named entity (e.g., "Golden Retriever", "Nu, pogodi!", "Bajimaya")
 - "person" = a named individual the user knows or refers to (e.g., "Michael", "Sarah Chen", "Dr. Williams", "my cousin Emma"); helps named_day_recall by pinning who-did-what-when
 
@@ -1736,6 +1736,9 @@ Rules:
 - Each attribute's "value" must appear VERBATIM in the message.
 - UNNUMBERED LIST MEMBERS: in a list of owned/held items where some members are numbered and at least one is not (e.g. "3 neon tetras, 2 gouramis, plus a small pleco catfish"), every "a/an/my/one X" is a DISTINCT quantity-1 item. Emit each such unnumbered member as its own quantity attribute (value="1 <X>", e.g. "1 pleco catfish"); do NOT drop unnumbered members. They count toward totals just like the numbered ones.
 - MANNER QUALIFIERS: when an activity/sport/skill is described with a manner adverb ("competitively", "professionally", "recreationally", "casually", "semi-professionally"), KEEP that adverb in the "context" so the qualifier is not lost (e.g. context="played soccer competitively in high school"). This lets later counting filter on the manner.
+- ACQUISITIONS / VIEWINGS: when the user GETS, BUYS, ACQUIRES, ADOPTS, RECEIVES, INHERITS, or VIEWS a specific item, emit that item as a "name" attribute even if it is mentioned only once, with the acquisition recorded in "context" (verb + source + when) — e.g. value="peace lily", context="got from the nursery two weeks ago"; value="1-bedroom condo", context="viewed on February 10th". The main extractor often smooths these into generic care/interest notes and DROPS the item; keep each acquired/viewed item so it stays countable.
+- ENTITY-ANCHORED VALUES: a duration or quantity's "context" MUST name the specific place / entity / trip it belongs to, never a generic label — e.g. context="trip to Hawaii" (NOT "family trip planning") for a "10-day" duration, so the value can be matched back to its subject.
+- PLANNED vs DONE: emit only REALIZED facts. SKIP values attached to things merely PLANNED / hypothetical / aspirational and not actually done ("I think I'll go with", "I'm planning to", "I might", "hoping to") — e.g. do NOT emit a "4 hours" duration for a trip the user only considered taking.
 
 Example:
 Messages:
