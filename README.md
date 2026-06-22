@@ -2,7 +2,7 @@
 
 <h1>CogniFold: Always-On Proactive Memory<br/>via Cognitive Folding</h1>
 
-<a href="https://opennorve.github.io/CogniFold/" target="_blank"><img alt="Live Demo" src="https://img.shields.io/badge/%F0%9F%A7%A0_Live_Demo-opennorve.github.io-7C3AED?style=flat-square" height="22px"></a>
+<a href="https://opennorve.github.io/CogniFold/" target="_blank"><img alt="Live progress track" src="https://img.shields.io/badge/%F0%9F%A7%A0_Live_progress_track-opennorve.github.io-7C3AED?style=flat-square" height="22px"></a>
 <a href="https://opennorve.github.io/CogniFold/" target="_blank"><img alt="Brain Memory Coverage" src="https://img.shields.io/badge/Brain_Memory_Coverage-~60%25-8B5CF6?style=flat-square" height="22px"></a>
 <a href="https://arxiv.org/abs/2605.13438" target="_blank"><img alt="Paper" src="https://img.shields.io/badge/Technical_Report-arXiv-B31B1B?logo=arxiv&logoColor=white&style=flat-square" height="22px"></a>
 <a href="https://huggingface.co/datasets/OpenNorve/CogEval-Bench" target="_blank"><img alt="CogEval-Bench Dataset" src="https://img.shields.io/badge/Dataset-CogEval--Bench-FFD21E?logo=huggingface&logoColor=black&style=flat-square" height="22px"></a>
@@ -20,7 +20,7 @@
 
 <div align="center">
 
-<a href="https://opennorve.github.io/CogniFold/"><b>🌐 Live Demo</b></a> &nbsp;·&nbsp; <a href="docs/ARCHITECTURE.md"><b>🏗️ Architecture</b></a> &nbsp;·&nbsp; <a href="docs/DEPLOYMENT.md"><b>🚀 Deploy</b></a> &nbsp;·&nbsp; <a href="docs/INTEGRATIONS.md"><b>🔌 Integrations</b></a> &nbsp;·&nbsp; <a href="docs/PROMPTS.md"><b>✍️ Prompt Profiles</b></a> &nbsp;·&nbsp; <a href="docs/NORTH_STAR_METHODOLOGY.md"><b>🧭 North Star</b></a>
+<a href="https://opennorve.github.io/CogniFold/"><b>🌐 Live progress track</b></a> &nbsp;·&nbsp; <a href="docs/ARCHITECTURE.md"><b>🏗️ Architecture</b></a> &nbsp;·&nbsp; <a href="docs/DEPLOYMENT.md"><b>🚀 Deploy</b></a> &nbsp;·&nbsp; <a href="docs/INTEGRATIONS.md"><b>🔌 Integrations</b></a> &nbsp;·&nbsp; <a href="docs/PROMPTS.md"><b>✍️ Prompt Profiles</b></a> &nbsp;·&nbsp; <a href="docs/PHILOSOPHY.md"><b>🧭 Philosophy</b></a> &nbsp;·&nbsp; <a href="docs/NORTH_STAR_METHODOLOGY.md"><b>🧭 North Star</b></a>
 
 </div>
 
@@ -34,6 +34,7 @@
 
 ## 📖 Table of Contents
 
+- [🧭 Design Philosophy: imperfection by design](#-design-philosophy-imperfection-by-design)
 - [🎯 Highlights](#-highlights)
 - [🧠 Concepts in 60 seconds](#-concepts-in-60-seconds)
 - [🎬 Demo](#-demo)
@@ -48,6 +49,19 @@
 - [📜 License](#-license)
 
 ---
+
+## 🧭 Design Philosophy: imperfection by design
+
+CogniFold does **not** chase a perfect, omniscient, unbiased recall store. It models memory the way cognition actually works — *situated, lossy, and opinionated* — because that is precisely what makes proactivity possible. A system that stored everything with equal weight and perfect fidelity would be a database: faithful, and completely reactive. What lets memory *act ahead of you* is the same thing that makes it imperfect — it decides what matters, what fades, and what crystallizes into an intent. **The bias is not a defect we are slowly engineering away. The bias is the mechanism.** We optimize for useful proactive structure, not for maximal ground-truth fidelity.
+
+Four cognitive realities we model **on purpose** instead of designing around:
+
+1. **Situated cognition.** Cognition is embedded in the active context, goals, and history; the deeper into a problem, the more the frame gets *locked*. Retrieval is conditioned on the active intent and recent trace, so the graph reasons *from where it already is*.
+2. **Confirmation bias / reasoning inertia.** Once an understanding forms, contradicting signals get filtered and the view is reinforced — agents inherit this through the reasoning path accumulated in a context window. We bound that inertia structurally (decay, completion, re-linking) instead of pretending each turn is a clean slate.
+3. **Locality of working memory.** Human working memory activates only the currently relevant nodes; an LLM's attention weights decide *what is even seen*. We embrace locality — the hierarchical context window surfaces a focused, partial view rather than dumping the whole graph.
+4. **Metacognitive blind spots (unknown unknowns).** The most dangerous gap is the part you don't know you don't know — you can't feel you need help. A *proactive* substrate matters here: intents that crystallize from topology can surface what you never thought to ask, partially covering the blind spot pure on-demand retrieval can't reach.
+
+This is also why our reported benchmark numbers are the **proactive-substrate stack, not per-benchmark tuned ceilings**. Several older tasks are trivially inflatable with a task-specialized reader — but that path rewards *auto-loop hallucination*, the reader confabulating to satisfy a metric instead of reading memory. That's exactly the metacognitive failure above, so we don't optimize for it. **The flaw is the point.** → Full writeup: [docs/PHILOSOPHY.md](docs/PHILOSOPHY.md).
 
 ## 🎯 Highlights
 
