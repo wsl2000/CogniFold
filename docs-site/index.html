@@ -6,10 +6,9 @@
   <title>CogniFold — A brain-inspired always-on agent memory</title>
   <meta name="description" content="CogniFold folds events into self-emerging cognitive structure: a brain-inspired, always-on agent memory with proactive intent crystallization. ~60% of human memory systems modeled." />
   <link rel="canonical" href="https://wsl2000.github.io/CogniFold/" />
-  <meta name="theme-color" content="#ffffff" />
+  <meta name="theme-color" content="#f4f2ee" />
   <meta name="color-scheme" content="light" />
 
-  <!-- Favicon (neural brain glyph) -->
   <link rel="icon" type="image/svg+xml" href="favicon.svg" />
   <link rel="apple-touch-icon" href="favicon.svg" />
 
@@ -23,238 +22,269 @@
   <meta property="og:image:type" content="image/svg+xml" />
   <meta property="og:image:width" content="1200" />
   <meta property="og:image:height" content="630" />
-  <meta property="og:image:alt" content="CogniFold — a brain-inspired agent memory; ~60% of human memory systems modeled." />
-
-  <!-- Twitter / X card -->
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="CogniFold — A brain-inspired always-on agent memory" />
-  <meta name="twitter:description" content="An always-on agent memory that folds events into self-emerging cognitive structure. ~60% of human memory systems modeled." />
+  <meta name="twitter:description" content="An always-on agent memory that folds events into self-emerging cognitive structure." />
   <meta name="twitter:image" content="https://wsl2000.github.io/CogniFold/assets/og-image.svg" />
-  <meta name="twitter:image:alt" content="CogniFold — memory-system coverage map." />
 
-  <!-- System fonts only; no web-font dependency. -->
-  <link rel="stylesheet" href="css/styles.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,500;0,600;1,500&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&family=Space+Mono:wght@400;700&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+  <style>
+    * { margin:0; padding:0; box-sizing:border-box; }
+    html,body { background:#f4f2ee; color:#1d1d1f; }
+    .mono { font-family:'Space Mono',monospace; }
+    .sans { font-family:'Inter',sans-serif; }
+    .serif { font-family:'Cormorant Garamond',serif; }
+    .news { font-family:'Newsreader',serif; }
+    a { color:inherit; text-decoration:none; }
+    /* fixed-canvas fit: the 1680px design is scaled to fit any viewport */
+    #stage { width:100%; overflow:hidden; }
+    #frame { width:1680px; transform-origin:top left; }
+    .cf-row { display:flex; align-items:center; gap:9px; padding:7.5px 0; border-bottom:1px solid rgba(0,0,0,.07); }
+    .cf-row .dot { width:9px; height:9px; border-radius:2.5px; flex:none; }
+    .cf-row .name { flex:1; min-width:0; font-weight:400; font-size:13px; line-height:1.25; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .cf-row .maps { font-weight:400; font-size:9px; color:rgba(0,0,0,.38); letter-spacing:.03em; white-space:nowrap; flex:none; max-width:42%; overflow:hidden; text-overflow:ellipsis; }
+  </style>
 </head>
 <body>
+<div id="stage">
+<div id="frame" style="margin:0 auto; background:#f4f2ee; color:#1d1d1f;">
 
-  <!-- ============ Sticky translucent nav ============ -->
-  <header class="nav" id="nav">
-    <div class="nav__inner">
-      <a class="nav__brand" href="#top" aria-label="CogniFold home">
-        <span class="nav__mark" aria-hidden="true">
-          <svg viewBox="0 0 40 40" width="28" height="28">
-            <path d="M8 26 Q10 10 20 10 Q30 10 32 26 Q26 32 20 30 Q14 32 8 26 Z"
-                  fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" />
-            <path d="M20 11 Q19 20 20 30 M13 14 Q19 18 13 24 M27 14 Q21 18 27 24"
-                  fill="none" stroke="currentColor" stroke-width="1.1" opacity="0.7" />
+  <!-- ============ PAGE 1 — TITLE ============ -->
+  <section style="position:relative; width:1680px; height:1050px; display:flex; flex-direction:column; align-items:center; justify-content:center; overflow:hidden; background:radial-gradient(ellipse 70% 60% at 50% 40%, #faf8f4 0%, #f1efea 70%);">
+    <div class="mono" style="position:absolute; top:40px; left:60px; right:60px; display:flex; justify-content:space-between; font-size:12px; letter-spacing:.22em; color:#a1a1a6;">
+      <span>OPENNORVE · NORVELABS</span>
+      <span>APACHE-2.0 · PYTHON · MCP-COMPATIBLE</span>
+    </div>
+
+    <div style="position:relative; text-align:center; z-index:2;">
+      <div class="mono" style="font-size:14px; letter-spacing:.42em; color:#b5742e; margin-bottom:34px;">BRAIN-INSPIRED AGENT MEMORY</div>
+      <h1 class="serif" style="font-size:148px; font-weight:600; line-height:.92; letter-spacing:.005em; color:#1d1d1f;">CogniFold</h1>
+      <p class="news" style="font-size:27px; font-weight:400; line-height:1.5; color:#3a3a3c; max-width:830px; margin:34px auto 0;">An always-on agent memory that folds events into self-emerging cognitive structure — and proactively crystallizes them into intent.</p>
+      <p class="sans" style="font-size:15px; font-weight:300; letter-spacing:.04em; color:#86868b; max-width:680px; margin:22px auto 0; line-height:1.6;">Event → Concept → Intent. A complementary-learning-systems graph that consolidates online, grounds every concept in its source, and remembers to act.</p>
+
+      <div style="display:flex; gap:14px; justify-content:center; margin-top:48px;">
+        <a href="https://github.com/wsl2000/CogniFold" target="_blank" rel="noopener" style="display:flex; align-items:center; gap:11px; padding:15px 30px; border-radius:980px; background:#1d1d1f;">
+          <svg viewBox="0 0 16 16" width="17" height="17" fill="#fff"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+          <span class="mono" style="font-size:14px; letter-spacing:.1em; color:#fff;">GITHUB</span>
+        </a>
+        <a href="https://arxiv.org/abs/2605.13438" target="_blank" rel="noopener" style="display:flex; align-items:center; gap:11px; padding:15px 30px; border:1px solid rgba(0,0,0,.16); border-radius:980px; background:#fff;">
+          <span class="serif" style="font-size:19px; font-weight:600; color:#1d1d1f;">arXiv</span>
+          <span class="mono" style="font-size:13px; letter-spacing:.08em; color:#6e6e73;">2605.13438</span>
+        </a>
+        <a href="#benchmarks" style="display:flex; align-items:center; gap:11px; padding:15px 30px; border:1px solid rgba(0,0,0,.16); border-radius:980px; background:#fff;">
+          <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="#1d1d1f" stroke-width="1.4"><rect x="1.5" y="8" width="3" height="6.5"/><rect x="6.5" y="4" width="3" height="10.5"/><rect x="11.5" y="1.5" width="3" height="13"/></svg>
+          <span class="mono" style="font-size:14px; letter-spacing:.1em; color:#1d1d1f;">BENCHMARKS</span>
+        </a>
+      </div>
+
+      <div style="display:flex; justify-content:center; margin-top:64px; border-radius:18px; overflow:hidden; background:#fff; box-shadow:0 1px 3px rgba(0,0,0,.05), 0 12px 36px rgba(0,0,0,.05);">
+        <div style="padding:28px 48px; text-align:center;"><div class="serif" style="font-size:50px; font-weight:600; color:#1d1d1f;">12</div><div class="sans" style="font-size:13px; font-weight:400; color:#86868b; margin-top:4px;">memory systems mapped</div></div>
+        <div style="width:1px; background:rgba(0,0,0,.08);"></div>
+        <div style="padding:28px 48px; text-align:center;"><div class="serif" style="font-size:50px; font-weight:600; color:#b5742e;">~60%</div><div class="sans" style="font-size:13px; font-weight:400; color:#86868b; margin-top:4px;">weight-normalized coverage</div></div>
+        <div style="width:1px; background:rgba(0,0,0,.08);"></div>
+        <div style="padding:28px 48px; text-align:center;"><div class="serif" style="font-size:50px; font-weight:600; color:#1d1d1f;">4.6×</div><div class="sans" style="font-size:13px; font-weight:400; color:#86868b; margin-top:4px;">event→concept compression</div></div>
+        <div style="width:1px; background:rgba(0,0,0,.08);"></div>
+        <div style="padding:28px 48px; text-align:center;"><div class="serif" style="font-size:50px; font-weight:600; color:#1d1d1f;">0.614</div><div class="sans" style="font-size:13px; font-weight:400; color:#86868b; margin-top:4px;">proactivity score</div></div>
+      </div>
+    </div>
+
+    <div class="mono" style="position:absolute; bottom:36px; left:50%; transform:translateX(-50%); font-size:11px; letter-spacing:.3em; color:#a1a1a6;">SCROLL — MEMORY MAP ↓</div>
+  </section>
+
+  <!-- ============ PAGE 2 — MEMORY MAP ============ -->
+  <section id="brain" style="position:relative; width:1680px; padding:54px 60px 60px; border-top:1px solid rgba(0,0,0,.08);">
+    <div style="display:grid; grid-template-columns:360px 1fr 360px; gap:40px; align-items:start;">
+
+      <!-- LEFT -->
+      <div style="display:flex; flex-direction:column; gap:20px;">
+        <div style="min-width:0; background:#fff; border:1px solid rgba(0,0,0,.06); box-shadow:0 1px 3px rgba(0,0,0,.04), 0 10px 30px rgba(0,0,0,.04); border-radius:16px; padding:20px 22px;">
+          <div class="serif" style="font-size:20px; font-weight:600; color:#1d1d1f;">Systems · circuits</div>
+          <div class="sans" style="font-size:11.5px; font-weight:300; color:#86868b; margin-top:3px;">Where memory <i class="news" style="font-style:italic;">lives</i></div>
+          <div style="height:1px; background:rgba(0,0,0,.08); margin:13px 0 4px;"></div>
+          <div class="cf-rows"></div>
+        </div>
+        <div style="min-width:0; background:#fff; border:1px solid rgba(0,0,0,.06); box-shadow:0 1px 3px rgba(0,0,0,.04), 0 10px 30px rgba(0,0,0,.04); border-radius:16px; padding:20px 22px;">
+          <div class="serif" style="font-size:20px; font-weight:600; color:#1d1d1f;">Communications · subspaces</div>
+          <div class="sans" style="font-size:11.5px; font-weight:300; color:#86868b; margin-top:3px;">How memory <i class="news" style="font-style:italic;">moves</i></div>
+          <div style="height:1px; background:rgba(0,0,0,.08); margin:13px 0 4px;"></div>
+          <div class="cf-rows2"></div>
+        </div>
+      </div>
+
+      <!-- CENTER -->
+      <div style="position:sticky; top:30px;">
+        <div class="mono" style="font-size:12px; letter-spacing:.32em; color:#b5742e; text-align:center;">THE FOLDING LOOP</div>
+        <h2 class="serif" style="font-size:42px; font-weight:600; line-height:1; color:#1d1d1f; margin-top:10px; text-align:center;">One map, three node types.</h2>
+
+        <!-- dark showcase panel with an inline vector brain -->
+        <div style="position:relative; height:500px; margin-top:14px; background:radial-gradient(ellipse 70% 70% at 50% 45%, #14141a 0%, #08080b 100%); border-radius:24px; overflow:hidden; box-shadow:0 1px 3px rgba(0,0,0,.1), 0 20px 50px rgba(0,0,0,.18);">
+          <svg viewBox="0 0 620 480" width="600" style="position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);" aria-label="CogniFold brain: event, concept and intent over a complementary-learning-systems graph">
+            <defs>
+              <filter id="glow" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="6" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+            </defs>
+            <path d="M150 270 C128 185 188 112 295 100 C405 88 510 122 540 215 C552 275 522 330 452 350 C382 368 288 372 220 350 C168 333 142 308 150 270 Z" fill="rgba(120,150,210,0.05)" stroke="rgba(255,255,255,0.42)" stroke-width="2" stroke-linejoin="round"/>
+            <path d="M188 205 C275 168 365 200 458 178" fill="none" stroke="rgba(255,255,255,0.16)" stroke-width="1.4"/>
+            <path d="M180 282 C280 258 380 282 480 258" fill="none" stroke="rgba(255,255,255,0.16)" stroke-width="1.4"/>
+            <path d="M300 360 C300 396 316 424 332 442" fill="none" stroke="rgba(255,255,255,0.32)" stroke-width="2" stroke-linecap="round"/>
+            <g stroke="rgba(140,170,220,0.30)" stroke-width="1">
+              <line x1="240" y1="300" x2="320" y2="180"/><line x1="320" y1="180" x2="452" y2="240"/>
+              <line x1="240" y1="300" x2="408" y2="318"/><line x1="320" y1="180" x2="408" y2="318"/>
+              <line x1="280" y1="150" x2="240" y2="300"/><line x1="452" y1="240" x2="408" y2="318"/>
+            </g>
+            <g fill="rgba(255,255,255,0.55)">
+              <circle cx="280" cy="150" r="3"/><circle cx="370" cy="155" r="2.6"/><circle cx="200" cy="250" r="2.6"/><circle cx="470" cy="205" r="2.6"/><circle cx="360" cy="300" r="2.6"/>
+            </g>
+            <circle cx="240" cy="300" r="9" fill="#2f74d0" filter="url(#glow)"/>
+            <circle cx="320" cy="180" r="10" fill="#b5742e" filter="url(#glow)"/>
+            <circle cx="452" cy="240" r="9" fill="#7c6fb8" filter="url(#glow)"/>
+            <circle cx="408" cy="318" r="6.5" fill="rgba(224,180,131,0.9)"/>
           </svg>
-        </span>
-        <span class="nav__word">CogniFold</span>
-      </a>
-      <nav class="nav__links" id="navLinks" aria-label="Primary">
-        <a href="#brain">The Brain</a>
-        <a href="#architecture">Architecture</a>
-        <a href="#benchmarks">Results</a>
-        <a href="#quickstart">Quickstart</a>
-        <a class="nav__gh" href="https://github.com/OpenNorve/CogniFold" target="_blank" rel="noopener">GitHub</a>
-      </nav>
-      <button class="nav__menu" id="navMenu" aria-label="Toggle navigation" aria-expanded="false">
-        <span></span><span></span><span></span>
-      </button>
+          <div style="position:absolute; top:104px; left:22px; text-align:left;"><div class="mono" style="font-size:11px; letter-spacing:.12em; color:#6fb0f5;">NEOCORTEX</div><div class="sans" style="font-size:12px; color:rgba(255,255,255,.55);">Concept · β</div></div>
+          <div style="position:absolute; top:268px; left:22px; text-align:left;"><div class="mono" style="font-size:11px; letter-spacing:.12em; color:#e0b483;">HIPPOCAMPUS</div><div class="sans" style="font-size:12px; color:rgba(255,255,255,.55);">Event · α</div></div>
+          <div style="position:absolute; top:210px; right:22px; text-align:right;"><div class="mono" style="font-size:11px; letter-spacing:.12em; color:#b3a6ec;">PREFRONTAL</div><div class="sans" style="font-size:12px; color:rgba(255,255,255,.55);">Intent · γ</div></div>
+          <div style="position:absolute; bottom:56px; right:22px; text-align:right;"><div class="mono" style="font-size:11px; letter-spacing:.12em; color:rgba(255,255,255,.6);">ENTORHINAL</div><div class="sans" style="font-size:12px; color:rgba(255,255,255,.55);">Time anchors</div></div>
+        </div>
+
+        <div style="display:flex; align-items:stretch; gap:0; margin-top:18px;">
+          <div style="flex:1; background:#fff; border:1px solid rgba(0,0,0,.06); box-shadow:0 1px 3px rgba(0,0,0,.04); border-radius:14px; padding:15px 16px; border-top:3px solid #2f74d0;">
+            <div style="display:flex; align-items:baseline; gap:7px;"><span class="news" style="font-size:18px; color:#1d1d1f;">EVENT</span><span class="mono" style="font-size:11px; color:#2f74d0;">α</span></div>
+            <div class="sans" style="font-size:11px; font-weight:500; color:#2f74d0; margin-top:2px; letter-spacing:.02em;">Hippocampal</div>
+            <div class="sans" style="font-size:11.5px; font-weight:300; color:#6e6e73; margin-top:6px; line-height:1.5;">Verbatim episodes captured the moment they happen — what occurred, when, and to whom.</div>
+          </div>
+          <div style="display:flex; align-items:center; padding:0 8px; color:#c5c2bc; font-size:18px;">→</div>
+          <div style="flex:1; background:#fff; border:1px solid rgba(0,0,0,.06); box-shadow:0 1px 3px rgba(0,0,0,.04); border-radius:14px; padding:15px 16px; border-top:3px solid #b5742e;">
+            <div style="display:flex; align-items:baseline; gap:7px;"><span class="news" style="font-size:18px; color:#1d1d1f;">CONCEPT</span><span class="mono" style="font-size:11px; color:#b5742e;">β</span></div>
+            <div class="sans" style="font-size:11px; font-weight:500; color:#b5742e; margin-top:2px; letter-spacing:.02em;">Neocortical</div>
+            <div class="sans" style="font-size:11.5px; font-weight:300; color:#6e6e73; margin-top:6px; line-height:1.5;">Repeated events fold into grounded, generalized knowledge with explainable provenance.</div>
+          </div>
+          <div style="display:flex; align-items:center; padding:0 8px; color:#c5c2bc; font-size:18px;">→</div>
+          <div style="flex:1; background:#fff; border:1px solid rgba(0,0,0,.06); box-shadow:0 1px 3px rgba(0,0,0,.04); border-radius:14px; padding:15px 16px; border-top:3px solid #7c6fb8;">
+            <div style="display:flex; align-items:baseline; gap:7px;"><span class="news" style="font-size:18px; color:#1d1d1f;">INTENT</span><span class="mono" style="font-size:11px; color:#7c6fb8;">γ</span></div>
+            <div class="sans" style="font-size:11px; font-weight:500; color:#7c6fb8; margin-top:2px; letter-spacing:.02em;">Prefrontal</div>
+            <div class="sans" style="font-size:11.5px; font-weight:300; color:#6e6e73; margin-top:6px; line-height:1.5;">Concepts and time anchors crystallize into proactive intent — remembering to act, by topology.</div>
+          </div>
+        </div>
+        <div class="sans" style="font-size:11.5px; font-weight:300; color:#a1a1a6; text-align:center; margin-top:10px;">Time is the fourth axis, threading through every layer · 4.6× compression · 0.614 proactivity</div>
+
+        <div style="margin-top:22px; padding-top:20px; border-top:1px solid rgba(0,0,0,.08);">
+          <div style="display:flex; align-items:baseline; justify-content:center; gap:12px;"><span class="serif" style="font-size:24px; font-weight:600; color:#1d1d1f;">Memory-system coverage</span><span class="mono" style="font-size:14px; color:#b5742e;">~60%</span></div>
+          <div style="margin-top:12px; height:10px; border-radius:5px; overflow:hidden; display:flex; background:rgba(0,0,0,.07);">
+            <div style="width:60%; background:#2f74d0;"></div><div style="width:18%; background:#7c6fb8;"></div><div style="width:22%; background:repeating-linear-gradient(45deg,rgba(0,0,0,.16),rgba(0,0,0,.16) 4px,transparent 4px,transparent 8px);"></div>
+          </div>
+          <div class="mono" style="display:flex; justify-content:center; gap:22px; font-size:10.5px; letter-spacing:.06em; color:#6e6e73; margin-top:12px;">
+            <span style="display:flex;align-items:center;gap:7px;"><span style="width:10px;height:10px;border-radius:3px;background:#2f74d0;"></span>COVERED 12</span>
+            <span style="display:flex;align-items:center;gap:7px;"><span style="width:10px;height:10px;border-radius:3px;background:#7c6fb8;"></span>PARTIAL 8</span>
+            <span style="display:flex;align-items:center;gap:7px;"><span style="width:10px;height:10px;border-radius:3px;border:1.5px dashed rgba(0,0,0,.32);"></span>PLANNED 10</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- RIGHT -->
+      <div style="min-width:0; background:#fff; border:1px solid rgba(0,0,0,.06); box-shadow:0 1px 3px rgba(0,0,0,.04), 0 10px 30px rgba(0,0,0,.04); border-radius:16px; padding:20px 22px;">
+        <div class="serif" style="font-size:20px; font-weight:600; color:#1d1d1f;">Behavioral · phenomenological</div>
+        <div class="sans" style="font-size:11.5px; font-weight:300; color:#86868b; margin-top:3px;">What memory <i class="news" style="font-style:italic;">does</i></div>
+        <div style="height:1px; background:rgba(0,0,0,.08); margin:13px 0 4px;"></div>
+        <div class="cf-rows3"></div>
+      </div>
     </div>
-  </header>
+  </section>
 
-  <main id="top">
-    <!-- ============ 1. HERO ============ -->
-    <section class="hero" id="hero">
-      <div class="hero__inner reveal">
-        <p class="hero__eyebrow">Brain-inspired agent memory</p>
-        <h1 class="hero__title">CogniFold</h1>
-        <p class="hero__tagline">
-          An always-on agent memory that folds events into self-emerging
-          cognitive structure, with proactive intent crystallization.
-        </p>
-
-        <div class="hero__ring" id="heroRing" aria-label="Approximately 60 percent of human memory systems modeled">
-          <!-- coverage ring injected by app.js -->
-        </div>
-
-        <div class="hero__cta">
-          <a class="pill pill--ink" href="https://github.com/OpenNorve/CogniFold" target="_blank" rel="noopener">
-            View on GitHub
-          </a>
-          <a class="pill pill--ghost" href="https://arxiv.org/abs/2605.13438" target="_blank" rel="noopener">
-            Read the paper
-          </a>
-        </div>
-
-        <p class="hero__note">Apache-2.0 · Python · MCP-compatible</p>
-
-        <div class="hero__stats" role="list" aria-label="At a glance">
-          <div class="hero__stat" role="listitem"><b>12</b><span>memory systems mapped</span></div>
-          <div class="hero__stat" role="listitem"><b>~60%</b><span>coverage (weight-normalized)</span></div>
-          <div class="hero__stat" role="listitem"><b>9</b><span>public benchmarks reported</span></div>
-        </div>
-      </div>
-      <div class="ink-divider" aria-hidden="true"></div>
-    </section>
-
-    <!-- ============ 2. MEMORY-SYSTEM COVERAGE — interactive map ============ -->
-    <section class="brain-sec" id="brain">
-      <div class="section-head reveal">
-        <p class="kicker">Coverage map</p>
-        <h2 class="display">Memory systems</h2>
-        <p class="lede">
-          CogniFold maps human memory onto its topology across two layers — the <strong>behavioral
-          functions</strong> memory performs, and the <strong>neural circuits</strong> that implement
-          them. Hover, tab, or tap a brain region to inspect it; the two columns below give the full
-          correspondence. These are mappings to the memory taxonomy we can <em>name</em> — well-described
-          at the behavioral layer, less so at the circuit, and far less at the underlying mechanism.
-        </p>
-      </div>
-
-      <div class="brain-layout">
-        <figure class="brain-stage reveal" aria-label="Interactive brain diagram mapping human memory systems to CogniFold mechanisms">
-          <div id="brainHost" class="brain-host"></div>
-          <figcaption class="brain-legend" aria-hidden="true">
-            <span class="lg lg--covered"><i></i>covered</span>
-            <span class="lg lg--partial"><i></i>partial</span>
-            <span class="lg lg--planned"><i></i>planned</span>
-            <span class="lg lg--hint">tab / hover a region</span>
-          </figcaption>
-        </figure>
-
-        <aside class="notebook reveal" aria-live="polite">
-          <article class="notecard" id="notecard">
-            <!-- populated by app.js; full list is in the table below -->
-          </article>
-        </aside>
-      </div>
-
-      <!-- Two layers — behavioral/phenomenological + systems/circuit — each mapped to CogniFold -->
-      <div class="layers reveal" aria-label="Human memory mapped to CogniFold across two layers">
-        <section class="layer" data-layer="behavioral" aria-labelledby="layerBehavioralTitle">
-          <header class="layer__head">
-            <h3 class="layer__title" id="layerBehavioralTitle">Behavioral · phenomenological</h3>
-            <p class="layer__sub">What memory <em>does</em> — the level we describe best. Each function maps to its CogniFold mechanism.</p>
-          </header>
-          <ul class="layer__list" id="behavioralList"><!-- injected by app.js --></ul>
-        </section>
-        <section class="layer" data-layer="circuit" aria-labelledby="layerCircuitTitle">
-          <header class="layer__head">
-            <h3 class="layer__title" id="layerCircuitTitle">Systems · circuits</h3>
-            <p class="layer__sub">Where memory <em>lives</em> — the CLS substrate. Each region maps to its CogniFold structure.</p>
-          </header>
-          <ul class="layer__list" id="circuitList"><!-- injected by app.js --></ul>
-        </section>
-      </div>
-      <div class="ink-divider ink-divider--flip" aria-hidden="true"></div>
-    </section>
-
-    <!-- ============ 3. ARCHITECTURE — tri-layer CLS loop ============ -->
-    <section class="arch" id="architecture">
-      <div class="section-head reveal">
-        <p class="kicker">Architecture</p>
-        <h2 class="display">The folding loop</h2>
-        <p class="lede">
-          A Complementary Learning Systems design for agents: episodes are captured, folded into
-          concepts, and crystallized forward into intent. Proactive intent is the differentiator.
-        </p>
-      </div>
-
-      <div class="arch__diagram reveal" id="archDiagram" aria-label="Three-layer memory loop: Event, Concept, Intent, anchored by Time">
-        <!-- CLS diagram injected by app.js -->
-      </div>
-
-      <p class="arch__explainer reveal">
-        Every event enters as a verbatim <strong>EVENT</strong> node in the hippocampal layer.
-        As events recur, the agent folds them into generalized <strong>CONCEPT</strong> nodes in the
-        neocortical layer — grounded knowledge with explainable provenance back to the episodes that
-        formed it. From accumulated concepts and time anchors, the prefrontal layer crystallizes
-        <strong>INTENT</strong> nodes: commitments to act at the right future moment. This
-        <strong>proactive intent crystallization</strong> is what sets CogniFold apart from passive
-        memory stores — remembering to act becomes a property of the topology, not a separate policy.
-        Retrieval then closes the loop, letting intent reshape what the agent attends to next.
-      </p>
-
-      <div class="arch__cards">
-        <div class="arch-card reveal" data-layer="event">
-          <span class="arch-card__sigil" aria-hidden="true">α</span>
-          <h3>Hippocampal · EVENT</h3>
-          <p>Verbatim episodes captured the moment they happen — what occurred, when, and to whom.</p>
-        </div>
-        <div class="arch-card reveal" data-layer="concept">
-          <span class="arch-card__sigil" aria-hidden="true">β</span>
-          <h3>Neocortical · CONCEPT</h3>
-          <p>Repeated events fold into grounded, generalized knowledge with explainable reasoning.</p>
-        </div>
-        <div class="arch-card reveal" data-layer="intent">
-          <span class="arch-card__sigil" aria-hidden="true">γ</span>
-          <h3>Prefrontal · INTENT</h3>
-          <p>Concepts and time anchors crystallize into proactive intent — remembering to act, by topology.</p>
-        </div>
-      </div>
-      <p class="arch__note note">Time is the fourth axis, threading through every layer.</p>
-      <div class="ink-divider" aria-hidden="true"></div>
-    </section>
-
-    <!-- ============ 4. BENCHMARKS ============ -->
-    <section class="ledger" id="benchmarks">
-      <div class="section-head reveal">
-        <p class="kicker">Results</p>
-        <h2 class="display">Benchmarks</h2>
-        <p class="lede">CogniFold's measured results on public benchmarks. Figures are CogniFold's own; no competitor numbers are shown.</p>
-      </div>
-      <div class="ledger__grid" id="ledgerGrid">
-        <!-- benchmark cards injected by app.js -->
-      </div>
-      <div class="ink-divider ink-divider--flip" aria-hidden="true"></div>
-    </section>
-
-    <!-- ============ 5. QUICKSTART + INTEGRATIONS ============ -->
-    <section class="quick" id="quickstart">
-      <div class="section-head reveal">
-        <p class="kicker">Quickstart</p>
-        <h2 class="display">Get started</h2>
-        <p class="lede">Install, run the server, and connect any MCP-capable agent.</p>
-      </div>
-
-      <div class="quick__layout">
-        <div class="recipe reveal">
-          <div class="recipe__tab">shell</div>
-          <pre class="recipe__code"><code><span class="c"># install</span>
-pip install cognifold
-
-<span class="c"># run the memory server</span>
-cognifold serve --port 8800
-
-<span class="c"># connect any MCP-capable agent</span>
-cognifold mcp --transport stdio</code></pre>
-        </div>
-
-        <ul class="quick__links reveal" aria-label="Documentation links">
-          <li><a href="../docs/DEPLOYMENT.md"><span class="idx">01</span> Deployment guide</a></li>
-          <li><a href="../docs/INTEGRATIONS.md"><span class="idx">02</span> Integrations &amp; MCP</a></li>
-          <li><a href="../docs/PROMPTS.md"><span class="idx">03</span> Prompt library</a></li>
-          <li><a href="https://github.com/OpenNorve/CogniFold" target="_blank" rel="noopener"><span class="idx">04</span> Source on GitHub</a></li>
-        </ul>
-      </div>
-      <div class="ink-divider" aria-hidden="true"></div>
-    </section>
-  </main>
-
-  <!-- ============ 6. FOOTER ============ -->
-  <footer class="footer">
-    <div class="footer__inner reveal">
-      <p class="footer__brand display">CogniFold</p>
-      <p class="footer__meta">
-        Apache-2.0 ·
-        <a href="https://arxiv.org/abs/2605.13438" target="_blank" rel="noopener">arXiv:2605.13438</a> ·
-        <a href="https://github.com/OpenNorve/CogniFold" target="_blank" rel="noopener">OpenNorve / CogniFold</a>
-      </p>
+  <!-- ============ PAGE 3 — BENCHMARKS ============ -->
+  <section id="benchmarks" style="position:relative; width:1680px; padding:80px 60px 70px; border-top:1px solid rgba(0,0,0,.08);">
+    <div style="text-align:center; max-width:900px; margin:0 auto;">
+      <div class="mono" style="font-size:13px; letter-spacing:.36em; color:#b5742e;">RESULTS</div>
+      <h2 class="serif" style="font-size:72px; font-weight:600; line-height:1; color:#1d1d1f; margin-top:12px;">Benchmarks</h2>
+      <p class="news" style="font-size:21px; font-weight:400; line-height:1.55; color:#3a3a3c; margin-top:20px;">CogniFold's measured results on public benchmarks. Figures are CogniFold's own; no competitor numbers are shown.</p>
     </div>
+
+    <div id="benchGrid" style="display:grid; grid-template-columns:repeat(5,1fr); gap:18px; max-width:1560px; margin:52px auto 0;"></div>
+  </section>
+
+  <!-- ============ FOOTER ============ -->
+  <footer style="width:1680px; padding:30px 60px 44px; border-top:1px solid rgba(0,0,0,.08); text-align:center;">
+    <span class="mono" style="font-size:11px; letter-spacing:.2em; color:#a1a1a6;">COGNIFOLD · APACHE-2.0 · arXiv:2605.13438 · OPENNORVE / NORVELABS</span>
   </footer>
 
-  <script type="module" src="js/app.js"></script>
+</div>
+</div>
+
+<script>
+  // ---- memory-system rows (data-driven, ported from the design) ----
+  const DOT = {
+    cov: 'background:#2f74d0;',
+    par: 'background:#7c6fb8;',
+    pl:  'background:transparent; border:1.5px dashed rgba(0,0,0,.32);',
+  };
+  const DIM = { cov:'#1d1d1f', par:'#1d1d1f', pl:'#a1a1a6' };
+  function rowHTML(r){
+    const maps = r.maps ? `<span class="mono maps">${r.maps}</span>` : '';
+    return `<div class="cf-row"><span class="dot" style="${DOT[r.s]}"></span><span class="sans name" style="color:${DIM[r.s]}">${r.name}</span>${maps}</div>`;
+  }
+  function fill(sel, rows){ const n=document.querySelector(sel); if(n) n.innerHTML = rows.map(rowHTML).join(''); }
+
+  const systems = [
+    {s:'cov',name:'Hippocampus'},{s:'cov',name:'Neocortex'},{s:'cov',name:'Entorhinal / temporal index'},
+    {s:'cov',name:'Hippocampo-neocortical loop (CLS)'},{s:'par',name:'Prefrontal cortex (vmPFC)'},
+    {s:'pl',name:'Amygdala'},{s:'pl',name:'Basal ganglia / VTA'},{s:'pl',name:'Sensory cortices'},
+  ];
+  const comms = [
+    {s:'cov',name:'Hippocampus → Neocortex',maps:'Event → Concept'},
+    {s:'cov',name:'Neocortex → Prefrontal cortex',maps:'Concept → Intent'},
+    {s:'cov',name:'Prefrontal → Hippocampus',maps:'Intent → encoding'},
+    {s:'cov',name:'Entorhinal → Prefrontal cortex',maps:'Time → Intent'},
+    {s:'cov',name:'Hippocampus ↔ Neocortex',maps:'associative recall'},
+    {s:'pl',name:'Hippocampus → Neocortex',maps:'offline replay'},
+    {s:'pl',name:'Prefrontal ↔ Basal ganglia / VTA',maps:'valuation & control'},
+  ];
+  const behav = [
+    {s:'pl',name:'Sensory register',maps:'SENSORY REGISTER'},{s:'cov',name:'Short-term memory',maps:'SHORT-TERM STORE'},
+    {s:'cov',name:'Working memory',maps:'BADDELEY'},{s:'cov',name:'Episodic memory',maps:'DECLARATIVE'},
+    {s:'cov',name:'Semantic memory',maps:'DECLARATIVE'},{s:'par',name:'Autobiographical memory',maps:'SELF'},
+    {s:'pl',name:'Spatial memory',maps:'SPATIAL'},{s:'cov',name:'Prospective / intent memory',maps:'INTENT'},
+    {s:'cov',name:'Temporal memory',maps:'TEMPORAL'},{s:'pl',name:'Procedural memory',maps:'NON-DECLARATIVE'},
+    {s:'pl',name:'Priming',maps:'NON-DECLARATIVE'},{s:'pl',name:'Classical conditioning',maps:'NON-DECLARATIVE'},
+    {s:'par',name:'Non-associative learning',maps:'HABITUATION'},{s:'cov',name:'Source memory',maps:'SOURCE MONITORING'},
+    {s:'par',name:'Recognition & recollection',maps:'DUAL-PROCESS'},{s:'par',name:'Metamemory',maps:'METACOGNITION'},
+    {s:'pl',name:'Affective / emotional memory',maps:'EMOTIONAL TAGGING'},{s:'par',name:'Systems consolidation',maps:'CONSOLIDATION'},
+    {s:'par',name:'Forgetting / pruning',maps:'DECAY / PRUNING'},
+  ];
+  fill('.cf-rows', systems); fill('.cf-rows2', comms); fill('.cf-rows3', behav);
+
+  // ---- benchmark cards ----
+  const benches = [
+    {k:'COGEVAL',v:'0.614',u:'',t:'Proactivity',d:"Tests whether the agent acts on intents at the right moment — CogniFold's core differentiator."},
+    {k:'BABILONG',v:'96.0',u:'% EM',t:'Long-context QA',d:'Reasoning over facts buried in very long contexts; exact-match accuracy.'},
+    {k:'SAFETYBENCH',v:'94.3',u:'%',t:'Safety',d:'Multiple-choice safety judgments across harm categories.'},
+    {k:'MUTUAL',v:'93.2',u:'%',t:'Dialogue reasoning',d:'Multi-turn dialogue inference — choosing the coherent next response.'},
+    {k:'TOMI',v:'91.6',u:'% EM',t:'Theory of mind',d:"Tracking other agents' beliefs and false beliefs across a narrative."},
+    {k:'LOCOMO',v:'82.8',u:'J-Score',t:'Long conversation',d:'Episodic recall over very long multi-session conversations.'},
+    {k:'STREAMINGQA',v:'78.4',u:'% EM',t:'Streaming QA',d:'Answering questions over a time-ordered stream of incoming documents.'},
+    {k:'NARRATIVEQA',v:'0.720',u:'F1',t:'Narrative',d:'Comprehension questions over full stories and scripts.'},
+    {k:'MUSIQUE',v:'41.2',u:'% EM',t:'Multi-hop',d:'Compositional multi-hop questions; also F1 0.587.'},
+  ];
+  document.getElementById('benchGrid').innerHTML = benches.map(b => `
+    <div style="background:#fff; border:1px solid rgba(0,0,0,.06); box-shadow:0 1px 3px rgba(0,0,0,.04), 0 10px 30px rgba(0,0,0,.04); border-radius:16px; padding:22px 24px;">
+      <div class="mono" style="font-size:10px; letter-spacing:.14em; color:#86868b;">${b.k}</div>
+      <div style="display:flex; align-items:baseline; gap:7px; margin-top:14px;"><span class="serif" style="font-size:52px; font-weight:600; color:#1d1d1f; line-height:.9;">${b.v}</span>${b.u?`<span class="sans" style="font-size:15px; font-weight:500; color:#2f74d0;">${b.u}</span>`:''}</div>
+      <div class="sans" style="font-size:17px; font-weight:500; color:#1d1d1f; margin-top:14px;">${b.t}</div>
+      <div class="sans" style="font-size:13px; font-weight:300; color:#6e6e73; margin-top:7px; line-height:1.55;">${b.d}</div>
+    </div>`).join('');
+
+  // ---- fit the fixed 1680px canvas to any viewport ----
+  (function(){
+    const W = 1680, stage = document.getElementById('stage'), frame = document.getElementById('frame');
+    function fit(){
+      const s = Math.min(1, window.innerWidth / W);
+      frame.style.transform = 'scale(' + s + ')';
+      frame.style.marginLeft = Math.max(0, (window.innerWidth - W * s) / 2) + 'px';
+      stage.style.height = (frame.offsetHeight * s) + 'px';
+    }
+    window.addEventListener('resize', fit);
+    window.addEventListener('load', fit);
+    fit();
+  })();
+</script>
 </body>
 </html>
