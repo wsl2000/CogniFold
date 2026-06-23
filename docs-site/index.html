@@ -41,7 +41,8 @@
     /* fixed-canvas fit: the 1680px design is scaled to fit any viewport */
     #stage { width:100%; overflow:hidden; }
     #frame { width:1680px; transform-origin:top left; }
-    .cf-row { display:flex; align-items:center; gap:9px; padding:7.5px 0; border-bottom:1px solid rgba(0,0,0,.07); }
+    .cf-row { display:flex; align-items:center; gap:9px; padding:7.5px 0; border-bottom:1px solid rgba(0,0,0,.07); cursor:help; transition:background .12s; }
+    .cf-row:hover { background:rgba(47,116,208,.06); }
     .cf-row .dot { width:9px; height:9px; border-radius:2.5px; flex:none; }
     .cf-row .name { flex:1; min-width:0; font-weight:400; font-size:13px; line-height:1.25; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     .cf-row .maps { font-weight:400; font-size:9px; color:rgba(0,0,0,.38); letter-spacing:.03em; white-space:nowrap; flex:none; max-width:42%; overflow:hidden; text-overflow:ellipsis; }
@@ -218,43 +219,60 @@
     pl:  'background:transparent; border:1.5px dashed rgba(0,0,0,.32);',
   };
   const DIM = { cov:'#1d1d1f', par:'#1d1d1f', pl:'#a1a1a6' };
+  function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
   function rowHTML(r){
-    const maps = r.maps ? `<span class="mono maps">${r.maps}</span>` : '';
-    return `<div class="cf-row"><span class="dot" style="${DOT[r.s]}"></span><span class="sans name" style="color:${DIM[r.s]}">${r.name}</span>${maps}</div>`;
+    const maps = r.maps ? `<span class="mono maps">${esc(r.maps)}</span>` : '';
+    const tip = r.e ? ` data-tip="${esc(r.e)}"` : '';
+    return `<div class="cf-row"${tip}><span class="dot" style="${DOT[r.s]}"></span><span class="sans name" style="color:${DIM[r.s]}">${esc(r.name)}</span>${maps}</div>`;
   }
   function fill(sel, rows){ const n=document.querySelector(sel); if(n) n.innerHTML = rows.map(rowHTML).join(''); }
 
   const systems = [
-    {s:'cov',name:'Hippocampus'},{s:'cov',name:'Neocortex'},{s:'cov',name:'Entorhinal / temporal index'},
-    {s:'cov',name:'Hippocampo-neocortical loop (CLS)'},{s:'par',name:'Prefrontal cortex (vmPFC)'},
-    {s:'pl',name:'Amygdala'},{s:'pl',name:'Basal ganglia / VTA'},{s:'pl',name:'Sensory cortices'},
+    {s:'cov',name:'Hippocampus',e:'Writes new episodes fast and binds them to time and place — the brain’s first stop for what just happened.'},
+    {s:'cov',name:'Neocortex',e:'The slow, long-term store of generalized knowledge built up from many experiences.'},
+    {s:'cov',name:'Entorhinal / temporal index',e:'The gateway in and out of the hippocampus; tags each memory with time and position.'},
+    {s:'cov',name:'Hippocampo-neocortical loop (CLS)',e:'The replay loop that moves memories from fast hippocampal storage into stable neocortical knowledge.'},
+    {s:'par',name:'Prefrontal cortex (vmPFC)',e:'Holds your current goals and focus, and decides what to act on right now.'},
+    {s:'pl',name:'Amygdala',e:'Tags memories with emotional weight, making important or threatening events stick.'},
+    {s:'pl',name:'Basal ganglia / VTA',e:'Reward-and-habit machinery — learns which actions pay off and automates them.'},
+    {s:'pl',name:'Sensory cortices',e:'Where raw sights and sounds first register, before anything becomes a memory.'},
   ];
   const comms = [
-    {s:'cov',name:'Hippocampus → Neocortex',maps:'Event → Concept'},
-    {s:'cov',name:'Neocortex → Prefrontal cortex',maps:'Concept → Intent'},
-    {s:'cov',name:'Prefrontal → Hippocampus',maps:'Intent → encoding'},
-    {s:'cov',name:'Entorhinal → Prefrontal cortex',maps:'Time → Intent'},
-    {s:'cov',name:'Hippocampus ↔ Neocortex',maps:'associative recall'},
-    {s:'pl',name:'Hippocampus → Neocortex',maps:'offline replay'},
-    {s:'pl',name:'Prefrontal ↔ Basal ganglia / VTA',maps:'valuation & control'},
+    {s:'cov',name:'Hippocampus → Neocortex',maps:'Event → Concept',e:'Raw episodes get consolidated into general concepts — the core folding step.'},
+    {s:'cov',name:'Neocortex → Prefrontal cortex',maps:'Concept → Intent',e:'Stable knowledge feeds goal-setting; what you know suggests what to do next.'},
+    {s:'cov',name:'Prefrontal → Hippocampus',maps:'Intent → encoding',e:'Current goals bias what you notice and what gets stored as new memory.'},
+    {s:'cov',name:'Entorhinal → Prefrontal cortex',maps:'Time → Intent',e:'Timing and deadlines reach the goal system so an intent fires at the right moment.'},
+    {s:'cov',name:'Hippocampus ↔ Neocortex',maps:'associative recall',e:'A two-way link: a cue on one side pulls up the related memory on the other.'},
+    {s:'pl',name:'Hippocampus → Neocortex',maps:'offline replay',e:'During rest and sleep, memories are replayed to strengthen and reorganize them.'},
+    {s:'pl',name:'Prefrontal ↔ Basal ganglia / VTA',maps:'valuation & control',e:'Goals and reward signals trade off to choose and control which action to take.'},
   ];
   const behav = [
-    {s:'pl',name:'Sensory register',maps:'SENSORY REGISTER'},{s:'cov',name:'Short-term memory',maps:'SHORT-TERM STORE'},
-    {s:'cov',name:'Working memory',maps:'BADDELEY'},{s:'cov',name:'Episodic memory',maps:'DECLARATIVE'},
-    {s:'cov',name:'Semantic memory',maps:'DECLARATIVE'},{s:'par',name:'Autobiographical memory',maps:'SELF'},
-    {s:'pl',name:'Spatial memory',maps:'SPATIAL'},{s:'cov',name:'Prospective / intent memory',maps:'INTENT'},
-    {s:'cov',name:'Temporal memory',maps:'TEMPORAL'},{s:'pl',name:'Procedural memory',maps:'NON-DECLARATIVE'},
-    {s:'pl',name:'Priming',maps:'NON-DECLARATIVE'},{s:'pl',name:'Classical conditioning',maps:'NON-DECLARATIVE'},
-    {s:'par',name:'Non-associative learning',maps:'HABITUATION'},{s:'cov',name:'Source memory',maps:'SOURCE MONITORING'},
-    {s:'par',name:'Recognition & recollection',maps:'DUAL-PROCESS'},{s:'par',name:'Metamemory',maps:'METACOGNITION'},
-    {s:'pl',name:'Affective / emotional memory',maps:'EMOTIONAL TAGGING'},{s:'par',name:'Systems consolidation',maps:'CONSOLIDATION'},
-    {s:'par',name:'Forgetting / pruning',maps:'DECAY / PRUNING'},
+    {s:'pl',name:'Sensory register',maps:'SENSORY REGISTER',e:'A split-second buffer holding raw perception before it fades.'},
+    {s:'cov',name:'Short-term memory',maps:'SHORT-TERM STORE',e:'Holds a few items for a short while — like a phone number you just heard.'},
+    {s:'cov',name:'Working memory',maps:'BADDELEY',e:'The mental scratchpad you actively hold and manipulate to get a task done.'},
+    {s:'cov',name:'Episodic memory',maps:'DECLARATIVE',e:'Memory for specific events you lived — what happened, when, and where.'},
+    {s:'cov',name:'Semantic memory',maps:'DECLARATIVE',e:'General facts and meanings, detached from when you learned them.'},
+    {s:'par',name:'Autobiographical memory',maps:'SELF',e:'Your personal life story — the episodes and facts that make up you.'},
+    {s:'pl',name:'Spatial memory',maps:'SPATIAL',e:'Where things are and how to find your way around places.'},
+    {s:'cov',name:'Prospective / intent memory',maps:'INTENT',e:'Remembering to do something later — at a set time or on a cue.'},
+    {s:'cov',name:'Temporal memory',maps:'TEMPORAL',e:'Your sense of when things happened and in what order.'},
+    {s:'pl',name:'Procedural memory',maps:'NON-DECLARATIVE',e:'Skills and habits you perform without thinking, like riding a bike.'},
+    {s:'pl',name:'Priming',maps:'NON-DECLARATIVE',e:'Recent exposure makes related things faster to recognize, often unconsciously.'},
+    {s:'pl',name:'Classical conditioning',maps:'NON-DECLARATIVE',e:'Learning that one thing predicts another, like a bell predicting food.'},
+    {s:'par',name:'Non-associative learning',maps:'HABITUATION',e:'Getting used to — or more sensitive to — a stimulus that keeps repeating.'},
+    {s:'cov',name:'Source memory',maps:'SOURCE MONITORING',e:'Remembering where, or from whom, you learned something.'},
+    {s:'par',name:'Recognition & recollection',maps:'DUAL-PROCESS',e:'Sensing that something is familiar vs. fully re-living the memory.'},
+    {s:'par',name:'Metamemory',maps:'METACOGNITION',e:'Your sense of what you do and don’t remember — knowing that you know.'},
+    {s:'pl',name:'Affective / emotional memory',maps:'EMOTIONAL TAGGING',e:'Emotionally charged memories that are stronger and last longer.'},
+    {s:'par',name:'Systems consolidation',maps:'CONSOLIDATION',e:'The slow process that stabilizes memories over days to years.'},
+    {s:'par',name:'Forgetting / pruning',maps:'DECAY / PRUNING',e:'Letting unused or weak memories fade so the system stays useful.'},
   ];
   fill('.cf-rows', systems); fill('.cf-rows2', comms); fill('.cf-rows3', behav);
 
   // ---- benchmark cards ----
   const benches = [
     {k:'COGEVAL',v:'0.614',u:'',t:'Proactivity',d:"Tests whether the agent acts on intents at the right moment — CogniFold's core differentiator."},
+    {k:'LONGMEMEVAL',v:'92',u:'%',t:'Long-term memory',d:'QA over ~50-session histories — single-session recall, multi-session consolidation, knowledge update, and temporal reasoning.'},
     {k:'BABILONG',v:'96.0',u:'% EM',t:'Long-context QA',d:'Reasoning over facts buried in very long contexts; exact-match accuracy.'},
     {k:'SAFETYBENCH',v:'94.3',u:'%',t:'Safety',d:'Multiple-choice safety judgments across harm categories.'},
     {k:'MUTUAL',v:'93.2',u:'%',t:'Dialogue reasoning',d:'Multi-turn dialogue inference — choosing the coherent next response.'},
@@ -271,6 +289,34 @@
       <div class="sans" style="font-size:17px; font-weight:500; color:#1d1d1f; margin-top:14px;">${b.t}</div>
       <div class="sans" style="font-size:13px; font-weight:300; color:#6e6e73; margin-top:7px; line-height:1.55;">${b.d}</div>
     </div>`).join('');
+
+  // ---- hover tooltips on memory-system rows (plain-language explanations) ----
+  (function(){
+    const tip = document.createElement('div');
+    tip.style.cssText = 'position:fixed; z-index:99; max-width:300px; padding:9px 13px; border-radius:10px; background:#1d1d1f; color:#f4f2ee; font-family:Inter,system-ui,sans-serif; font-size:12.5px; line-height:1.5; font-weight:300; box-shadow:0 8px 30px rgba(0,0,0,.25); pointer-events:none; opacity:0; transform:translateY(2px); transition:opacity .12s, transform .12s;';
+    document.body.appendChild(tip);
+    function move(e){
+      const pad = 16, r = tip.getBoundingClientRect();
+      let x = e.clientX + pad, y = e.clientY + pad;
+      if (x + r.width > window.innerWidth - 8) x = e.clientX - r.width - pad;
+      if (y + r.height > window.innerHeight - 8) y = e.clientY - r.height - pad;
+      tip.style.left = Math.max(8, x) + 'px';
+      tip.style.top = Math.max(8, y) + 'px';
+    }
+    document.addEventListener('mouseover', function(e){
+      const row = e.target.closest && e.target.closest('.cf-row[data-tip]');
+      if (!row) return;
+      tip.textContent = row.getAttribute('data-tip');
+      move(e); tip.style.opacity = '1'; tip.style.transform = 'translateY(0)';
+    });
+    document.addEventListener('mousemove', function(e){
+      if (tip.style.opacity === '1' && e.target.closest && e.target.closest('.cf-row[data-tip]')) move(e);
+    });
+    document.addEventListener('mouseout', function(e){
+      const row = e.target.closest && e.target.closest('.cf-row[data-tip]');
+      if (row && !row.contains(e.relatedTarget)) { tip.style.opacity = '0'; tip.style.transform = 'translateY(2px)'; }
+    });
+  })();
 
   // ---- fit the fixed 1680px canvas to any viewport ----
   (function(){
