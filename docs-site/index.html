@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>CogniFold — A brain-inspired always-on agent memory</title>
-  <meta name="description" content="CogniFold folds events into self-emerging cognitive structure: a brain-inspired, always-on agent memory with proactive intent crystallization. ~60% of human memory systems modeled." />
+  <meta name="description" content="CogniFold folds events into self-emerging cognitive structure: a brain-inspired, always-on agent memory with proactive intent crystallization. ~53% of human memory systems modeled." />
   <link rel="canonical" href="https://wsl2000.github.io/CogniFold/" />
   <meta name="theme-color" content="#f4f2ee" />
   <meta name="color-scheme" content="light" />
@@ -16,7 +16,7 @@
   <meta property="og:type" content="website" />
   <meta property="og:site_name" content="CogniFold" />
   <meta property="og:title" content="CogniFold — A brain-inspired always-on agent memory" />
-  <meta property="og:description" content="An always-on agent memory that folds events into self-emerging cognitive structure. ~60% of human memory systems modeled, with proactive intent crystallization." />
+  <meta property="og:description" content="An always-on agent memory that folds events into self-emerging cognitive structure. ~53% of human memory systems modeled, with proactive intent crystallization." />
   <meta property="og:url" content="https://wsl2000.github.io/CogniFold/" />
   <meta property="og:image" content="https://wsl2000.github.io/CogniFold/assets/og-image.svg" />
   <meta property="og:image:type" content="image/svg+xml" />
@@ -81,9 +81,9 @@
       </div>
 
       <div style="display:flex; justify-content:center; margin-top:64px; border-radius:18px; overflow:hidden; background:#fff; box-shadow:0 1px 3px rgba(0,0,0,.05), 0 12px 36px rgba(0,0,0,.05);">
-        <div style="padding:28px 48px; text-align:center;"><div class="serif" style="font-size:50px; font-weight:600; color:#1d1d1f;">12</div><div class="sans" style="font-size:13px; font-weight:400; color:#86868b; margin-top:4px;">memory systems mapped</div></div>
+        <div style="padding:28px 48px; text-align:center;"><div class="serif" style="font-size:50px; font-weight:600; color:#1d1d1f;" id="sysCount">19</div><div class="sans" style="font-size:13px; font-weight:400; color:#86868b; margin-top:4px;">memory systems mapped</div></div>
         <div style="width:1px; background:rgba(0,0,0,.08);"></div>
-        <div style="padding:28px 48px; text-align:center;"><div class="serif" style="font-size:50px; font-weight:600; color:#b5742e;">~60%</div><div class="sans" style="font-size:13px; font-weight:400; color:#86868b; margin-top:4px;">weight-normalized coverage</div></div>
+        <div style="padding:28px 48px; text-align:center;"><div class="serif" style="font-size:50px; font-weight:600; color:#b5742e;" id="heroCov">~53%</div><div class="sans" style="font-size:13px; font-weight:400; color:#86868b; margin-top:4px;">memory-system coverage</div></div>
         <div style="width:1px; background:rgba(0,0,0,.08);"></div>
         <div style="padding:28px 48px; text-align:center;"><div class="serif" style="font-size:50px; font-weight:600; color:#1d1d1f;">4.6×</div><div class="sans" style="font-size:13px; font-weight:400; color:#86868b; margin-top:4px;">event→concept compression</div></div>
         <div style="width:1px; background:rgba(0,0,0,.08);"></div>
@@ -170,14 +170,14 @@
         <div class="sans" style="font-size:11.5px; font-weight:300; color:#a1a1a6; text-align:center; margin-top:10px;">Time is the fourth axis, threading through every layer · 4.6× compression · 0.614 proactivity</div>
 
         <div style="margin-top:22px; padding-top:20px; border-top:1px solid rgba(0,0,0,.08);">
-          <div style="display:flex; align-items:baseline; justify-content:center; gap:12px;"><span class="serif" style="font-size:24px; font-weight:600; color:#1d1d1f;">Memory-system coverage</span><span class="mono" style="font-size:14px; color:#b5742e;">~60%</span></div>
+          <div style="display:flex; align-items:baseline; justify-content:center; gap:12px;"><span class="serif" style="font-size:24px; font-weight:600; color:#1d1d1f;">Memory-system coverage</span><span class="mono" style="font-size:14px; color:#b5742e;" id="covPct">~53%</span></div>
           <div style="margin-top:12px; height:10px; border-radius:5px; overflow:hidden; display:flex; background:rgba(0,0,0,.07);">
-            <div style="width:60%; background:#2f74d0;"></div><div style="width:18%; background:#7c6fb8;"></div><div style="width:22%; background:repeating-linear-gradient(45deg,rgba(0,0,0,.16),rgba(0,0,0,.16) 4px,transparent 4px,transparent 8px);"></div>
+            <div id="covBar" style="width:36.8%; background:#2f74d0;"></div><div id="parBar" style="width:31.6%; background:#7c6fb8;"></div><div id="plBar" style="width:31.6%; background:repeating-linear-gradient(45deg,rgba(0,0,0,.16),rgba(0,0,0,.16) 4px,transparent 4px,transparent 8px);"></div>
           </div>
           <div class="mono" style="display:flex; justify-content:center; gap:22px; font-size:10.5px; letter-spacing:.06em; color:#6e6e73; margin-top:12px;">
-            <span style="display:flex;align-items:center;gap:7px;"><span style="width:10px;height:10px;border-radius:3px;background:#2f74d0;"></span>COVERED 12</span>
-            <span style="display:flex;align-items:center;gap:7px;"><span style="width:10px;height:10px;border-radius:3px;background:#7c6fb8;"></span>PARTIAL 8</span>
-            <span style="display:flex;align-items:center;gap:7px;"><span style="width:10px;height:10px;border-radius:3px;border:1.5px dashed rgba(0,0,0,.32);"></span>PLANNED 10</span>
+            <span style="display:flex;align-items:center;gap:7px;"><span style="width:10px;height:10px;border-radius:3px;background:#2f74d0;"></span>COVERED <span id="covN">7</span></span>
+            <span style="display:flex;align-items:center;gap:7px;"><span style="width:10px;height:10px;border-radius:3px;background:#7c6fb8;"></span>PARTIAL <span id="parN">6</span></span>
+            <span style="display:flex;align-items:center;gap:7px;"><span style="width:10px;height:10px;border-radius:3px;border:1.5px dashed rgba(0,0,0,.32);"></span>PLANNED <span id="plN">6</span></span>
           </div>
         </div>
       </div>
@@ -268,6 +268,20 @@
     {s:'par',name:'Forgetting / pruning',maps:'DECAY / PRUNING',e:'Letting unused or weak memories fade so the system stays useful.'},
   ];
   fill('.cf-rows', systems); fill('.cf-rows2', comms); fill('.cf-rows3', behav);
+
+  // ---- coverage: computed (status-weighted) from the behavioral memory-system list ----
+  (function(){
+    const n = {cov:0, par:0, pl:0};
+    behav.forEach(function(r){ n[r.s]++; });
+    const total = behav.length;
+    const pct = Math.round((n.cov + n.par * 0.5) / total * 100);  // covered=1, partial=0.5, planned=0
+    const set = function(id, v){ const el = document.getElementById(id); if (el) el.textContent = v; };
+    set('heroCov', '~' + pct + '%'); set('covPct', '~' + pct + '%'); set('sysCount', String(total));
+    set('covN', String(n.cov)); set('parN', String(n.par)); set('plN', String(n.pl));
+    const wcov = n.cov / total * 100, wpar = n.par / total * 100;
+    const setW = function(id, v){ const el = document.getElementById(id); if (el) el.style.width = v; };
+    setW('covBar', wcov.toFixed(1) + '%'); setW('parBar', wpar.toFixed(1) + '%'); setW('plBar', (100 - wcov - wpar).toFixed(1) + '%');
+  })();
 
   // ---- benchmark cards ----
   const benches = [
