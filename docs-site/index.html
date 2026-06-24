@@ -121,7 +121,8 @@
 
         <!-- dark showcase panel with an inline vector brain -->
         <div style="position:relative; height:500px; margin-top:14px; background:radial-gradient(ellipse 70% 70% at 50% 45%, #14141a 0%, #08080b 100%); border-radius:24px; overflow:hidden; box-shadow:0 1px 3px rgba(0,0,0,.1), 0 20px 50px rgba(0,0,0,.18);">
-          <img src="assets/brain.png" alt="CogniFold brain: event, concept and intent over a complementary-learning-systems graph" style="position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); width:640px; height:auto; mix-blend-mode:screen;" />
+          <img id="brainImg" src="assets/brain.png" alt="CogniFold brain: event, concept and intent over a complementary-learning-systems graph" style="position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); width:640px; height:auto; mix-blend-mode:screen; transition:opacity .18s;" />
+          <div id="brainCap" class="sans" style="position:absolute; left:26px; bottom:24px; max-width:360px; font-size:13.5px; line-height:1.5; font-weight:300; color:rgba(255,255,255,.82); text-align:left; opacity:0; transition:opacity .15s; pointer-events:none; text-shadow:0 1px 8px rgba(0,0,0,.7);"></div>
         </div>
 
         <div style="display:flex; align-items:stretch; gap:0; margin-top:18px;">
@@ -198,20 +199,24 @@
   function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
   function rowHTML(r){
     const maps = r.maps ? `<span class="mono maps">${esc(r.maps)}</span>` : '';
-    const tip = r.e ? ` data-tip="${esc(r.e)}"` : '';
-    return `<div class="cf-row"${tip}><span class="dot" style="${DOT[r.s]}"></span><span class="sans name" style="color:${DIM[r.s]}">${esc(r.name)}</span>${maps}</div>`;
+    // Systems · circuits rows (those carrying a `fig`) drive the panel image + bottom-left
+    // caption; every other row keeps the floating cursor tooltip.
+    let attrs = '';
+    if ('fig' in r) attrs = ` data-cap="${esc(r.e || '')}" data-fig="${esc(r.fig || '')}"`;
+    else if (r.e)   attrs = ` data-tip="${esc(r.e)}"`;
+    return `<div class="cf-row"${attrs}><span class="dot" style="${DOT[r.s]}"></span><span class="sans name" style="color:${DIM[r.s]}">${esc(r.name)}</span>${maps}</div>`;
   }
   function fill(sel, rows){ const n=document.querySelector(sel); if(n) n.innerHTML = rows.map(rowHTML).join(''); }
 
   const systems = [
-    {s:'cov',name:'Hippocampus',e:'Writes new episodes fast and binds them to time and place — the brain’s first stop for what just happened.'},
-    {s:'cov',name:'Neocortex',e:'The slow, long-term store of generalized knowledge built up from many experiences.'},
-    {s:'cov',name:'Entorhinal / temporal index',e:'The gateway in and out of the hippocampus; tags each memory with time and position.'},
-    {s:'cov',name:'Hippocampo-neocortical loop (CLS)',e:'The replay loop that moves memories from fast hippocampal storage into stable neocortical knowledge.'},
-    {s:'par',name:'Prefrontal cortex (vmPFC)',e:'Holds your current goals and focus, and decides what to act on right now.'},
-    {s:'pl',name:'Amygdala',e:'Tags memories with emotional weight, making important or threatening events stick.'},
-    {s:'pl',name:'Basal ganglia / VTA',e:'Reward-and-habit machinery — learns which actions pay off and automates them.'},
-    {s:'pl',name:'Sensory cortices',e:'Where raw sights and sounds first register, before anything becomes a memory.'},
+    {s:'cov',name:'Hippocampus',fig:'Hippocampus.png',e:'Writes new episodes fast and binds them to time and place — the brain’s first stop for what just happened.'},
+    {s:'cov',name:'Neocortex',fig:'Neocortex.png',e:'The slow, long-term store of generalized knowledge built up from many experiences.'},
+    {s:'cov',name:'Entorhinal / temporal index',fig:'Entorhinal.png',e:'The gateway in and out of the hippocampus; tags each memory with time and position.'},
+    {s:'cov',name:'Hippocampo-neocortical loop (CLS)',fig:'Hippocampo-neocortical-loop.png',e:'The replay loop that moves memories from fast hippocampal storage into stable neocortical knowledge.'},
+    {s:'par',name:'Prefrontal cortex (vmPFC)',fig:'vmPFC.png',e:'Holds your current goals and focus, and decides what to act on right now.'},
+    {s:'pl',name:'Amygdala',fig:'',e:'Tags memories with emotional weight, making important or threatening events stick.'},
+    {s:'pl',name:'Basal ganglia / VTA',fig:'VTA.png',e:'Reward-and-habit machinery — learns which actions pay off and automates them.'},
+    {s:'pl',name:'Sensory cortices',fig:'Sensory-cortices.png',e:'Where raw sights and sounds first register, before anything becomes a memory.'},
   ];
   const comms = [
     {s:'cov',name:'Hippocampus → Neocortex',maps:'Event → Concept',e:'Raw episodes get consolidated into general concepts — the core folding step.'},
@@ -305,6 +310,34 @@
     document.addEventListener('mouseout', function(e){
       const row = e.target.closest && e.target.closest('.cf-row[data-tip]');
       if (row && !row.contains(e.relatedTarget)) { tip.style.opacity = '0'; tip.style.transform = 'translateY(2px)'; }
+    });
+  })();
+
+  // ---- Systems · circuits: hover swaps the panel brain to the region figure + shows a bottom-left caption ----
+  (function(){
+    const img = document.getElementById('brainImg');
+    const cap = document.getElementById('brainCap');
+    const list = document.querySelector('.cf-rows');
+    if (!img || !cap || !list) return;
+    const DEFAULT = 'assets/brain.png', DIR = 'assets/fig/';
+    const src = function(fig){ return fig ? DIR + encodeURIComponent(fig) : DEFAULT; };
+    // preload region figures so the swap is instant on first hover
+    const seen = {};
+    list.querySelectorAll('.cf-row[data-fig]').forEach(function(row){
+      const fig = row.getAttribute('data-fig');
+      if (fig && !seen[fig]) { seen[fig] = 1; const im = new Image(); im.src = src(fig); }
+    });
+    list.addEventListener('mouseover', function(e){
+      const row = e.target.closest && e.target.closest('.cf-row[data-cap]');
+      if (!row) return;
+      const want = src(row.getAttribute('data-fig'));
+      if (img.getAttribute('src') !== want) img.src = want;
+      cap.textContent = row.getAttribute('data-cap');
+      cap.style.opacity = '1';
+    });
+    list.addEventListener('mouseleave', function(){
+      img.src = DEFAULT;
+      cap.style.opacity = '0';
     });
   })();
 
