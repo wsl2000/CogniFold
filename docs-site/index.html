@@ -52,67 +52,60 @@
 <div id="stage">
 <div id="frame" style="margin:0 auto; background:#f4f2ee; color:#1d1d1f;">
 
-  <!-- ============ PAGE 1 — TITLE · PHILOSOPHY · BENCHMARKS ============ -->
-  <section style="position:relative; width:1680px; padding:56px 60px 40px; display:flex; flex-direction:column; align-items:center; overflow:hidden; background:radial-gradient(ellipse 78% 80% at 50% 26%, #faf8f4 0%, #f4f2ee 72%);">
-    <div class="mono" style="position:absolute; top:40px; left:60px; right:60px; display:flex; justify-content:space-between; font-size:12px; letter-spacing:.22em; color:#a1a1a6;">
+  <!-- ============ PAGE 1 — TITLE · PHILOSOPHY · RESULTS (3 columns) ============ -->
+  <section style="position:relative; width:1680px; padding:44px 60px 42px; background:radial-gradient(ellipse 90% 130% at 20% -10%, #faf8f4 0%, #f4f2ee 68%);">
+    <div class="mono" style="display:flex; justify-content:space-between; font-size:12px; letter-spacing:.22em; color:#a1a1a6; margin-bottom:32px;">
       <span>OPENNORVE · NORVELABS</span>
       <span>APACHE-2.0 · PYTHON · MCP-COMPATIBLE</span>
     </div>
 
-    <div style="position:relative; text-align:center; z-index:2;">
-      <div class="mono" style="font-size:14px; letter-spacing:.42em; color:#b5742e; margin-bottom:20px;">BRAIN-INSPIRED AGENT MEMORY</div>
-      <h1 class="serif" style="font-size:118px; font-weight:600; line-height:.92; letter-spacing:.005em; color:#1d1d1f;">CogniFold</h1>
-      <p class="news" style="font-size:27px; font-weight:400; line-height:1.5; color:#3a3a3c; max-width:830px; margin:34px auto 0;">An always-on agent memory that folds events into self-emerging cognitive structure — and proactively crystallizes them into intent.</p>
-      <p class="sans" style="font-size:15px; font-weight:300; letter-spacing:.04em; color:#86868b; max-width:680px; margin:22px auto 0; line-height:1.6;">Event → Concept → Intent. A complementary-learning-systems graph that consolidates online, grounds every concept in its source, and remembers to act.</p>
+    <div style="display:grid; grid-template-columns:1.05fr 0.9fr 1.25fr; gap:44px; align-items:start;">
 
-      <div style="display:flex; gap:14px; justify-content:center; margin-top:30px;">
-        <a href="https://github.com/wsl2000/CogniFold" target="_blank" rel="noopener" style="display:flex; align-items:center; gap:11px; padding:15px 30px; border-radius:980px; background:#1d1d1f;">
-          <svg viewBox="0 0 16 16" width="17" height="17" fill="#fff"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
-          <span class="mono" style="font-size:14px; letter-spacing:.1em; color:#fff;">GITHUB</span>
-        </a>
-        <a href="https://arxiv.org/abs/2605.13438" target="_blank" rel="noopener" style="display:flex; align-items:center; gap:11px; padding:15px 30px; border:1px solid rgba(0,0,0,.16); border-radius:980px; background:#fff;">
-          <span class="serif" style="font-size:19px; font-weight:600; color:#1d1d1f;">arXiv</span>
-          <span class="mono" style="font-size:13px; letter-spacing:.08em; color:#6e6e73;">2605.13438</span>
-        </a>
-        <a href="#benchmarks" style="display:flex; align-items:center; gap:11px; padding:15px 30px; border:1px solid rgba(0,0,0,.16); border-radius:980px; background:#fff;">
-          <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="#1d1d1f" stroke-width="1.4"><rect x="1.5" y="8" width="3" height="6.5"/><rect x="6.5" y="4" width="3" height="10.5"/><rect x="11.5" y="1.5" width="3" height="13"/></svg>
-          <span class="mono" style="font-size:14px; letter-spacing:.1em; color:#1d1d1f;">BENCHMARKS</span>
-        </a>
+      <!-- LEFT — TITLE -->
+      <div>
+        <div class="mono" style="font-size:13px; letter-spacing:.4em; color:#b5742e;">BRAIN-INSPIRED AGENT MEMORY</div>
+        <h1 class="serif" style="font-size:76px; font-weight:600; line-height:.92; letter-spacing:.005em; color:#1d1d1f; margin-top:16px;">CogniFold</h1>
+        <p class="news" style="font-size:19px; font-weight:400; line-height:1.5; color:#3a3a3c; margin-top:16px;">An always-on agent memory that folds events into self-emerging cognitive structure — and proactively crystallizes them into intent.</p>
+
+        <div style="display:flex; flex-wrap:wrap; gap:11px; margin-top:24px;">
+          <a href="https://github.com/wsl2000/CogniFold" target="_blank" rel="noopener" style="display:flex; align-items:center; gap:9px; padding:11px 20px; border-radius:980px; background:#1d1d1f;">
+            <svg viewBox="0 0 16 16" width="16" height="16" fill="#fff"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .271.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+            <span class="mono" style="font-size:13px; letter-spacing:.1em; color:#fff;">GITHUB</span>
+          </a>
+          <a href="https://arxiv.org/abs/2605.13438" target="_blank" rel="noopener" style="display:flex; align-items:center; gap:9px; padding:11px 20px; border:1px solid rgba(0,0,0,.16); border-radius:980px; background:#fff;">
+            <span class="serif" style="font-size:17px; font-weight:600; color:#1d1d1f;">arXiv</span>
+            <span class="mono" style="font-size:12px; letter-spacing:.06em; color:#6e6e73;">2605.13438</span>
+          </a>
+        </div>
+
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:1px; margin-top:26px; background:rgba(0,0,0,.07); border:1px solid rgba(0,0,0,.07); border-radius:14px; overflow:hidden;">
+          <div style="background:#fff; padding:14px 16px;"><div class="serif" style="font-size:34px; font-weight:600; color:#1d1d1f; line-height:1;" id="sysCount">19</div><div class="sans" style="font-size:11.5px; color:#86868b; margin-top:3px;">memory systems mapped</div></div>
+          <div style="background:#fff; padding:14px 16px;"><div class="serif" style="font-size:34px; font-weight:600; color:#b5742e; line-height:1;" id="heroCov">~53%</div><div class="sans" style="font-size:11.5px; color:#86868b; margin-top:3px;">memory-system coverage</div></div>
+          <div style="background:#fff; padding:14px 16px;"><div class="serif" style="font-size:34px; font-weight:600; color:#1d1d1f; line-height:1;">4.6×</div><div class="sans" style="font-size:11.5px; color:#86868b; margin-top:3px;">event→concept compression</div></div>
+          <div style="background:#fff; padding:14px 16px;"><div class="serif" style="font-size:34px; font-weight:600; color:#1d1d1f; line-height:1;">0.614</div><div class="sans" style="font-size:11.5px; color:#86868b; margin-top:3px;">proactivity score</div></div>
+        </div>
       </div>
 
-      <div style="display:flex; justify-content:center; margin-top:30px; border-radius:18px; overflow:hidden; background:#fff; box-shadow:0 1px 3px rgba(0,0,0,.05), 0 12px 36px rgba(0,0,0,.05);">
-        <div style="padding:28px 48px; text-align:center;"><div class="serif" style="font-size:50px; font-weight:600; color:#1d1d1f;" id="sysCount">19</div><div class="sans" style="font-size:13px; font-weight:400; color:#86868b; margin-top:4px;">memory systems mapped</div></div>
-        <div style="width:1px; background:rgba(0,0,0,.08);"></div>
-        <div style="padding:28px 48px; text-align:center;"><div class="serif" style="font-size:50px; font-weight:600; color:#b5742e;" id="heroCov">~53%</div><div class="sans" style="font-size:13px; font-weight:400; color:#86868b; margin-top:4px;">memory-system coverage</div></div>
-        <div style="width:1px; background:rgba(0,0,0,.08);"></div>
-        <div style="padding:28px 48px; text-align:center;"><div class="serif" style="font-size:50px; font-weight:600; color:#1d1d1f;">4.6×</div><div class="sans" style="font-size:13px; font-weight:400; color:#86868b; margin-top:4px;">event→concept compression</div></div>
-        <div style="width:1px; background:rgba(0,0,0,.08);"></div>
-        <div style="padding:28px 48px; text-align:center;"><div class="serif" style="font-size:50px; font-weight:600; color:#1d1d1f;">0.614</div><div class="sans" style="font-size:13px; font-weight:400; color:#86868b; margin-top:4px;">proactivity score</div></div>
+      <!-- MIDDLE — DESIGN PHILOSOPHY -->
+      <div style="border-left:1px solid rgba(0,0,0,.08); padding-left:38px;">
+        <div class="mono" style="font-size:13px; letter-spacing:.36em; color:#b5742e;">DESIGN PHILOSOPHY</div>
+        <h2 class="serif" style="font-size:32px; font-weight:600; line-height:1.12; color:#1d1d1f; margin-top:14px;">Memory <span class="news" style="font-style:italic; font-weight:500;">consolidates</span> — it doesn’t search.</h2>
+        <p class="news" style="font-size:16.5px; font-weight:400; line-height:1.6; color:#3a3a3c; margin-top:15px;">Human memory doesn’t look things up — it settles. Borrowing the brain’s complementary learning systems, CogniFold writes events down fast, replays what recurs into durable concepts, and turns that understanding into goals and next steps. Nothing is fetched on demand: structure <i style="font-style:italic;">emerges</i>, and the agent gradually learns what matters to you and what’s worth acting on.</p>
+        <div class="mono" style="display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin-top:18px; font-size:11px; letter-spacing:.08em; color:#86868b;">
+          <span style="color:#2f74d0;">HIPPOCAMPUS</span><span style="color:#c5c2bc;">→</span><span style="color:#b5742e;">NEOCORTEX</span><span style="color:#c5c2bc;">→</span><span style="color:#7c6fb8;">PREFRONTAL</span>
+        </div>
       </div>
-    </div>
-  </section>
 
-  <!-- ============ DESIGN PHILOSOPHY ============ -->
-  <section id="philosophy" style="position:relative; width:1680px; padding:14px 60px 30px;">
-    <div style="max-width:1000px; margin:0 auto; text-align:center;">
-      <div class="mono" style="font-size:13px; letter-spacing:.36em; color:#b5742e;">DESIGN PHILOSOPHY</div>
-      <h2 class="serif" style="font-size:50px; font-weight:600; line-height:1.08; color:#1d1d1f; margin-top:12px;">Memory <span class="news" style="font-style:italic; font-weight:500;">consolidates</span> — it doesn’t search.</h2>
-      <p class="news" style="font-size:20px; font-weight:400; line-height:1.62; color:#3a3a3c; margin-top:18px;">Human memory doesn’t look things up — it settles. Following the brain’s complementary learning systems, CogniFold writes events down fast in a hippocampal layer, replays the ones that recur into durable concepts in a neocortical layer, and lets a prefrontal layer turn that understanding into goals and next steps. Nothing is fetched on demand: structure <i style="font-style:italic;">emerges</i>, and the agent gradually learns what matters to you and what is worth acting on.</p>
-      <div class="mono" style="display:inline-flex; align-items:center; gap:11px; margin-top:20px; font-size:12px; letter-spacing:.12em; color:#86868b;">
-        <span style="color:#2f74d0;">HIPPOCAMPUS</span><span style="color:#c5c2bc;">→</span><span style="color:#b5742e;">NEOCORTEX</span><span style="color:#c5c2bc;">→</span><span style="color:#7c6fb8;">PREFRONTAL</span>
+      <!-- RIGHT — RESULTS -->
+      <div id="benchmarks" style="border-left:1px solid rgba(0,0,0,.08); padding-left:38px;">
+        <div style="display:flex; align-items:baseline; justify-content:space-between; gap:10px;">
+          <div class="mono" style="font-size:13px; letter-spacing:.36em; color:#b5742e;">RESULTS</div>
+          <div class="sans" style="font-size:10.5px; font-weight:300; color:#a1a1a6; text-align:right;">CogniFold’s own figures · no competitor numbers</div>
+        </div>
+        <div id="benchGrid" style="display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin-top:16px;"></div>
       </div>
-    </div>
-  </section>
 
-  <!-- ============ BENCHMARKS ============ -->
-  <section id="benchmarks" style="position:relative; width:1680px; padding:28px 60px 54px;">
-    <div style="text-align:center; max-width:900px; margin:0 auto;">
-      <div class="mono" style="font-size:13px; letter-spacing:.36em; color:#b5742e;">RESULTS</div>
-      <h2 class="serif" style="font-size:50px; font-weight:600; line-height:1; color:#1d1d1f; margin-top:10px;">Benchmarks</h2>
-      <p class="news" style="font-size:21px; font-weight:400; line-height:1.55; color:#3a3a3c; margin-top:20px;">CogniFold's measured results on public benchmarks. Figures are CogniFold's own; no competitor numbers are shown.</p>
     </div>
-
-    <div id="benchGrid" style="display:grid; grid-template-columns:repeat(5,1fr); gap:18px; max-width:1560px; margin:30px auto 0;"></div>
   </section>
 
   <!-- ============ PAGE 2 — MEMORY MAP ============ -->
@@ -224,7 +217,7 @@
     {s:'cov',name:'Entorhinal / temporal index',fig:'Entorhinal.png',e:'The gateway in and out of the hippocampus; tags each memory with time and position.'},
     {s:'cov',name:'Hippocampo-neocortical loop (CLS)',fig:'Hippocampo-neocortical-loop.png',e:'The replay loop that moves memories from fast hippocampal storage into stable neocortical knowledge.'},
     {s:'par',name:'Prefrontal cortex (vmPFC)',fig:'vmPFC.png',e:'Holds your current goals and focus, and decides what to act on right now.'},
-    {s:'pl',name:'Amygdala',fig:'',e:'Tags memories with emotional weight, making important or threatening events stick.'},
+    {s:'pl',name:'Amygdala',fig:'Amygdala.png',e:'Tags memories with emotional weight, making important or threatening events stick.'},
     {s:'pl',name:'Basal ganglia / VTA',fig:'VTA.png',e:'Reward-and-habit machinery — learns which actions pay off and automates them.'},
     {s:'pl',name:'Sensory cortices',fig:'Sensory-cortices.png',e:'Where raw sights and sounds first register, before anything becomes a memory.'},
   ];
@@ -278,7 +271,6 @@
   const benches = [
     {k:'COGEVAL',v:'0.614',u:'',t:'Proactivity',d:"Tests whether the agent acts on intents at the right moment — CogniFold's core differentiator."},
     {k:'LONGMEMEVAL',v:'92',u:'%',t:'Long-term memory',d:'QA over ~50-session histories — single-session recall, multi-session consolidation, knowledge update, and temporal reasoning.'},
-    {k:'BABILONG',v:'96.0',u:'% EM',t:'Long-context QA',d:'Reasoning over facts buried in very long contexts; exact-match accuracy.'},
     {k:'SAFETYBENCH',v:'94.3',u:'%',t:'Safety',d:'Multiple-choice safety judgments across harm categories.'},
     {k:'MUTUAL',v:'93.2',u:'%',t:'Dialogue reasoning',d:'Multi-turn dialogue inference — choosing the coherent next response.'},
     {k:'TOMI',v:'91.6',u:'% EM',t:'Theory of mind',d:"Tracking other agents' beliefs and false beliefs across a narrative."},
@@ -288,11 +280,10 @@
     {k:'MUSIQUE',v:'41.2',u:'% EM',t:'Multi-hop',d:'Compositional multi-hop questions; also F1 0.587.'},
   ];
   document.getElementById('benchGrid').innerHTML = benches.map(b => `
-    <div style="background:#fff; border:1px solid rgba(0,0,0,.06); box-shadow:0 1px 3px rgba(0,0,0,.04), 0 10px 30px rgba(0,0,0,.04); border-radius:16px; padding:15px 18px;">
-      <div class="mono" style="font-size:10px; letter-spacing:.14em; color:#86868b;">${b.k}</div>
-      <div style="display:flex; align-items:baseline; gap:7px; margin-top:10px;"><span class="serif" style="font-size:44px; font-weight:600; color:#1d1d1f; line-height:.9;">${b.v}</span>${b.u?`<span class="sans" style="font-size:15px; font-weight:500; color:#2f74d0;">${b.u}</span>`:''}</div>
-      <div class="sans" style="font-size:16px; font-weight:500; color:#1d1d1f; margin-top:11px;">${b.t}</div>
-      <div class="sans" style="font-size:12.5px; font-weight:300; color:#6e6e73; margin-top:6px; line-height:1.5;">${b.d}</div>
+    <div style="background:#fff; border:1px solid rgba(0,0,0,.06); box-shadow:0 1px 2px rgba(0,0,0,.04); border-radius:12px; padding:12px 13px;">
+      <div class="mono" style="font-size:9px; letter-spacing:.1em; color:#86868b;">${b.k}</div>
+      <div style="display:flex; align-items:baseline; gap:4px; margin-top:8px;"><span class="serif" style="font-size:29px; font-weight:600; color:#1d1d1f; line-height:.9;">${b.v}</span>${b.u?`<span class="sans" style="font-size:10.5px; font-weight:500; color:#2f74d0;">${b.u}</span>`:''}</div>
+      <div class="sans" style="font-size:11.5px; font-weight:500; color:#1d1d1f; margin-top:9px; line-height:1.25;">${b.t}</div>
     </div>`).join('');
 
   // ---- hover tooltips on memory-system rows (plain-language explanations) ----
